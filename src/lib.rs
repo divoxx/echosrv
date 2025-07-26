@@ -7,6 +7,10 @@ pub enum EchoError {
     #[error("TCP error: {0}")]
     Tcp(#[from] std::io::Error),
 
+    /// UDP-related errors (bind, send, receive)
+    #[error("UDP error: {0}")]
+    Udp(std::io::Error),
+
     /// Configuration errors
     #[error("Configuration error: {0}")]
     Config(String),
@@ -23,4 +27,6 @@ pub enum EchoError {
 /// Result type for the echosrv library
 pub type Result<T> = std::result::Result<T, EchoError>;
 
-pub mod tcp; 
+pub mod common;
+pub mod tcp;
+pub mod udp; 

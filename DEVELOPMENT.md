@@ -6,44 +6,65 @@ This document outlines the development practices, architecture decisions, and gu
 
 ### System Design
 
-The Echo Server is built around a simple but robust architecture:
+The Echo Server is built around a modular, multi-protocol architecture:
 
-1. **Server Management**: The `EchoServer` manages the TCP listener and connection lifecycle
-2. **Configuration**: The `Config` struct holds all server parameters
-3. **Client Testing**: The `EchoClient` provides functionality for testing the server
-4. **Connection Handling**: Individual async tasks handle each client connection
+1. **Common Interface**: Shared traits and utilities for both TCP and UDP
+2. **Protocol-Specific Implementations**: Separate modules for TCP and UDP servers
+3. **Configuration Management**: Protocol-specific configuration structs
+4. **Client Testing**: Protocol-specific clients for testing
+5. **Connection Handling**: Async tasks handle connections/datagrams per protocol
 
 ### Module Structure
 
 ```
 src/
-├── lib.rs          # Library entry point, exposes tcp module
-├── main.rs         # Binary entry point for standalone server
-└── tcp.rs          # Core TCP server implementation
+├── lib.rs              # Library entry point, exports common, tcp, udp modules
+├── main.rs             # Binary entry point for standalone server
+├── common/             # Shared components
+│   ├── mod.rs          # Common module exports
+│   ├── config.rs       # Shared configuration types
+│   ├── traits.rs       # Common traits for servers/clients
+│   └── test_utils.rs   # Common test utilities
+├── tcp/                # TCP-specific implementation
+│   ├── mod.rs          # TCP module exports
+│   ├── server.rs       # TCP server implementation
+│   ├── client.rs       # TCP client implementation
+│   └── tests.rs        # TCP-specific tests
+└── udp/                # UDP-specific implementation
+    ├── mod.rs          # UDP module exports
+    ├── server.rs       # UDP server implementation
+    ├── client.rs       # UDP client implementation
+    └── tests.rs        # UDP-specific tests
 ```
 
 ### Key Design Decisions
 
-#### 1. Async Architecture
+#### 1. Multi-Protocol Architecture
+- **Implementation**: Separate modules for TCP and UDP with shared traits
+- **Benefits**: Protocol-specific optimizations, clear separation of concerns
+- **Design**: Common traits ensure consistent API across protocols
+
+#### 2. Async Architecture
 - **Implementation**: Uses Tokio runtime for async/await support
 - **Benefits**: Efficient resource utilization, high concurrency
 
-#### 2. Error Handling Architecture
+#### 3. Error Handling Architecture
 - **Library**: Uses `thiserror` for structured error types
 - **Binary**: Uses `color-eyre` for user-friendly error reporting
 - **Benefits**: Library independence, composable errors, better debugging experience
 - **Design**: Library provides structured errors that can be easily converted to user-friendly errors in the binary
 
-#### 3. Logging
+#### 4. Logging
 - **Implementation**: Uses `tracing` for structured logging
 - **Benefits**: Configurable log levels, structured data, performance
 
-#### 4. Connection Management
-- **Implementation**: Atomic connection counting with configurable limits
+#### 5. Connection Management
+- **TCP**: Atomic connection counting with configurable limits
+- **UDP**: Stateless datagram handling
 - **Benefits**: Predictable resource usage, graceful degradation
 
-#### 5. Timeout Configuration
-- **Implementation**: Configurable read/write timeouts per connection
+#### 6. Timeout Configuration
+- **Implementation**: Configurable read/write timeouts per protocol
 - **Benefits**: Automatic cleanup, predictable behavior
 
 ## Development Setup
@@ -69,6 +90,10 @@ cargo test
 
 # Run with logging
 RUST_LOG=info cargo test -- --nocapture
+
+# Test specific protocol
+cargo test --test integration_tests test_tcp
+cargo test --test integration_tests test_udp
 ```
 
 ### Development Workflow
@@ -93,6 +118,7 @@ RUST_LOG=info cargo test -- --nocapture
 2. **Testing Strategy**:
    - Unit tests for individual functions
    - Integration tests for component interaction
+   - Protocol-specific tests
    - Manual testing for edge cases
 
 ## Code Style and Standards
@@ -116,10 +142,10 @@ Example:
 /// # Examples
 ///
 /// ```no_run
-/// use echosrv::tcp::{Config, EchoServer};
+/// use echosrv::tcp::{TcpConfig, TcpEchoServer};
 ///
-/// let config = Config::default();
-/// let server = EchoServer::new(config);
+/// let config = TcpConfig::default();
+/// let server = TcpEchoServer::new(config);
 /// ```
 ///
 /// # Errors
@@ -153,6 +179,9 @@ pub enum EchoError {
     #[error("TCP error: {0}")]
     Tcp(#[from] std::io::Error),
     
+    #[error("UDP error: {0}")]
+    Udp(#[from] std::io::Error),
+    
     #[error("Configuration error: {0}")]
     Config(String),
     
@@ -185,9 +214,16 @@ pub enum EchoError {
 
 ```rust
 #[tokio::test]
-async fn test_echo_server_new_creates_valid_instance() {
-    let config = Config::default();
-    let server = EchoServer::new(config);
+async fn test_tcp_echo_server_new_creates_valid_instance() {
+    let config = TcpConfig::default();
+    let server = TcpEchoServer::new(config);
+    assert!(server.shutdown_signal().receiver_count() == 0);
+}
+
+#[tokio::test]
+async fn test_udp_echo_server_new_creates_valid_instance() {
+    let config = UdpConfig::default();
+    let server = UdpEchoServer::new(config);
     assert!(server.shutdown_signal().receiver_count() == 0);
 }
 ```
@@ -201,16 +237,16 @@ async fn test_echo_server_new_creates_valid_instance() {
 
 ```rust
 #[tokio::test]
-async fn test_multiple_concurrent_clients() -> Result<()> {
-    let (server_handle, addr) = create_test_server().await?;
+async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
+    let (server_handle, addr) = create_controlled_test_server_with_limit(10).await?;
     
     // Test multiple clients concurrently
     let mut handles = Vec::new();
     for i in 0..5 {
         let addr = addr;
         let handle = tokio::spawn(async move {
-            let mut client = EchoClient::connect(addr).await?;
-            let message = format!("Message from client {}", i);
+            let mut client = TcpEchoClient::connect(addr).await?;
+            let message = format!("Message from TCP client {}", i);
             let response = client.echo_string(&message).await?;
             assert_eq!(response, message);
             Ok::<(), EchoError>(())
@@ -253,6 +289,18 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 - Consider using `BufReader`/`BufWriter` for efficiency
 - Profile and optimize hot paths
 
+### Protocol-Specific Optimizations
+
+#### TCP
+- Connection pooling for high-load scenarios
+- Keep-alive connections for repeated requests
+- Connection limits to prevent resource exhaustion
+
+#### UDP
+- Datagram size optimization
+- Connectionless nature allows for stateless scaling
+- Consider batching for high-throughput scenarios
+
 ## Security Considerations
 
 ### Input Validation
@@ -264,10 +312,22 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 
 ### Resource Management
 
-- Limit maximum connections to prevent DoS
+- Limit maximum connections to prevent DoS (TCP)
 - Implement timeouts to prevent hanging connections
 - Use proper error handling to prevent information leakage
 - Consider implementing connection rate limiting
+
+### Protocol-Specific Security
+
+#### TCP
+- Connection limits prevent DoS attacks
+- Timeout configuration prevents hanging connections
+- Graceful shutdown ensures clean resource cleanup
+
+#### UDP
+- Stateless nature reduces attack surface
+- Datagram size limits prevent amplification attacks
+- Timeout configuration prevents resource exhaustion
 
 ## Future Enhancements
 
@@ -275,9 +335,10 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 
 1. **Configuration File Support**: Load configuration from files
 2. **Metrics Collection**: Prometheus metrics for monitoring
-3. **Connection Pooling**: Reuse connections for better performance
+3. **Connection Pooling**: Reuse connections for better performance (TCP)
 4. **Protocol Extensions**: Support for custom protocols
-5. **TLS Support**: Secure connections with TLS
+5. **TLS Support**: Secure connections with TLS (TCP)
+6. **DTLS Support**: Secure datagram transport (UDP)
 
 ### Architecture Improvements
 
@@ -285,6 +346,7 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 2. **Middleware Support**: Request/response processing pipeline
 3. **Health Checks**: Built-in health check endpoints
 4. **Graceful Reload**: Configuration reload without restart
+5. **Protocol Bridging**: Bridge between TCP and UDP
 
 ## Contributing
 
@@ -293,7 +355,7 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 1. **Fork the repository**
 2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
 3. **Make your changes**: Follow the coding standards
-4. **Add tests**: Ensure all new code is tested
+4. **Add tests**: Ensure all new code is tested for both protocols
 5. **Update documentation**: Update README.md and DEVELOPMENT.md if needed
 6. **Run the test suite**: `cargo test`
 7. **Submit a pull request**: Include a clear description of changes
@@ -319,12 +381,18 @@ Types:
 - `test`: Adding or updating tests
 - `chore`: Maintenance tasks
 
+Scopes:
+- `tcp`: TCP-specific changes
+- `udp`: UDP-specific changes
+- `common`: Shared component changes
+- `arch`: Architectural changes
+
 ### Code Review Guidelines
 
 - Review for correctness and completeness
 - Check for security issues
 - Ensure proper error handling
-- Verify test coverage
+- Verify test coverage for both protocols
 - Check documentation updates
 - Review performance implications
 
@@ -336,6 +404,7 @@ Types:
 2. **Timeout Errors**: Verify timeout configuration and network conditions
 3. **Memory Issues**: Check connection limits and buffer sizes
 4. **Test Failures**: Ensure no other processes are using test ports
+5. **Protocol Mismatch**: Ensure client and server use the same protocol
 
 ### Debugging
 
@@ -349,4 +418,16 @@ Types:
 - Use `cargo bench` for benchmarking (when implemented)
 - Profile with `perf` or `flamegraph`
 - Monitor memory usage with `valgrind`
-- Use `tokio-console` for async runtime debugging 
+- Use `tokio-console` for async runtime debugging
+
+### Protocol-Specific Debugging
+
+#### TCP
+- Monitor connection counts and limits
+- Check for connection leaks
+- Verify timeout configurations
+
+#### UDP
+- Monitor datagram sizes and rates
+- Check for packet loss
+- Verify timeout configurations 

@@ -8,7 +8,7 @@ repository = "https://github.com/divoxx/echosrv"
 homepage = "https://github.com/divoxx/echosrv"
 documentation = "https://docs.rs/echosrv"
 readme = "README.md"
-keywords = ["echo", "server", "tcp", "async"]
+keywords = ["echo", "server", "tcp", "udp", "async"]
 categories = ["network-programming", "asynchronous", "command-line-utilities"]
 authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 
