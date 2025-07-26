@@ -1,12 +1,12 @@
 use super::config::StreamConfig;
 use std::net::SocketAddr;
-use std::future::Future;
+use async_trait::async_trait;
 
 /// Trait for stream-based protocols (TCP, Unix streams, etc.)
 ///
 /// This trait defines the interface that stream protocol implementations
 /// must provide to work with the generic stream echo server and client.
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait StreamProtocol {
     /// Error type for this protocol
     type Error: Send + Into<crate::EchoError>;

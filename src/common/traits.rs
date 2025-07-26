@@ -1,10 +1,11 @@
 use crate::{Result, EchoError};
+use async_trait::async_trait;
 
 /// Common trait for echo servers
 ///
 /// This trait defines the common interface that all echo servers
 /// (TCP, UDP, etc.) must implement.
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait EchoServerTrait {
     /// Starts the echo server and listens for connections/messages
     async fn run(&self) -> Result<()>;
@@ -17,7 +18,7 @@ pub trait EchoServerTrait {
 ///
 /// This trait defines the common interface that all echo clients
 /// (TCP, UDP, etc.) must implement.
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait EchoClient {
     /// Sends data to the echo server and returns the echoed response
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>>;

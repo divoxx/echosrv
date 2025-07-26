@@ -3,6 +3,7 @@ use crate::common::EchoClient;
 use super::{DatagramConfig, DatagramProtocol};
 use std::net::SocketAddr;
 use tokio::time::{timeout, Duration};
+use async_trait::async_trait;
 
 /// Generic datagram-based echo client that works with any datagram protocol
 ///
@@ -54,6 +55,7 @@ where
     }
 }
 
+#[async_trait]
 impl<P: DatagramProtocol> EchoClient for DatagramEchoClient<P> 
 where
     P::Error: Into<EchoError> + std::fmt::Display,

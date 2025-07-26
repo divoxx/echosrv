@@ -3,10 +3,12 @@ use crate::stream::{StreamProtocol, StreamConfig};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use async_trait::async_trait;
 
 /// TCP protocol implementation
 pub struct TcpProtocol;
 
+#[async_trait]
 impl StreamProtocol for TcpProtocol {
     type Error = EchoError;
     type Listener = TcpListener;

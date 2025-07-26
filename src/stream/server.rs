@@ -9,6 +9,7 @@ use tokio::{
     time::timeout,
 };
 use tracing::{error, info, warn, Instrument};
+use async_trait::async_trait;
 
 /// Generic stream-based echo server that works with any stream protocol
 ///
@@ -112,7 +113,8 @@ where
     }
 }
 
-impl<P: StreamProtocol> EchoServerTrait for StreamEchoServer<P> 
+#[async_trait]
+impl<P: StreamProtocol + Sync> EchoServerTrait for StreamEchoServer<P> 
 where
     P::Error: Into<EchoError> + std::fmt::Display,
     P::Stream: 'static,
@@ -144,8 +146,11 @@ where
                             let config = self.config.clone();
                             let connection_count = connection_count.clone();
                             let span = tracing::info_span!("connection", %addr, current = new_count);
+                            
+                            // Handle connection in a separate task with proper Send bounds
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_connection(stream, addr, config).instrument(span).await {
+                                let result = Self::handle_connection(stream, addr, config).instrument(span).await;
+                                if let Err(e) = result {
                                     error!(%addr, error = %e, "Error handling connection");
                                 }
                                 let final_count = connection_count.fetch_sub(1, Ordering::SeqCst) - 1;

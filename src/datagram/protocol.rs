@@ -1,11 +1,12 @@
 use super::config::DatagramConfig;
 use std::net::SocketAddr;
-use std::future::Future;
+use async_trait::async_trait;
 
 /// Trait for datagram-based protocols (UDP, Unix datagrams, etc.)
 ///
 /// This trait defines the interface that datagram protocol implementations
 /// must provide to work with the generic datagram echo server.
+#[async_trait]
 pub trait DatagramProtocol {
     /// Error type for this protocol
     type Error: Send + Into<crate::EchoError>;

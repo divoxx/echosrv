@@ -7,6 +7,7 @@ use tokio::{
     time::timeout,
 };
 use tracing::{error, info, warn};
+use async_trait::async_trait;
 
 /// Generic datagram-based echo server that works with any datagram protocol
 ///
@@ -58,7 +59,8 @@ where
     }
 }
 
-impl<P: DatagramProtocol> EchoServerTrait for DatagramEchoServer<P> 
+#[async_trait]
+impl<P: DatagramProtocol + Sync> EchoServerTrait for DatagramEchoServer<P> 
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {

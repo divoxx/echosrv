@@ -6,6 +6,7 @@ use crate::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 use tracing::{info, error};
+use async_trait::async_trait;
 
 /// Unix domain stream echo server
 ///
@@ -48,6 +49,7 @@ impl UnixStreamEchoServer {
     }
 }
 
+#[async_trait]
 impl EchoServerTrait for UnixStreamEchoServer {
     async fn run(&self) -> Result<()> {
         let socket_path = &self.config.socket_path;
@@ -172,6 +174,7 @@ impl UnixDatagramEchoServer {
     }
 }
 
+#[async_trait]
 impl EchoServerTrait for UnixDatagramEchoServer {
     async fn run(&self) -> Result<()> {
         let socket_path = &self.config.socket_path;

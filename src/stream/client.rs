@@ -3,6 +3,7 @@ use crate::common::EchoClient;
 use super::StreamProtocol;
 use std::net::SocketAddr;
 use tokio::time::{timeout, Duration};
+use async_trait::async_trait;
 
 /// Generic stream-based echo client that works with any stream protocol
 ///
@@ -62,6 +63,7 @@ where
     }
 }
 
+#[async_trait]
 impl<P: StreamProtocol> EchoClient for StreamEchoClient<P> 
 where
     P::Error: Into<EchoError> + std::fmt::Display,

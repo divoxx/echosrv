@@ -5,6 +5,7 @@ use crate::Result;
 use std::path::PathBuf;
 use tokio::net::{UnixStream, UnixDatagram};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use async_trait::async_trait;
 
 /// Unix domain stream echo client
 ///
@@ -41,6 +42,7 @@ impl UnixStreamEchoClient {
     }
 }
 
+#[async_trait]
 impl EchoClient for UnixStreamEchoClient {
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         // Send the data
@@ -101,6 +103,7 @@ impl UnixDatagramEchoClient {
     }
 }
 
+#[async_trait]
 impl EchoClient for UnixDatagramEchoClient {
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         // Send the data to the server
