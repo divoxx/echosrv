@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 ///
 /// This trait defines the common interface that all echo servers
 /// (TCP, UDP, etc.) must implement.
-pub trait EchoServer {
+pub trait EchoServerTrait {
     /// Starts the echo server and listens for connections/messages
     async fn run(&self) -> Result<()>;
 
@@ -34,7 +34,7 @@ pub trait EchoClient {
 /// with different configurations.
 pub trait EchoServerBuilder {
     type Config;
-    type Server: EchoServer;
+    type Server: EchoServerTrait;
 
     /// Creates a new echo server with the given configuration
     fn new(config: Self::Config) -> Self::Server;

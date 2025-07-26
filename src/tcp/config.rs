@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
+use crate::common::protocols::EchoConfig;
 
 /// TCP-specific configuration that extends the common config
 ///
@@ -40,5 +41,27 @@ impl Default for TcpConfig {
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
         }
+    }
+}
+
+impl EchoConfig for TcpConfig {
+    fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
+    }
+    
+    fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+    
+    fn read_timeout(&self) -> Duration {
+        self.read_timeout
+    }
+    
+    fn write_timeout(&self) -> Duration {
+        self.write_timeout
+    }
+    
+    fn max_connections(&self) -> usize {
+        self.max_connections
     }
 } 

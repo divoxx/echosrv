@@ -1,5 +1,6 @@
 use super::*;
-use crate::common::{EchoServer, EchoClient};
+use crate::common::{EchoClient, EchoServerTrait};
+use crate::UdpEchoServer;
 use crate::{Result, EchoError};
 use std::time::Duration;
 use std::net::SocketAddr;

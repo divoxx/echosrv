@@ -1,6 +1,6 @@
-use echosrv::common::EchoServer;
-use echosrv::tcp::{TcpConfig, TcpEchoServer};
-use echosrv::udp::{UdpConfig, UdpEchoServer};
+use echosrv::{TcpEchoServer, UdpEchoServer, EchoServerTrait};
+use echosrv::tcp::TcpConfig;
+use echosrv::udp::UdpConfig;
 use color_eyre::eyre::{Result, WrapErr};
 use std::time::Duration;
 use tracing::info;

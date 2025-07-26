@@ -1,8 +1,10 @@
+pub mod config;
 pub mod server;
 pub mod client;
 pub mod tests;
-pub mod config;
+pub mod datagram_protocol;
 
-pub use server::*;
-pub use client::*;
-pub use config::*; 
+pub use config::UdpConfig;
+pub use server::UdpEchoServer;
+pub use client::UdpEchoClient;
+pub use datagram_protocol::UdpProtocol; 

@@ -1,6 +1,6 @@
-use echosrv::common::{EchoServer, EchoClient};
-use echosrv::tcp::{TcpConfig, TcpEchoClient, TcpEchoServer};
-use echosrv::udp::{UdpConfig, UdpEchoClient, UdpEchoServer};
+use echosrv::{TcpEchoServer, UdpEchoServer, EchoClient, EchoServerTrait};
+use echosrv::{TcpConfig, TcpEchoClient};
+use echosrv::{UdpConfig, UdpEchoClient};
 use echosrv::{Result, EchoError};
 use echosrv::common::create_controlled_test_server_with_limit;
 use std::net::SocketAddr;

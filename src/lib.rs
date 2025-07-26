@@ -22,6 +22,10 @@ pub enum EchoError {
     /// UTF-8 encoding errors
     #[error("UTF-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+
+    /// Unsupported operation errors
+    #[error("Unsupported operation: {0}")]
+    Unsupported(String),
 }
 
 /// Result type for the echosrv library
@@ -29,4 +33,9 @@ pub type Result<T> = std::result::Result<T, EchoError>;
 
 pub mod common;
 pub mod tcp;
-pub mod udp; 
+pub mod udp;
+
+// Re-export main types for convenience
+pub use common::{EchoServerTrait, EchoClient};
+pub use tcp::{TcpEchoServer, TcpEchoClient, TcpConfig};
+pub use udp::{UdpEchoServer, UdpEchoClient, UdpConfig}; 

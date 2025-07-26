@@ -1,12 +1,14 @@
 use super::*;
-use crate::common::{create_test_server, EchoServer, EchoClient};
+use crate::common::{create_test_server, EchoClient, EchoServerTrait};
+use crate::TcpEchoServer;
 use crate::{Result, EchoError};
 use std::time::Duration;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{EchoClient, EchoServer};
+    use crate::common::{EchoClient, EchoServerTrait};
+    use crate::TcpEchoServer;
 
     #[tokio::test]
     async fn test_config_default() {

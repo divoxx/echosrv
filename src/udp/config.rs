@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
+use crate::common::protocols::EchoConfig;
 
 /// UDP-specific configuration that extends the common config
 ///
@@ -36,5 +37,23 @@ impl Default for UdpConfig {
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
         }
+    }
+}
+
+impl EchoConfig for UdpConfig {
+    fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
+    }
+    
+    fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+    
+    fn read_timeout(&self) -> Duration {
+        self.read_timeout
+    }
+    
+    fn write_timeout(&self) -> Duration {
+        self.write_timeout
     }
 } 
