@@ -1,13 +1,10 @@
-pub mod config;
+//! Common traits and types used across the echosrv library
+//!
+//! This module contains the core traits that define the interface
+//! for echo servers and clients.
+
 pub mod traits;
 pub mod test_utils;
-pub mod protocols;
-pub mod stream_server;
-pub mod datagram_server;
 
-pub use config::*;
-pub use traits::*;
-pub use test_utils::*;
-pub use protocols::*;
-pub use stream_server::*;
-pub use datagram_server::*; 
+pub use traits::{EchoServerTrait, EchoClient};
+pub use test_utils::create_controlled_test_server_with_limit; 

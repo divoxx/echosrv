@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
 
             info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting TCP echo server");
 
-            let server = TcpEchoServer::new(config);
+            let server = TcpEchoServer::new(config.into());
             server.run().await.wrap_err("Failed to run TCP echo server")?;
         }
         "udp" => {
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
 
             info!(address = %config.bind_addr, "Starting UDP echo server");
 
-            let server = UdpEchoServer::new(config);
+            let server = UdpEchoServer::new(config.into());
             server.run().await.wrap_err("Failed to run UDP echo server")?;
         }
         _ => {

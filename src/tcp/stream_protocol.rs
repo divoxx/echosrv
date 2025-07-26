@@ -1,6 +1,5 @@
 use crate::EchoError;
-use crate::common::protocols::{StreamProtocol, EchoConfig};
-use super::config::TcpConfig;
+use crate::stream::{StreamProtocol, StreamConfig};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -9,14 +8,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub struct TcpProtocol;
 
 impl StreamProtocol for TcpProtocol {
-    type Config = TcpConfig;
     type Error = EchoError;
     type Listener = TcpListener;
     type Stream = TcpStream;
     
-    fn bind(config: &TcpConfig) -> impl std::future::Future<Output = std::result::Result<TcpListener, EchoError>> + Send {
+    fn bind(config: &StreamConfig) -> impl std::future::Future<Output = std::result::Result<TcpListener, EchoError>> + Send {
         async move {
-            TcpListener::bind(config.bind_addr())
+            TcpListener::bind(config.bind_addr)
                 .await
                 .map_err(|e| EchoError::Config(format!("Failed to bind TCP listener: {}", e)))
         }
@@ -28,6 +26,12 @@ impl StreamProtocol for TcpProtocol {
                 .await
                 .map_err(|e| EchoError::Tcp(e))
         }
+    }
+    
+    async fn connect(addr: SocketAddr) -> std::result::Result<TcpStream, EchoError> {
+        TcpStream::connect(addr)
+            .await
+            .map_err(|e| EchoError::Config(format!("Failed to connect to {}: {}", addr, e)))
     }
     
     fn read(stream: &mut TcpStream, buffer: &mut [u8]) -> impl std::future::Future<Output = std::result::Result<usize, EchoError>> + Send {

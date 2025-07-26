@@ -1,4 +1,4 @@
-use crate::common::StreamEchoServer;
+use crate::stream::StreamEchoServer;
 use super::stream_protocol::TcpProtocol;
 
 /// TCP echo server that handles TCP connections
@@ -24,7 +24,7 @@ use super::stream_protocol::TcpProtocol;
 ///         write_timeout: Duration::from_secs(30),
 ///     };
 ///
-///     let server = TcpEchoServer::new(config);
+///     let server = TcpEchoServer::new(config.into());
 ///     server.run().await?;
 ///     Ok(())
 /// }
@@ -40,7 +40,7 @@ use super::stream_protocol::TcpProtocol;
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = TcpConfig::default();
-///     let server = TcpEchoServer::new(config);
+///     let server = TcpEchoServer::new(config.into());
 ///     let shutdown_signal = server.shutdown_signal();
 ///
 ///     // Run server in background

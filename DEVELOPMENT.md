@@ -6,64 +6,87 @@ This document outlines the development practices, architecture decisions, and gu
 
 ### System Design
 
-The Echo Server is built around a modular, multi-protocol architecture:
+The Echo Server is built around a clean, generic, multi-protocol architecture:
 
-1. **Common Interface**: Shared traits and utilities for both TCP and UDP
-2. **Protocol-Specific Implementations**: Separate modules for TCP and UDP servers
-3. **Configuration Management**: Protocol-specific configuration structs
-4. **Client Testing**: Protocol-specific clients for testing
-5. **Connection Handling**: Async tasks handle connections/datagrams per protocol
+1. **Generic Interface**: Shared traits and utilities for both stream and datagram protocols
+2. **Protocol Trait System**: `StreamProtocol` and `DatagramProtocol` traits define protocol interfaces
+3. **Generic Implementations**: `StreamEchoServer/Client` and `DatagramEchoServer/Client` work with any protocol
+4. **Type Aliases**: Concrete TCP/UDP clients are type aliases to generic implementations
+5. **Configuration Management**: Protocol-specific configuration structs
+6. **Connection Handling**: Async tasks handle connections/datagrams per protocol
 
 ### Module Structure
 
 ```
 src/
-├── lib.rs              # Library entry point, exports common, tcp, udp modules
+├── lib.rs              # Library entry point, exports all modules
 ├── main.rs             # Binary entry point for standalone server
 ├── common/             # Shared components
 │   ├── mod.rs          # Common module exports
-│   ├── config.rs       # Shared configuration types
-│   ├── traits.rs       # Common traits for servers/clients
-│   └── test_utils.rs   # Common test utilities
+│   ├── traits.rs       # Core traits (EchoServerTrait, EchoClient)
+│   └── test_utils.rs   # Test utilities
+├── stream/             # Generic stream implementation
+│   ├── mod.rs          # Stream module exports
+│   ├── server.rs       # Generic stream server (StreamEchoServer<P>)
+│   ├── client.rs       # Generic stream client (StreamEchoClient<P>)
+│   ├── protocol.rs     # StreamProtocol trait
+│   └── config.rs       # StreamConfig
+├── datagram/           # Generic datagram implementation
+│   ├── mod.rs          # Datagram module exports
+│   ├── server.rs       # Generic datagram server (DatagramEchoServer<P>)
+│   ├── client.rs       # Generic datagram client (DatagramEchoClient<P>)
+│   ├── protocol.rs     # DatagramProtocol trait
+│   └── config.rs       # DatagramConfig
 ├── tcp/                # TCP-specific implementation
-│   ├── mod.rs          # TCP module exports
-│   ├── server.rs       # TCP server implementation
-│   ├── client.rs       # TCP client implementation
+│   ├── mod.rs          # Type aliases: TcpEchoClient = StreamEchoClient<TcpProtocol>
+│   ├── server.rs       # Type alias: TcpEchoServer = StreamEchoServer<TcpProtocol>
+│   ├── config.rs       # TcpConfig
+│   ├── stream_protocol.rs # TcpProtocol implementation
 │   └── tests.rs        # TCP-specific tests
 └── udp/                # UDP-specific implementation
-    ├── mod.rs          # UDP module exports
-    ├── server.rs       # UDP server implementation
-    ├── client.rs       # UDP client implementation
+    ├── mod.rs          # Type aliases: UdpEchoClient = DatagramEchoClient<UdpProtocol>
+    ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
+    ├── config.rs       # UdpConfig
+    ├── datagram_protocol.rs # UdpProtocol implementation
     └── tests.rs        # UDP-specific tests
 ```
 
 ### Key Design Decisions
 
-#### 1. Multi-Protocol Architecture
-- **Implementation**: Separate modules for TCP and UDP with shared traits
-- **Benefits**: Protocol-specific optimizations, clear separation of concerns
-- **Design**: Common traits ensure consistent API across protocols
+#### 1. Generic Architecture
+- **Implementation**: Generic `StreamEchoServer<P>` and `DatagramEchoServer<P>` over protocol traits
+- **Benefits**: Code reuse, extensibility, consistent API across protocols
+- **Design**: Protocol traits (`StreamProtocol`, `DatagramProtocol`) define the interface
 
-#### 2. Async Architecture
+#### 2. Type Alias Pattern
+- **Implementation**: Concrete clients are type aliases to generic implementations
+- **Benefits**: Zero-cost abstraction, familiar API, extensibility
+- **Example**: `pub type TcpEchoClient = StreamEchoClient<TcpProtocol>`
+
+#### 3. Protocol Trait System
+- **StreamProtocol**: Defines interface for stream-based protocols (TCP, Unix streams, WebSockets)
+- **DatagramProtocol**: Defines interface for datagram-based protocols (UDP, Unix datagrams)
+- **Benefits**: Easy to add new protocols, consistent interface, compile-time safety
+
+#### 4. Async Architecture
 - **Implementation**: Uses Tokio runtime for async/await support
 - **Benefits**: Efficient resource utilization, high concurrency
 
-#### 3. Error Handling Architecture
+#### 5. Error Handling Architecture
 - **Library**: Uses `thiserror` for structured error types
 - **Binary**: Uses `color-eyre` for user-friendly error reporting
 - **Benefits**: Library independence, composable errors, better debugging experience
-- **Design**: Library provides structured errors that can be easily converted to user-friendly errors in the binary
 
-#### 4. Logging
+#### 6. Logging
 - **Implementation**: Uses `tracing` for structured logging
 - **Benefits**: Configurable log levels, structured data, performance
 
-#### 5. Connection Management
+#### 7. Connection Management
 - **TCP**: Atomic connection counting with configurable limits
 - **UDP**: Stateless datagram handling
 - **Benefits**: Predictable resource usage, graceful degradation
 
-#### 6. Timeout Configuration
+#### 8. Timeout Configuration
 - **Implementation**: Configurable read/write timeouts per protocol
 - **Benefits**: Automatic cleanup, predictable behavior
 
@@ -134,25 +157,26 @@ All public APIs must be documented with:
 
 Example:
 ```rust
-/// Handles a single TCP connection with configurable timeouts
+/// Handles a single stream connection with configurable timeouts
 ///
-/// This function reads data from the socket and echoes it back.
+/// This function reads data from the stream and echoes it back.
 /// It respects the configured timeouts and buffer sizes.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use echosrv::tcp::{TcpConfig, TcpEchoServer};
+/// use echosrv::stream::{StreamConfig, StreamEchoServer};
+/// use echosrv::tcp::TcpProtocol;
 ///
-/// let config = TcpConfig::default();
-/// let server = TcpEchoServer::new(config);
+/// let config = StreamConfig::default();
+/// let server: StreamEchoServer<TcpProtocol> = StreamEchoServer::new(config);
 /// ```
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - Reading from the socket fails
-/// - Writing to the socket fails
+/// - Reading from the stream fails
+/// - Writing to the stream fails
 /// - Timeouts occur
 pub async fn handle_connection(/* ... */) -> Result<()> {
     // Implementation
@@ -214,16 +238,16 @@ pub enum EchoError {
 
 ```rust
 #[tokio::test]
-async fn test_tcp_echo_server_new_creates_valid_instance() {
-    let config = TcpConfig::default();
-    let server = TcpEchoServer::new(config);
+async fn test_stream_echo_server_new_creates_valid_instance() {
+    let config = StreamConfig::default();
+    let server: StreamEchoServer<TcpProtocol> = StreamEchoServer::new(config);
     assert!(server.shutdown_signal().receiver_count() == 0);
 }
 
 #[tokio::test]
-async fn test_udp_echo_server_new_creates_valid_instance() {
-    let config = UdpConfig::default();
-    let server = UdpEchoServer::new(config);
+async fn test_datagram_echo_server_new_creates_valid_instance() {
+    let config = DatagramConfig::default();
+    let server: DatagramEchoServer<UdpProtocol> = DatagramEchoServer::new(config);
     assert!(server.shutdown_signal().receiver_count() == 0);
 }
 ```
@@ -266,6 +290,52 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 }
 ```
 
+## Protocol Development
+
+### Adding a New Stream Protocol
+
+1. **Implement StreamProtocol trait**:
+```rust
+pub struct MyStreamProtocol;
+
+impl StreamProtocol for MyStreamProtocol {
+    type Error = MyError;
+    type Listener = MyListener;
+    type Stream = MyStream;
+    
+    async fn connect(addr: SocketAddr) -> Result<MyStream, MyError> {
+        // Implementation
+    }
+    
+    fn bind(config: &StreamConfig) -> impl Future<Output = Result<MyListener, MyError>> + Send {
+        // Implementation
+    }
+    
+    // ... other required methods
+}
+```
+
+2. **Create type aliases**:
+```rust
+pub type MyEchoServer = StreamEchoServer<MyStreamProtocol>;
+pub type MyEchoClient = StreamEchoClient<MyStreamProtocol>;
+```
+
+3. **Add tests**:
+```rust
+#[tokio::test]
+async fn test_my_protocol_echo() -> Result<()> {
+    let mut client: StreamEchoClient<MyStreamProtocol> = StreamEchoClient::connect(addr).await?;
+    let response = client.echo_string("test").await?;
+    assert_eq!(response, "test");
+    Ok(())
+}
+```
+
+### Adding a New Datagram Protocol
+
+Similar process but implement `DatagramProtocol` trait instead.
+
 ## Performance Considerations
 
 ### Memory Management
@@ -291,12 +361,12 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 
 ### Protocol-Specific Optimizations
 
-#### TCP
+#### Stream Protocols (TCP, Unix streams)
 - Connection pooling for high-load scenarios
 - Keep-alive connections for repeated requests
 - Connection limits to prevent resource exhaustion
 
-#### UDP
+#### Datagram Protocols (UDP, Unix datagrams)
 - Datagram size optimization
 - Connectionless nature allows for stateless scaling
 - Consider batching for high-throughput scenarios
@@ -312,19 +382,19 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 
 ### Resource Management
 
-- Limit maximum connections to prevent DoS (TCP)
+- Limit maximum connections to prevent DoS (stream protocols)
 - Implement timeouts to prevent hanging connections
 - Use proper error handling to prevent information leakage
 - Consider implementing connection rate limiting
 
 ### Protocol-Specific Security
 
-#### TCP
+#### Stream Protocols
 - Connection limits prevent DoS attacks
 - Timeout configuration prevents hanging connections
 - Graceful shutdown ensures clean resource cleanup
 
-#### UDP
+#### Datagram Protocols
 - Stateless nature reduces attack surface
 - Datagram size limits prevent amplification attacks
 - Timeout configuration prevents resource exhaustion
@@ -335,10 +405,10 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 
 1. **Configuration File Support**: Load configuration from files
 2. **Metrics Collection**: Prometheus metrics for monitoring
-3. **Connection Pooling**: Reuse connections for better performance (TCP)
-4. **Protocol Extensions**: Support for custom protocols
-5. **TLS Support**: Secure connections with TLS (TCP)
-6. **DTLS Support**: Secure datagram transport (UDP)
+3. **Connection Pooling**: Reuse connections for better performance (stream protocols)
+4. **Protocol Extensions**: Support for Unix streams, WebSockets, etc.
+5. **TLS Support**: Secure connections with TLS (stream protocols)
+6. **DTLS Support**: Secure datagram transport (datagram protocols)
 
 ### Architecture Improvements
 
@@ -346,7 +416,7 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 2. **Middleware Support**: Request/response processing pipeline
 3. **Health Checks**: Built-in health check endpoints
 4. **Graceful Reload**: Configuration reload without restart
-5. **Protocol Bridging**: Bridge between TCP and UDP
+5. **Protocol Bridging**: Bridge between stream and datagram protocols
 
 ## Contributing
 
@@ -382,6 +452,8 @@ Types:
 - `chore`: Maintenance tasks
 
 Scopes:
+- `stream`: Stream protocol changes
+- `datagram`: Datagram protocol changes
 - `tcp`: TCP-specific changes
 - `udp`: UDP-specific changes
 - `common`: Shared component changes
@@ -422,12 +494,12 @@ Scopes:
 
 ### Protocol-Specific Debugging
 
-#### TCP
+#### Stream Protocols
 - Monitor connection counts and limits
 - Check for connection leaks
 - Verify timeout configurations
 
-#### UDP
+#### Datagram Protocols
 - Monitor datagram sizes and rates
 - Check for packet loss
 - Verify timeout configurations 

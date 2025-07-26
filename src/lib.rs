@@ -32,10 +32,14 @@ pub enum EchoError {
 pub type Result<T> = std::result::Result<T, EchoError>;
 
 pub mod common;
+pub mod datagram;
+pub mod stream;
 pub mod tcp;
 pub mod udp;
 
 // Re-export main types for convenience
 pub use common::{EchoServerTrait, EchoClient};
+pub use datagram::{DatagramConfig, DatagramEchoServer, DatagramEchoClient};
+pub use stream::{StreamConfig, StreamEchoServer, StreamEchoClient};
 pub use tcp::{TcpEchoServer, TcpEchoClient, TcpConfig};
 pub use udp::{UdpEchoServer, UdpEchoClient, UdpConfig}; 

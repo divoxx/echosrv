@@ -1,6 +1,6 @@
 use crate::{Result, EchoError};
-use crate::common::protocols::{StreamProtocol, EchoConfig};
-use crate::common::traits::EchoServerTrait;
+use crate::common::EchoServerTrait;
+use super::{StreamConfig, StreamProtocol};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,21 +11,51 @@ use tokio::{
 use tracing::{error, info, warn, Instrument};
 
 /// Generic stream-based echo server that works with any stream protocol
+///
+/// This server can work with any protocol that implements `StreamProtocol`,
+/// such as TCP, Unix streams, etc.
+///
+/// # Examples
+///
+/// Basic server setup and running:
+///
+/// ```no_run
+/// use echosrv::stream::{StreamConfig, StreamEchoServer};
+/// use echosrv::common::EchoServerTrait;
+/// use echosrv::tcp::TcpProtocol;
+/// use std::time::Duration;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let config = StreamConfig {
+///         bind_addr: "127.0.0.1:8080".parse()?,
+///         max_connections: 100,
+///         buffer_size: 1024,
+///         read_timeout: Duration::from_secs(30),
+///         write_timeout: Duration::from_secs(30),
+///     };
+///
+///     let server: StreamEchoServer<TcpProtocol> = StreamEchoServer::new(config);
+///     server.run().await?;
+///     Ok(())
+/// }
+/// ```
 pub struct StreamEchoServer<P: StreamProtocol> {
-    config: P::Config,
+    config: StreamConfig,
+    protocol: std::marker::PhantomData<P>,
     shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl<P: StreamProtocol> StreamEchoServer<P> 
 where
-    P::Config: Clone + Send + 'static,
     P::Error: Into<EchoError> + std::fmt::Display,
 {
     /// Creates a new stream-based echo server with the given configuration
-    pub fn new(config: P::Config) -> Self {
+    pub fn new(config: StreamConfig) -> Self {
         let (shutdown_signal, _) = tokio::sync::broadcast::channel(1);
         Self {
             config,
+            protocol: std::marker::PhantomData,
             shutdown_signal: Arc::new(shutdown_signal),
         }
     }
@@ -34,13 +64,13 @@ where
     async fn handle_connection(
         mut stream: P::Stream,
         addr: SocketAddr,
-        config: P::Config,
+        config: StreamConfig,
     ) -> Result<()> {
-        let mut buffer = vec![0; config.buffer_size()];
+        let mut buffer = vec![0; config.buffer_size];
 
         loop {
             // Read with timeout
-            let read_result = timeout(config.read_timeout(), P::read(&mut stream, &mut buffer)).await;
+            let read_result = timeout(config.read_timeout, P::read(&mut stream, &mut buffer)).await;
             let n = match read_result {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
@@ -62,7 +92,7 @@ where
             info!(%addr, size = n, preview = %preview, "Received data");
 
             // Echo back the received data with timeout
-            let write_result = timeout(config.write_timeout(), P::write(&mut stream, &buffer[..n])).await;
+            let write_result = timeout(config.write_timeout, P::write(&mut stream, &buffer[..n])).await;
             match write_result {
                 Ok(Ok(())) => {
                     P::flush(&mut stream).await.map_err(|e| e.into())?;
@@ -84,15 +114,14 @@ where
 
 impl<P: StreamProtocol> EchoServerTrait for StreamEchoServer<P> 
 where
-    P::Config: Clone + Send + 'static,
     P::Error: Into<EchoError> + std::fmt::Display,
     P::Stream: 'static,
 {
-    /// Starts the stream-based echo server and listens for connections
+        /// Starts the stream-based echo server and listens for connections
     async fn run(&self) -> Result<()> {
         let mut listener = P::bind(&self.config).await.map_err(|e| e.into())?;
 
-        info!(address = %self.config.bind_addr(), "Stream echo server listening");
+        info!(address = %self.config.bind_addr, "Stream echo server listening");
 
         let connection_count = Arc::new(AtomicUsize::new(0));
         let mut shutdown_rx = self.shutdown_signal.subscribe();
@@ -103,8 +132,8 @@ where
                     match accept_result {
                         Ok((stream, addr)) => {
                             let current_count = connection_count.load(Ordering::SeqCst);
-                            if current_count >= self.config.max_connections() {
-                                warn!(%addr, current = current_count, limit = self.config.max_connections(), "Connection rejected: limit reached");
+                            if current_count >= self.config.max_connections {
+                                warn!(%addr, current = current_count, limit = self.config.max_connections, "Connection rejected: limit reached");
                                 continue;
                             }
 

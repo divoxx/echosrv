@@ -1,4 +1,4 @@
-use crate::common::DatagramEchoServer;
+use crate::datagram::DatagramEchoServer;
 use super::datagram_protocol::UdpProtocol;
 
 /// UDP echo server that handles UDP datagrams
@@ -23,7 +23,7 @@ use super::datagram_protocol::UdpProtocol;
 ///         write_timeout: Duration::from_secs(30),
 ///     };
 ///
-///     let server = UdpEchoServer::new(config);
+///     let server = UdpEchoServer::new(config.into());
 ///     server.run().await?;
 ///     Ok(())
 /// }
@@ -39,7 +39,7 @@ use super::datagram_protocol::UdpProtocol;
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = UdpConfig::default();
-///     let server = UdpEchoServer::new(config);
+///     let server = UdpEchoServer::new(config.into());
 ///     let shutdown_signal = server.shutdown_signal();
 ///
 ///     // Run server in background

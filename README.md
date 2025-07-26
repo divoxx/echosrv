@@ -11,6 +11,7 @@ A high-performance async echo server library built with Tokio, supporting both T
 - **Flexible**: Use as a library in your Rust projects or standalone executable
 - **Reliable**: Built with proper error handling and connection management
 - **High Performance**: Async I/O with Tokio runtime
+- **Extensible**: Generic architecture supports future protocols
 
 ## Quick Start
 
@@ -92,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Unicode Support**: Full UTF-8 support
 - **Structured Logging**: Built-in observability with tracing
 - **Common Interface**: Shared traits for consistent API across protocols
+- **Generic Architecture**: Extensible for future protocols (Unix streams, WebSockets, etc.)
 
 ## Use Cases
 
@@ -163,22 +165,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Generic Clients
+
+For extensibility, you can also use the generic client implementations:
+
+```rust
+use echosrv::stream::StreamEchoClient;
+use echosrv::datagram::DatagramEchoClient;
+use echosrv::tcp::TcpProtocol;
+use echosrv::udp::UdpProtocol;
+
+// Generic stream client with TCP protocol
+let mut tcp_client: StreamEchoClient<TcpProtocol> = StreamEchoClient::connect(addr).await?;
+
+// Generic datagram client with UDP protocol
+let mut udp_client: DatagramEchoClient<UdpProtocol> = DatagramEchoClient::connect(addr).await?;
+
+// Both work identically to the concrete clients
+let response = client.echo_string("Hello!").await?;
+```
+
 ## Architecture
 
-The library is organized into modules for better maintainability:
+The library uses a clean, generic architecture for maximum extensibility:
 
-- **`common/`**: Shared components, traits, and utilities
-- **`tcp/`**: TCP-specific server and client implementations
-- **`udp/`**: UDP-specific server and client implementations
+### Module Structure
+
+```
+src/
+├── common/             # Shared components
+│   ├── traits.rs       # Core traits (EchoServerTrait, EchoClient)
+│   └── test_utils.rs   # Test utilities
+├── stream/             # Generic stream implementation
+│   ├── client.rs       # Generic stream client
+│   ├── server.rs       # Generic stream server
+│   ├── protocol.rs     # StreamProtocol trait
+│   └── config.rs       # StreamConfig
+├── datagram/           # Generic datagram implementation
+│   ├── client.rs       # Generic datagram client
+│   ├── server.rs       # Generic datagram server
+│   ├── protocol.rs     # DatagramProtocol trait
+│   └── config.rs       # DatagramConfig
+├── tcp/                # TCP-specific implementation
+│   ├── mod.rs          # Type aliases for TCP
+│   ├── server.rs       # Type alias: TcpEchoServer = StreamEchoServer<TcpProtocol>
+│   ├── config.rs       # TcpConfig
+│   └── stream_protocol.rs # TcpProtocol implementation
+├── udp/                # UDP-specific implementation
+│   ├── mod.rs          # Type aliases for UDP
+│   ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
+│   ├── config.rs       # UdpConfig
+│   └── datagram_protocol.rs # UdpProtocol implementation
+├── lib.rs              # Main library exports
+└── main.rs             # Binary entry point
+```
+
+### Design Philosophy
+
+- **Generic Architecture**: Stream and datagram clients/servers are generic over protocol implementations
+- **Type Aliases**: Concrete clients (`TcpEchoClient`, `UdpEchoClient`) are type aliases to generic implementations
+- **Protocol Traits**: `StreamProtocol` and `DatagramProtocol` traits define the interface for protocol implementations
+- **Extensibility**: Easy to add new protocols (Unix streams, WebSockets, etc.) by implementing the protocol traits
 
 ### Common Traits
 
 Both TCP and UDP implementations share common traits for consistency:
 
 ```rust
-use echosrv::common::{EchoServer, EchoClient};
+use echosrv::common::{EchoServerTrait, EchoClient};
 
-// Both TcpEchoServer and UdpEchoServer implement EchoServer
+// Both TcpEchoServer and UdpEchoServer implement EchoServerTrait
 // Both TcpEchoClient and UdpEchoClient implement EchoClient
 ```
 

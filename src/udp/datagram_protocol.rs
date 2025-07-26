@@ -1,6 +1,5 @@
 use crate::EchoError;
-use crate::common::protocols::{DatagramProtocol, EchoConfig};
-use super::config::UdpConfig;
+use crate::datagram::{DatagramProtocol, DatagramConfig};
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
@@ -8,13 +7,12 @@ use tokio::net::UdpSocket;
 pub struct UdpProtocol;
 
 impl DatagramProtocol for UdpProtocol {
-    type Config = UdpConfig;
     type Error = EchoError;
     type Socket = UdpSocket;
     
-    fn bind(config: &UdpConfig) -> impl std::future::Future<Output = std::result::Result<UdpSocket, EchoError>> + Send {
+    fn bind(config: &DatagramConfig) -> impl std::future::Future<Output = std::result::Result<UdpSocket, EchoError>> + Send {
         async move {
-            UdpSocket::bind(config.bind_addr())
+            UdpSocket::bind(config.bind_addr)
                 .await
                 .map_err(|e| EchoError::Config(format!("Failed to bind UDP socket: {}", e)))
         }

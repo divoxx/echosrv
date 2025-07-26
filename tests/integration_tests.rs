@@ -3,12 +3,8 @@ use echosrv::{TcpConfig, TcpEchoClient};
 use echosrv::{UdpConfig, UdpEchoClient};
 use echosrv::{Result, EchoError};
 use echosrv::common::create_controlled_test_server_with_limit;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
 };
 use tracing::{error, info};
@@ -130,7 +126,7 @@ async fn test_tcp_connection_limit() -> Result<()> {
         write_timeout: Duration::from_secs(30),
     };
 
-    let server = TcpEchoServer::new(config);
+    let server = TcpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(10),
@@ -299,7 +295,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
     };
 
     let listener = TcpListener::bind(config.bind_addr).await?;
-    let addr = listener.local_addr()?;
+    let addr = listener.local_addr()?.into();
     drop(listener);
 
     let config = TcpConfig {
@@ -310,7 +306,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
         write_timeout: Duration::from_millis(100),
     };
 
-    let server = TcpEchoServer::new(config);
+    let server = TcpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(5),
@@ -339,7 +335,7 @@ async fn test_udp_timeout_configuration() -> Result<()> {
         write_timeout: Duration::from_millis(100),
     };
 
-    let server = UdpEchoServer::new(config);
+    let server = UdpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
         tokio::time::timeout(
             Duration::from_secs(5),

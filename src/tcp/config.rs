@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
-use crate::common::protocols::EchoConfig;
+use crate::stream::StreamConfig;
 
 /// TCP-specific configuration that extends the common config
 ///
@@ -44,24 +44,16 @@ impl Default for TcpConfig {
     }
 }
 
-impl EchoConfig for TcpConfig {
-    fn bind_addr(&self) -> SocketAddr {
-        self.bind_addr
-    }
-    
-    fn buffer_size(&self) -> usize {
-        self.buffer_size
-    }
-    
-    fn read_timeout(&self) -> Duration {
-        self.read_timeout
-    }
-    
-    fn write_timeout(&self) -> Duration {
-        self.write_timeout
-    }
-    
-    fn max_connections(&self) -> usize {
-        self.max_connections
+
+
+impl From<TcpConfig> for StreamConfig {
+    fn from(config: TcpConfig) -> Self {
+        Self {
+            bind_addr: config.bind_addr,
+            max_connections: config.max_connections,
+            buffer_size: config.buffer_size,
+            read_timeout: config.read_timeout,
+            write_timeout: config.write_timeout,
+        }
     }
 } 
