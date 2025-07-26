@@ -1,10 +1,10 @@
 # Echo Server
 
-A high-performance async echo server library built with Tokio, supporting both TCP and UDP protocols. Perfect for development, testing, and when you need a network service with predictable, verifiable behavior.
+A high-performance async echo server library built with Tokio, supporting TCP, UDP, HTTP, and Unix domain socket protocols. Perfect for development, testing, and when you need a network service with predictable, verifiable behavior.
 
 ## Why Echo Server?
 
-- **Multi-Protocol**: Supports TCP, UDP, and Unix domain sockets (stream and datagram)
+- **Multi-Protocol**: Supports TCP, UDP, HTTP, and Unix domain sockets (stream and datagram)
 - **Predictable**: Always echoes back exactly what you send - no surprises
 - **Simple**: Minimal configuration, just start it and it works
 - **Verifiable**: Easy to test - send data, get the same data back
@@ -36,6 +36,12 @@ cargo run unix-stream /tmp/echo.sock
 # Run Unix domain datagram server
 cargo run unix-dgram /tmp/echo_dgram.sock
 
+# Run HTTP server on default port 8080
+cargo run http
+
+# Run HTTP server on specific port
+cargo run http 9000
+
 # Test TCP with netcat
 echo "Hello!" | nc localhost 8080
 
@@ -44,6 +50,9 @@ echo "Hello!" | nc -u localhost 8080
 
 # Test Unix domain socket with socat
 echo "Hello!" | socat - UNIX-CONNECT:/tmp/echo.sock
+
+# Test HTTP with curl
+curl -X POST -d "Hello, HTTP!" http://localhost:8080/
 ```
 
 ### As a Library
@@ -90,6 +99,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+#### HTTP Server
+
+```rust
+use echosrv::http::{HttpConfig, HttpEchoServer};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = HttpConfig {
+        bind_addr: "127.0.0.1:8080".parse()?,
+        max_connections: 100,
+        buffer_size: 8192,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+        server_name: Some("EchoServer/1.0".to_string()),
+        echo_headers: true,
+        default_content_type: Some("text/plain".to_string()),
+    };
+
+    let server = HttpEchoServer::new(config.into());
+    server.run().await?;
+    Ok(())
+}
+```
+
+**Note**: The HTTP echo server only accepts POST requests and echoes back only the request body content (no HTTP headers). Non-POST requests receive a 405 Method Not Allowed response.
 
 #### Unix Domain Stream Server
 
@@ -260,6 +296,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### HTTP Client
+
+```rust
+use echosrv::http::HttpEchoClient;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = "127.0.0.1:8080".parse()?;
+    let mut client = HttpEchoClient::connect(addr).await?;
+    
+    let response = client.echo_string("Hello, HTTP Server!").await?;
+    println!("Server echoed: {}", response);
+    Ok(())
+}
+```
+
+**Note**: The HTTP client sends POST requests and receives only the body content in response.
+
 ### Unix Domain Datagram Client
 
 ```rust
@@ -336,6 +390,12 @@ src/
 │   ├── stream_protocol.rs # UnixStreamProtocol implementation
 │   ├── datagram_protocol.rs # UnixDatagramProtocol implementation
 │   └── tests.rs        # Unix domain socket tests
+├── http/               # HTTP protocol implementation
+│   ├── mod.rs          # Module exports and type aliases
+│   ├── config.rs       # HttpConfig
+│   ├── protocol.rs     # HttpProtocol implementation
+│   ├── client.rs       # HttpEchoClient type alias
+│   └── tests.rs        # HTTP protocol unit tests
 ├── lib.rs              # Main library exports
 └── main.rs             # Binary entry point
 ```

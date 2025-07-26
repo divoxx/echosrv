@@ -1,4 +1,5 @@
 use thiserror::Error;
+use crate::http::protocol::HttpProtocolError;
 
 /// Error types for the echosrv library
 #[derive(Error, Debug)]
@@ -32,6 +33,17 @@ pub enum EchoError {
     Unsupported(String),
 }
 
+impl From<HttpProtocolError> for EchoError {
+    fn from(err: HttpProtocolError) -> Self {
+        match err {
+            HttpProtocolError::Io(e) => EchoError::Tcp(e),
+            HttpProtocolError::HttpParse(msg) => EchoError::Config(msg),
+            HttpProtocolError::InvalidRequest(msg) => EchoError::Config(msg),
+            HttpProtocolError::IncompleteRequest => EchoError::Config("Incomplete HTTP request".to_string()),
+        }
+    }
+}
+
 /// Result type for the echosrv library
 pub type Result<T> = std::result::Result<T, EchoError>;
 
@@ -41,6 +53,7 @@ pub mod stream;
 pub mod tcp;
 pub mod udp;
 pub mod unix;
+pub mod http;
 
 // Re-export main types for convenience
 pub use common::{EchoServerTrait, EchoClient};
@@ -48,4 +61,5 @@ pub use datagram::{DatagramConfig, DatagramEchoServer, DatagramEchoClient};
 pub use stream::{StreamConfig, StreamEchoServer, StreamEchoClient};
 pub use tcp::{TcpEchoServer, TcpEchoClient, TcpConfig};
 pub use udp::{UdpEchoServer, UdpEchoClient, UdpConfig};
-pub use unix::{UnixStreamEchoServer, UnixStreamEchoClient, UnixStreamConfig, UnixDatagramEchoServer, UnixDatagramEchoClient, UnixDatagramConfig}; 
+pub use unix::{UnixStreamEchoServer, UnixStreamEchoClient, UnixStreamConfig, UnixDatagramEchoServer, UnixDatagramEchoClient, UnixDatagramConfig};
+pub use http::{HttpConfig, HttpProtocol, HttpEchoServer, HttpEchoClient}; 

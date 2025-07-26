@@ -57,6 +57,12 @@ src/
     ├── stream_protocol.rs # UnixStreamProtocol implementation
     ├── datagram_protocol.rs # UnixDatagramProtocol implementation
     └── tests.rs        # Unix domain socket tests
+└── http/               # HTTP protocol implementation
+    ├── mod.rs          # Module exports and type aliases
+    ├── config.rs       # HttpConfig
+    ├── protocol.rs     # HttpProtocol implementation
+    ├── client.rs       # HttpEchoClient type alias
+    └── tests.rs        # HTTP protocol unit tests
 ```
 
 ### Key Design Decisions
@@ -127,6 +133,7 @@ RUST_LOG=info cargo test -- --nocapture
 # Test specific protocol
 cargo test --test integration_tests test_tcp
 cargo test --test integration_tests test_udp
+cargo test --test integration_tests test_http
 ```
 
 ### Development Workflow
@@ -361,6 +368,68 @@ Key considerations for Unix domain sockets:
 - Anonymous socket support for datagram clients
 - Path-based addressing instead of network addresses
 - Proper error handling for Unix-specific operations
+
+### HTTP Protocol Implementation
+
+The HTTP protocol implementation demonstrates how to add a protocol that requires custom request/response handling:
+
+1. **Protocol Design**: HTTP requires parsing headers and handling request/response framing
+2. **Buffer Management**: HTTP requests may be split across multiple reads, requiring buffering
+3. **Method Validation**: Only POST requests are accepted, others return 405 Method Not Allowed
+4. **Response Generation**: HTTP responses include proper headers and status codes
+5. **Error Handling**: Graceful handling of malformed requests and incomplete data
+
+Key considerations for HTTP protocol:
+- HTTP header parsing using `httparse` crate
+- Request body extraction after header parsing
+- **Body-only echo**: POST requests echo only the body content (no HTTP headers)
+- **Error responses**: Non-POST requests receive proper HTTP 405 responses with headers
+- Method validation and error responses
+- Buffer management for large requests
+
+#### HTTP Protocol Testing
+
+The HTTP protocol includes comprehensive testing:
+
+**Unit Tests** (`src/http/tests.rs`):
+- Protocol binding and connection tests
+- Simple POST request handling
+- Method validation (405 responses for non-POST)
+- Incomplete request handling
+
+**Integration Tests** (`tests/integration_tests.rs`):
+- Basic HTTP echo functionality (body-only responses)
+- Large payload handling (500+ byte requests)
+- Concurrent client testing
+- Malformed request handling
+- Different HTTP method testing (405 responses)
+- Header preservation verification
+
+**Test Coverage**:
+```bash
+# Run HTTP unit tests
+cargo test http::tests
+
+# Run HTTP integration tests
+cargo test test_http
+
+# Run all HTTP tests with output
+cargo test test_http -- --nocapture
+```
+
+**Recent Improvements**:
+- **Simplified HTTP response handling**: Removed complex HTTP response formatting for POST requests
+- **Body-only echo**: POST requests now echo only the request body content without HTTP headers
+- **Clean error handling**: Non-POST requests still receive proper HTTP 405 responses
+- **Removed debug output**: Clean test output without debug print statements
+- **Optimized dependencies**: Removed unused HTTP response formatting functions
+
+**Example HTTP Test Output**:
+```
+test test_http_echo_post ... ok
+# POST requests echo only the body content (no headers)
+# Non-POST requests return proper HTTP error responses
+```
 
 ## Performance Considerations
 
