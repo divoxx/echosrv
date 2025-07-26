@@ -1,14 +1,14 @@
 [package]
 name = "echosrv"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "A high-performance async echo server library built with Tokio for testing and development"
+description = "A high-performance set of async echo server library built with Tokio for testing and development environments"
 license = "MIT"
 repository = "https://github.com/divoxx/echosrv"
 homepage = "https://github.com/divoxx/echosrv"
 documentation = "https://docs.rs/echosrv"
 readme = "README.md"
-keywords = ["echo", "server", "tcp", "udp", "async"]
+keywords = ["echo", "server", "async"]
 categories = ["network-programming", "asynchronous", "command-line-utilities"]
 authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 
