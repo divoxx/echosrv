@@ -12,20 +12,16 @@ impl StreamProtocol for TcpProtocol {
     type Listener = TcpListener;
     type Stream = TcpStream;
     
-    fn bind(config: &StreamConfig) -> impl std::future::Future<Output = std::result::Result<TcpListener, EchoError>> + Send {
-        async move {
-            TcpListener::bind(config.bind_addr)
-                .await
-                .map_err(|e| EchoError::Config(format!("Failed to bind TCP listener: {}", e)))
-        }
+    async fn bind(config: &StreamConfig) -> std::result::Result<TcpListener, EchoError> {
+        TcpListener::bind(config.bind_addr)
+            .await
+            .map_err(|e| EchoError::Config(format!("Failed to bind TCP listener: {}", e)))
     }
     
-    fn accept(listener: &mut TcpListener) -> impl std::future::Future<Output = std::result::Result<(TcpStream, SocketAddr), EchoError>> + Send {
-        async move {
-            listener.accept()
-                .await
-                .map_err(|e| EchoError::Tcp(e))
-        }
+    async fn accept(listener: &mut TcpListener) -> std::result::Result<(TcpStream, SocketAddr), EchoError> {
+        listener.accept()
+            .await
+            .map_err(|e| EchoError::Tcp(e))
     }
     
     async fn connect(addr: SocketAddr) -> std::result::Result<TcpStream, EchoError> {
@@ -34,22 +30,16 @@ impl StreamProtocol for TcpProtocol {
             .map_err(|e| EchoError::Config(format!("Failed to connect to {}: {}", addr, e)))
     }
     
-    fn read(stream: &mut TcpStream, buffer: &mut [u8]) -> impl std::future::Future<Output = std::result::Result<usize, EchoError>> + Send {
-        async move {
-            stream.read(buffer).await.map_err(EchoError::Tcp)
-        }
+    async fn read(stream: &mut TcpStream, buffer: &mut [u8]) -> std::result::Result<usize, EchoError> {
+        stream.read(buffer).await.map_err(EchoError::Tcp)
     }
     
-    fn write(stream: &mut TcpStream, data: &[u8]) -> impl std::future::Future<Output = std::result::Result<(), EchoError>> + Send {
-        async move {
-            stream.write_all(data).await.map_err(EchoError::Tcp)
-        }
+    async fn write(stream: &mut TcpStream, data: &[u8]) -> std::result::Result<(), EchoError> {
+        stream.write_all(data).await.map_err(EchoError::Tcp)
     }
     
-    fn flush(stream: &mut TcpStream) -> impl std::future::Future<Output = std::result::Result<(), EchoError>> + Send {
-        async move {
-            stream.flush().await.map_err(EchoError::Tcp)
-        }
+    async fn flush(stream: &mut TcpStream) -> std::result::Result<(), EchoError> {
+        stream.flush().await.map_err(EchoError::Tcp)
     }
     
     fn map_io_error(err: std::io::Error) -> EchoError {

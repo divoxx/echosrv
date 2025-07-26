@@ -4,7 +4,7 @@ A high-performance async echo server library built with Tokio, supporting both T
 
 ## Why Echo Server?
 
-- **Multi-Protocol**: Supports both TCP and UDP protocols
+- **Multi-Protocol**: Supports TCP, UDP, and Unix domain sockets (stream and datagram)
 - **Predictable**: Always echoes back exactly what you send - no surprises
 - **Simple**: Minimal configuration, just start it and it works
 - **Verifiable**: Easy to test - send data, get the same data back
@@ -30,11 +30,20 @@ cargo run tcp 9000
 # Run UDP server on specific port
 cargo run udp 9090
 
+# Run Unix domain stream server
+cargo run unix-stream /tmp/echo.sock
+
+# Run Unix domain datagram server
+cargo run unix-dgram /tmp/echo_dgram.sock
+
 # Test TCP with netcat
 echo "Hello!" | nc localhost 8080
 
 # Test UDP with netcat
 echo "Hello!" | nc -u localhost 8080
+
+# Test Unix domain socket with socat
+echo "Hello!" | socat - UNIX-CONNECT:/tmp/echo.sock
 ```
 
 ### As a Library
@@ -82,18 +91,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Unix Domain Stream Server
+
+```rust
+use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = UnixStreamConfig {
+        socket_path: "/tmp/echo.sock".into(),
+        max_connections: 100,
+        buffer_size: 1024,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+    };
+
+    let server = UnixStreamEchoServer::new(config);
+    server.run().await?;
+    Ok(())
+}
+```
+
+#### Unix Domain Datagram Server
+
+```rust
+use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = UnixDatagramConfig {
+        socket_path: "/tmp/echo_dgram.sock".into(),
+        buffer_size: 1024,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+    };
+
+    let server = UnixDatagramEchoServer::new(config);
+    server.run().await?;
+    Ok(())
+}
+```
+
 ## Features
 
-- **Multi-Protocol Support**: Both TCP and UDP echo servers
+- **Multi-Protocol Support**: TCP, UDP, and Unix domain sockets (stream and datagram)
 - **High Performance**: Async I/O with Tokio runtime
-- **Connection Limits**: Configurable maximum concurrent connections (TCP)
-- **Timeouts**: Configurable read/write timeouts for both protocols
+- **Connection Limits**: Configurable maximum concurrent connections (TCP/Unix stream)
+- **Timeouts**: Configurable read/write timeouts for all protocols
 - **Graceful Shutdown**: Responds to SIGINT/SIGTERM
 - **Binary Data Support**: Handles any data type, not just text
 - **Unicode Support**: Full UTF-8 support
 - **Structured Logging**: Built-in observability with tracing
 - **Common Interface**: Shared traits for consistent API across protocols
-- **Generic Architecture**: Extensible for future protocols (Unix streams, WebSockets, etc.)
+- **Generic Architecture**: Extensible for future protocols (WebSockets, TLS, etc.)
+- **Unix Domain Sockets**: Efficient inter-process communication on Unix systems
 
 ## Use Cases
 
@@ -101,8 +154,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Network Validation**: Verify network connectivity and port availability
 - **Client Testing**: Test network clients that need a server to connect to
 - **Development**: Quick setup when you need a service listening on a port
-- **Learning**: Understand how TCP/UDP servers work with predictable behavior
-- **Protocol Comparison**: Test and compare TCP vs UDP behavior
+- **Learning**: Understand how TCP/UDP/Unix domain servers work with predictable behavior
+- **Protocol Comparison**: Test and compare different transport protocols
+- **Inter-Process Communication**: Unix domain sockets for efficient local communication
+- **Container Communication**: Unix domain sockets for container-to-container communication
 
 ## Configuration
 
@@ -126,6 +181,29 @@ let config = UdpConfig {
     buffer_size: 1024,            // Read/write buffer size
     read_timeout: Duration::from_secs(30),   // Read timeout
     write_timeout: Duration::from_secs(30),  // Write timeout
+};
+```
+
+### Unix Domain Stream Configuration
+
+```rust
+let config = UnixStreamConfig {
+    socket_path: "/tmp/echo.sock".into(),    // Unix socket file path
+    max_connections: 100,                     // Max concurrent connections
+    buffer_size: 1024,                       // Read/write buffer size
+    read_timeout: Duration::from_secs(30),   // Read timeout
+    write_timeout: Duration::from_secs(30),  // Write timeout
+};
+```
+
+### Unix Domain Datagram Configuration
+
+```rust
+let config = UnixDatagramConfig {
+    socket_path: "/tmp/echo_dgram.sock".into(), // Unix socket file path
+    buffer_size: 1024,                          // Read/write buffer size
+    read_timeout: Duration::from_secs(30),      // Read timeout
+    write_timeout: Duration::from_secs(30),     // Write timeout
 };
 ```
 
@@ -160,6 +238,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = UdpEchoClient::connect(addr).await?;
     
     let response = client.echo_string("Hello, UDP Server!").await?;
+    println!("Server echoed: {}", response);
+    Ok(())
+}
+```
+
+### Unix Domain Stream Client
+
+```rust
+use echosrv::unix::UnixStreamEchoClient;
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = PathBuf::from("/tmp/echo.sock");
+    let mut client = UnixStreamEchoClient::connect(socket_path).await?;
+    
+    let response = client.echo_string("Hello, Unix Stream Server!").await?;
+    println!("Server echoed: {}", response);
+    Ok(())
+}
+```
+
+### Unix Domain Datagram Client
+
+```rust
+use echosrv::unix::UnixDatagramEchoClient;
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = PathBuf::from("/tmp/echo_dgram.sock");
+    let mut client = UnixDatagramEchoClient::connect(socket_path).await?;
+    
+    let response = client.echo_string("Hello, Unix Datagram Server!").await?;
     println!("Server echoed: {}", response);
     Ok(())
 }
@@ -216,6 +328,14 @@ src/
 │   ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
 │   ├── config.rs       # UdpConfig
 │   └── datagram_protocol.rs # UdpProtocol implementation
+├── unix/               # Unix domain socket implementation
+│   ├── mod.rs          # Module exports and type aliases
+│   ├── config.rs       # UnixStreamConfig, UnixDatagramConfig
+│   ├── server.rs       # UnixStreamEchoServer, UnixDatagramEchoServer
+│   ├── client.rs       # UnixStreamEchoClient, UnixDatagramEchoClient
+│   ├── stream_protocol.rs # UnixStreamProtocol implementation
+│   ├── datagram_protocol.rs # UnixDatagramProtocol implementation
+│   └── tests.rs        # Unix domain socket tests
 ├── lib.rs              # Main library exports
 └── main.rs             # Binary entry point
 ```

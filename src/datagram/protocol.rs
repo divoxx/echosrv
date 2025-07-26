@@ -13,13 +13,13 @@ pub trait DatagramProtocol {
     type Socket: Send;
     
     /// Binds a socket to the given configuration
-    fn bind(config: &DatagramConfig) -> impl Future<Output = std::result::Result<Self::Socket, Self::Error>> + Send;
+    async fn bind(config: &DatagramConfig) -> std::result::Result<Self::Socket, Self::Error>;
     
     /// Receives data from a socket
-    fn recv_from(socket: &Self::Socket, buffer: &mut [u8]) -> impl Future<Output = std::result::Result<(usize, SocketAddr), Self::Error>> + Send;
+    async fn recv_from(socket: &Self::Socket, buffer: &mut [u8]) -> std::result::Result<(usize, SocketAddr), Self::Error>;
     
     /// Sends data to a specific address
-    fn send_to(socket: &Self::Socket, data: &[u8], addr: SocketAddr) -> impl Future<Output = std::result::Result<usize, Self::Error>> + Send;
+    async fn send_to(socket: &Self::Socket, data: &[u8], addr: SocketAddr) -> std::result::Result<usize, Self::Error>;
     
     /// Maps a standard IO error to this protocol's error type
     fn map_io_error(err: std::io::Error) -> Self::Error;

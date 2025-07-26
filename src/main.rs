@@ -1,6 +1,7 @@
-use echosrv::{TcpEchoServer, UdpEchoServer, EchoServerTrait};
+use echosrv::{TcpEchoServer, UdpEchoServer, UnixStreamEchoServer, UnixDatagramEchoServer, EchoServerTrait};
 use echosrv::tcp::TcpConfig;
 use echosrv::udp::UdpConfig;
+use echosrv::unix::{UnixStreamConfig, UnixDatagramConfig};
 use color_eyre::eyre::{Result, WrapErr};
 use std::time::Duration;
 use tracing::info;
@@ -21,13 +22,16 @@ async fn main() -> Result<()> {
     // Default to TCP if no protocol specified
     let protocol = args.get(1).map(|s| s.to_lowercase()).unwrap_or_else(|| "tcp".to_string());
     
-    let port = args
-        .get(2)
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(8080);
+    // For Unix domain sockets, the second argument is the socket path
+    // For TCP/UDP, it's the port
+    let socket_path_or_port = args.get(2);
 
     match protocol.as_str() {
         "tcp" => {
+            let port = socket_path_or_port
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(8080);
+                
             let config = TcpConfig {
                 bind_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
                 max_connections: 1000, // Higher limit for production use
@@ -42,6 +46,10 @@ async fn main() -> Result<()> {
             server.run().await.wrap_err("Failed to run TCP echo server")?;
         }
         "udp" => {
+            let port = socket_path_or_port
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(8080);
+                
             let config = UdpConfig {
                 bind_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
                 buffer_size: 1024,
@@ -54,15 +62,53 @@ async fn main() -> Result<()> {
             let server = UdpEchoServer::new(config.into());
             server.run().await.wrap_err("Failed to run UDP echo server")?;
         }
+        "unix-stream" => {
+            let socket_path = socket_path_or_port
+                .map(|p| p.into())
+                .unwrap_or_else(|| "/tmp/echosrv_stream.sock".into());
+                
+            let config = UnixStreamConfig {
+                socket_path,
+                max_connections: 1000,
+                buffer_size: 1024,
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(30),
+            };
+
+            info!(socket_path = %config.socket_path.display(), max_connections = config.max_connections, "Starting Unix domain stream echo server");
+
+            let server = UnixStreamEchoServer::new(config);
+            server.run().await.wrap_err("Failed to run Unix domain stream echo server")?;
+        }
+        "unix-dgram" => {
+            let socket_path = socket_path_or_port
+                .map(|p| p.into())
+                .unwrap_or_else(|| "/tmp/echosrv_datagram.sock".into());
+                
+            let config = UnixDatagramConfig {
+                socket_path,
+                buffer_size: 1024,
+                read_timeout: Duration::from_secs(30),
+                write_timeout: Duration::from_secs(30),
+            };
+
+            info!(socket_path = %config.socket_path.display(), "Starting Unix domain datagram echo server");
+
+            let server = UnixDatagramEchoServer::new(config);
+            server.run().await.wrap_err("Failed to run Unix domain datagram echo server")?;
+        }
         _ => {
-            eprintln!("Usage: {} [tcp|udp] [port]", args[0]);
-            eprintln!("  tcp|udp: Protocol to use (default: tcp)");
-            eprintln!("  port:    Port to bind to (default: 8080)");
+            eprintln!("Usage: {} [tcp|udp|unix-stream|unix-dgram] [port|socket_path]", args[0]);
+            eprintln!("  tcp|udp|unix-stream|unix-dgram: Protocol to use (default: tcp)");
+            eprintln!("  port:    Port to bind to for TCP/UDP (default: 8080)");
+            eprintln!("  socket_path: Unix domain socket path (default: /tmp/echosrv_*.sock)");
             eprintln!();
             eprintln!("Examples:");
-            eprintln!("  {} tcp 8080    # Start TCP echo server on port 8080", args[0]);
-            eprintln!("  {} udp 9090    # Start UDP echo server on port 9090", args[0]);
-            eprintln!("  {} tcp         # Start TCP echo server on default port 8080", args[0]);
+            eprintln!("  {} tcp 8080                    # Start TCP echo server on port 8080", args[0]);
+            eprintln!("  {} udp 9090                    # Start UDP echo server on port 9090", args[0]);
+            eprintln!("  {} unix-stream /tmp/echo.sock   # Start Unix stream server", args[0]);
+            eprintln!("  {} unix-dgram /tmp/echo.sock    # Start Unix datagram server", args[0]);
+            eprintln!("  {} tcp                         # Start TCP echo server on default port 8080", args[0]);
             std::process::exit(1);
         }
     }

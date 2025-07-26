@@ -43,12 +43,20 @@ src/
 │   ├── config.rs       # TcpConfig
 │   ├── stream_protocol.rs # TcpProtocol implementation
 │   └── tests.rs        # TCP-specific tests
-└── udp/                # UDP-specific implementation
-    ├── mod.rs          # Type aliases: UdpEchoClient = DatagramEchoClient<UdpProtocol>
-    ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
-    ├── config.rs       # UdpConfig
-    ├── datagram_protocol.rs # UdpProtocol implementation
-    └── tests.rs        # UDP-specific tests
+├── udp/                # UDP-specific implementation
+│   ├── mod.rs          # Type aliases: UdpEchoClient = DatagramEchoClient<UdpProtocol>
+│   ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
+│   ├── config.rs       # UdpConfig
+│   ├── datagram_protocol.rs # UdpProtocol implementation
+│   └── tests.rs        # UDP-specific tests
+└── unix/               # Unix domain socket implementation
+    ├── mod.rs          # Module exports and type aliases
+    ├── config.rs       # UnixStreamConfig, UnixDatagramConfig
+    ├── server.rs       # UnixStreamEchoServer, UnixDatagramEchoServer
+    ├── client.rs       # UnixStreamEchoClient, UnixDatagramEchoClient
+    ├── stream_protocol.rs # UnixStreamProtocol implementation
+    ├── datagram_protocol.rs # UnixDatagramProtocol implementation
+    └── tests.rs        # Unix domain socket tests
 ```
 
 ### Key Design Decisions
@@ -62,11 +70,13 @@ src/
 - **Implementation**: Concrete clients are type aliases to generic implementations
 - **Benefits**: Zero-cost abstraction, familiar API, extensibility
 - **Example**: `pub type TcpEchoClient = StreamEchoClient<TcpProtocol>`
+- **Unix Domain Sockets**: Both stream and datagram variants follow the same pattern
 
 #### 3. Protocol Trait System
 - **StreamProtocol**: Defines interface for stream-based protocols (TCP, Unix streams, WebSockets)
 - **DatagramProtocol**: Defines interface for datagram-based protocols (UDP, Unix datagrams)
 - **Benefits**: Easy to add new protocols, consistent interface, compile-time safety
+- **Unix Domain Sockets**: Implement both stream and datagram variants for maximum flexibility
 
 #### 4. Async Architecture
 - **Implementation**: Uses Tokio runtime for async/await support
@@ -335,6 +345,22 @@ async fn test_my_protocol_echo() -> Result<()> {
 ### Adding a New Datagram Protocol
 
 Similar process but implement `DatagramProtocol` trait instead.
+
+### Unix Domain Socket Implementation
+
+The Unix domain socket implementation demonstrates how to add a new protocol that supports both stream and datagram variants:
+
+1. **Configuration**: Create protocol-specific config structs (`UnixStreamConfig`, `UnixDatagramConfig`)
+2. **Protocol Implementation**: Implement both `StreamProtocol` and `DatagramProtocol` traits
+3. **Server/Client**: Create dedicated server and client implementations for better Unix-specific handling
+4. **Socket Management**: Handle socket file cleanup and anonymous socket support
+5. **Testing**: Comprehensive tests for both stream and datagram variants
+
+Key considerations for Unix domain sockets:
+- Socket file cleanup on server shutdown
+- Anonymous socket support for datagram clients
+- Path-based addressing instead of network addresses
+- Proper error handling for Unix-specific operations
 
 ## Performance Considerations
 

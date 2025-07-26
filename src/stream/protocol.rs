@@ -16,22 +16,22 @@ pub trait StreamProtocol {
     type Stream: Send;
     
     /// Binds a listener to the given configuration (server-side)
-    fn bind(config: &StreamConfig) -> impl Future<Output = std::result::Result<Self::Listener, Self::Error>> + Send;
+    async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error>;
     
     /// Accepts a new connection from the listener (server-side)
-    fn accept(listener: &mut Self::Listener) -> impl Future<Output = std::result::Result<(Self::Stream, SocketAddr), Self::Error>> + Send;
+    async fn accept(listener: &mut Self::Listener) -> std::result::Result<(Self::Stream, SocketAddr), Self::Error>;
     
     /// Connects to a server at the given address (client-side)
     async fn connect(addr: SocketAddr) -> std::result::Result<Self::Stream, Self::Error>;
     
     /// Reads data from a stream
-    fn read(stream: &mut Self::Stream, buffer: &mut [u8]) -> impl Future<Output = std::result::Result<usize, Self::Error>> + Send;
+    async fn read(stream: &mut Self::Stream, buffer: &mut [u8]) -> std::result::Result<usize, Self::Error>;
     
     /// Writes data to a stream
-    fn write(stream: &mut Self::Stream, data: &[u8]) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send;
+    async fn write(stream: &mut Self::Stream, data: &[u8]) -> std::result::Result<(), Self::Error>;
     
     /// Flushes a stream
-    fn flush(stream: &mut Self::Stream) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send;
+    async fn flush(stream: &mut Self::Stream) -> std::result::Result<(), Self::Error>;
     
     /// Maps a standard IO error to this protocol's error type
     fn map_io_error(err: std::io::Error) -> Self::Error;
