@@ -15,7 +15,7 @@ impl DatagramProtocol for UdpProtocol {
     async fn bind(config: &DatagramConfig) -> std::result::Result<UdpSocket, EchoError> {
         UdpSocket::bind(config.bind_addr)
             .await
-            .map_err(|e| EchoError::Config(format!("Failed to bind UDP socket: {}", e)))
+            .map_err(|e| EchoError::Config(format!("Failed to bind UDP socket: {e}")))
     }
     
     async fn recv_from(socket: &UdpSocket, buffer: &mut [u8]) -> std::result::Result<(usize, SocketAddr), EchoError> {

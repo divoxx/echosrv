@@ -24,7 +24,7 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
         let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = TcpEchoClient::connect(addr).await?;
-            let message = format!("Message from TCP client {}", i);
+            let message = format!("Message from TCP client {i}");
             let response = client.echo_string(&message).await?;
             assert_eq!(response, message);
             Ok::<(), color_eyre::eyre::Error>(())
@@ -35,7 +35,7 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
     // Wait for all clients to complete
     for handle in handles {
         if let Err(e) = handle.await {
-            return Err(EchoError::Config(format!("Task join error: {}", e)));
+            return Err(EchoError::Config(format!("Task join error: {e}")));
         }
     }
     
@@ -88,7 +88,7 @@ async fn test_multiple_concurrent_udp_clients() -> Result<()> {
         let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = UdpEchoClient::connect(addr).await?;
-            let message = format!("Message from UDP client {}", i);
+            let message = format!("Message from UDP client {i}");
             let response = client.echo_string(&message).await?;
             assert_eq!(response, message);
             Ok::<(), EchoError>(())
@@ -98,7 +98,7 @@ async fn test_multiple_concurrent_udp_clients() -> Result<()> {
 
     // Wait for all clients to complete
     for handle in handles {
-        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {}", e)))??;
+        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {e}")))??;
     }
     
     server_handle.abort();
@@ -189,8 +189,8 @@ async fn test_tcp_connection_limit() -> Result<()> {
     }
 
     // Should have at most 2 successful connections, and some failures
-    assert!(successful_connections <= 2, "Expected at most 2 successful connections, got {}", successful_connections);
-    assert!(failed_connections > 0, "Expected some connection failures, got {}", failed_connections);
+    assert!(successful_connections <= 2, "Expected at most 2 successful connections, got {successful_connections}");
+    assert!(failed_connections > 0, "Expected some connection failures, got {failed_connections}");
     
     server_handle.abort();
     Ok(())
@@ -296,7 +296,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
     };
 
     let listener = TcpListener::bind(config.bind_addr).await?;
-    let addr = listener.local_addr()?.into();
+    let addr = listener.local_addr()?;
     drop(listener);
 
     let config = TcpConfig {
@@ -375,8 +375,8 @@ async fn test_tcp_stress_test() -> Result<()> {
             match TcpEchoClient::connect(addr).await {
                 Ok(mut client) => {
                     // Send multiple messages per connection
-                    for j in 0..5 {
-                        let message = format!("Stress test message {} from client {}", j, i);
+                    if let Some(j) = (0..5).next() {
+                        let message = format!("Stress test message {j} from client {i}");
                         match client.echo_string(&message).await {
                             Ok(response) => {
                                 if response == message {
@@ -413,7 +413,7 @@ async fn test_tcp_stress_test() -> Result<()> {
     }
     
     // Should have many successful echoes and some failures
-    assert!(successful_echoes > 0, "Expected some successful echoes, got {}", successful_echoes);
+    assert!(successful_echoes > 0, "Expected some successful echoes, got {successful_echoes}");
     info!("TCP stress test completed: {} successful echoes, {} failed connections", successful_echoes, failed_connections);
     
     server_handle.abort();
@@ -468,8 +468,8 @@ async fn test_udp_stress_test() -> Result<()> {
             match UdpEchoClient::connect(addr).await {
                 Ok(mut client) => {
                     // Send multiple messages per client
-                    for j in 0..5 {
-                        let message = format!("UDP stress test message {} from client {}", j, i);
+                    if let Some(j) = (0..5).next() {
+                        let message = format!("UDP stress test message {j} from client {i}");
                         match client.echo_string(&message).await {
                             Ok(response) => {
                                 if response == message {
@@ -506,7 +506,7 @@ async fn test_udp_stress_test() -> Result<()> {
     }
     
     // Should have many successful echoes and some failures
-    assert!(successful_echoes > 0, "Expected some successful echoes, got {}", successful_echoes);
+    assert!(successful_echoes > 0, "Expected some successful echoes, got {successful_echoes}");
     info!("UDP stress test completed: {} successful echoes, {} failed connections", successful_echoes, failed_connections);
     
     server_handle.abort();
@@ -668,7 +668,7 @@ async fn test_http_concurrent_clients() -> Result<()> {
             use tokio::io::{AsyncWriteExt, AsyncReadExt};
             
             let mut stream = TcpStream::connect(&addr).await?;
-            let body = format!("concurrent client {}", i);
+            let body = format!("concurrent client {i}");
             let request = format!(
                 "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(), body
@@ -691,7 +691,7 @@ async fn test_http_concurrent_clients() -> Result<()> {
     
     // Wait for all clients to complete
     for handle in handles {
-        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {}", e)))?.map_err(|e| EchoError::Tcp(e))?;
+        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {e}")))?.map_err(EchoError::Tcp)?;
     }
     
     server_handle.abort();
@@ -720,7 +720,7 @@ async fn test_http_client_usage() -> Result<()> {
     // Test using the HttpEchoClient with a simple request
     use echosrv::http::HttpEchoClient;
     
-    let addr = test_addr.parse().map_err(|e| EchoError::Config(format!("Invalid address: {}", e)))?;
+    let addr = test_addr.parse().map_err(|e| EchoError::Config(format!("Invalid address: {e}")))?;
     let mut client = HttpEchoClient::connect(addr).await?;
     
     // Test with a simple string that should work
@@ -812,7 +812,7 @@ async fn test_http_different_methods() -> Result<()> {
     
     for method in &methods {
         let mut stream = TcpStream::connect(test_addr).await?;
-        let request = format!("{} / HTTP/1.1\r\nHost: localhost\r\n\r\n", method);
+        let request = format!("{method} / HTTP/1.1\r\nHost: localhost\r\n\r\n");
         stream.write_all(request.as_bytes()).await?;
         stream.flush().await?;
         
@@ -823,7 +823,7 @@ async fn test_http_different_methods() -> Result<()> {
             assert!(response_str.contains("405"));
     assert!(response_str.contains("Method Not Allowed"));
     assert!(response_str.contains("Allow: POST"));
-    assert!(response_str.contains(&format!("Method {} not allowed", method)));
+    assert!(response_str.contains(&format!("Method {method} not allowed")));
     }
     
     server_handle.abort();

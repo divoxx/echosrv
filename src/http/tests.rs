@@ -19,8 +19,8 @@ async fn test_http_protocol_bind_and_accept() {
     
     // Spawn a client task
     let client_handle = tokio::spawn(async move {
-        let stream = TcpStream::connect(addr).await.unwrap();
-        stream
+        
+        TcpStream::connect(addr).await.unwrap()
     });
     
     // Accept the connection

@@ -16,9 +16,9 @@ pub async fn create_controlled_test_server_with_limit(
     
     // First bind to get the actual address
     let listener = TcpListener::bind("127.0.0.1:0").await
-        .map_err(|e| EchoError::Config(format!("Failed to bind listener: {}", e)))?;
+        .map_err(|e| EchoError::Config(format!("Failed to bind listener: {e}")))?;
     let addr = listener.local_addr()
-        .map_err(|e| EchoError::Config(format!("Failed to get local address: {}", e)))?;
+        .map_err(|e| EchoError::Config(format!("Failed to get local address: {e}")))?;
     drop(listener); // Close the listener so the server can bind to the same address
     
     let config = TcpConfig {

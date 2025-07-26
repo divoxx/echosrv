@@ -111,9 +111,9 @@ mod tests {
         // First bind to get the actual address
         use tokio::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").await
-            .map_err(|e| EchoError::Config(format!("Failed to bind listener: {}", e)))?;
+            .map_err(|e| EchoError::Config(format!("Failed to bind listener: {e}")))?;
         let addr = listener.local_addr()
-            .map_err(|e| EchoError::Config(format!("Failed to get local address: {}", e)))?;
+            .map_err(|e| EchoError::Config(format!("Failed to get local address: {e}")))?;
         drop(listener); // Close the listener so the server can bind to the same address
         
         // Start a TCP server

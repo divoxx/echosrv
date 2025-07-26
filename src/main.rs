@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
                 .unwrap_or(8080);
                 
             let config = HttpConfig {
-                bind_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
+                bind_addr: format!("127.0.0.1:{port}").parse().unwrap(),
                 max_connections: 1000, // Higher limit for production use
                 buffer_size: 8192, // Larger buffer for HTTP
                 read_timeout: Duration::from_secs(30),
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
                 .unwrap_or(8080);
                 
             let config = TcpConfig {
-                bind_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
+                bind_addr: format!("127.0.0.1:{port}").parse().unwrap(),
                 max_connections: 1000, // Higher limit for production use
                 buffer_size: 1024,
                 read_timeout: Duration::from_secs(30),
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
                 .unwrap_or(8080);
                 
             let config = UdpConfig {
-                bind_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
+                bind_addr: format!("127.0.0.1:{port}").parse().unwrap(),
                 buffer_size: 1024,
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),

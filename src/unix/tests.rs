@@ -129,7 +129,7 @@ async fn test_unix_stream_multiple_clients() {
         let socket_path = socket_path.clone();
         let handle = tokio::spawn(async move {
             let mut client = UnixStreamEchoClient::connect(socket_path).await.unwrap();
-            let test_string = format!("Client {}", i);
+            let test_string = format!("Client {i}");
             let response = client.echo_string(&test_string).await.unwrap();
             assert_eq!(response, test_string);
         });

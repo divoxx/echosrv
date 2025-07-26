@@ -95,7 +95,7 @@ impl StreamProtocol for HttpProtocol {
                         
                         if method != "POST" {
                             // Send 405 response immediately
-                            let body = format!("Method {} not allowed. Only POST requests are accepted.", method);
+                            let body = format!("Method {method} not allowed. Only POST requests are accepted.");
                             let response = format!(
                                 "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: {}\r\nAllow: POST\r\n\r\n{}",
                                 body.len(), body
@@ -103,7 +103,7 @@ impl StreamProtocol for HttpProtocol {
                             stream.inner.write_all(response.as_bytes()).await.map_err(HttpProtocolError::Io)?;
                             stream.inner.flush().await.map_err(HttpProtocolError::Io)?;
                             stream.request_complete = true;
-                            return Err(HttpProtocolError::InvalidRequest(format!("Method {} not allowed", method)));
+                            return Err(HttpProtocolError::InvalidRequest(format!("Method {method} not allowed")));
                         }
                     }
                 }
@@ -112,7 +112,7 @@ impl StreamProtocol for HttpProtocol {
                     return Err(HttpProtocolError::IncompleteRequest);
                 }
                 Err(e) => {
-                    return Err(HttpProtocolError::HttpParse(format!("Failed to parse headers: {}", e)));
+                    return Err(HttpProtocolError::HttpParse(format!("Failed to parse headers: {e}")));
                 }
             }
         }

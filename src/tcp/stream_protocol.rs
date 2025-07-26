@@ -17,19 +17,19 @@ impl StreamProtocol for TcpProtocol {
     async fn bind(config: &StreamConfig) -> std::result::Result<TcpListener, EchoError> {
         TcpListener::bind(config.bind_addr)
             .await
-            .map_err(|e| EchoError::Config(format!("Failed to bind TCP listener: {}", e)))
+            .map_err(|e| EchoError::Config(format!("Failed to bind TCP listener: {e}")))
     }
     
     async fn accept(listener: &mut TcpListener) -> std::result::Result<(TcpStream, SocketAddr), EchoError> {
         listener.accept()
             .await
-            .map_err(|e| EchoError::Tcp(e))
+            .map_err(EchoError::Tcp)
     }
     
     async fn connect(addr: SocketAddr) -> std::result::Result<TcpStream, EchoError> {
         TcpStream::connect(addr)
             .await
-            .map_err(|e| EchoError::Config(format!("Failed to connect to {}: {}", addr, e)))
+            .map_err(|e| EchoError::Config(format!("Failed to connect to {addr}: {e}")))
     }
     
     async fn read(stream: &mut TcpStream, buffer: &mut [u8]) -> std::result::Result<usize, EchoError> {
