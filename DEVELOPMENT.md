@@ -28,9 +28,11 @@ src/
 - **Implementation**: Uses Tokio runtime for async/await support
 - **Benefits**: Efficient resource utilization, high concurrency
 
-#### 2. Error Handling
-- **Implementation**: Uses `color-eyre` for error handling with context
-- **Benefits**: Better debugging experience, clear error messages
+#### 2. Error Handling Architecture
+- **Library**: Uses `thiserror` for structured error types
+- **Binary**: Uses `color-eyre` for user-friendly error reporting
+- **Benefits**: Library independence, composable errors, better debugging experience
+- **Design**: Library provides structured errors that can be easily converted to user-friendly errors in the binary
 
 #### 3. Logging
 - **Implementation**: Uses `tracing` for structured logging
@@ -133,10 +135,34 @@ pub async fn handle_connection(/* ... */) -> Result<()> {
 
 ### Error Handling
 
-- Use `color-eyre::eyre::Result` for all public APIs
-- Provide context for errors using `.with_context()`
-- Log errors at appropriate levels (error, warn, info)
+#### Library Code
+- Use `echosrv::Result` (alias for `Result<T, EchoError>`) for all public APIs
+- Define custom error types using `thiserror` derive macro
+- Convert underlying errors to appropriate `EchoError` variants
 - Don't panic in library code
+
+#### Binary Code
+- Use `color_eyre::eyre::Result` for the main binary
+- Convert library errors to `eyre::Report` using `.wrap_err()` or automatic conversion
+- Provide user-friendly error messages
+
+#### Error Types
+```rust
+#[derive(Error, Debug)]
+pub enum EchoError {
+    #[error("TCP error: {0}")]
+    Tcp(#[from] std::io::Error),
+    
+    #[error("Configuration error: {0}")]
+    Config(String),
+    
+    #[error("Timeout error: {0}")]
+    Timeout(String),
+    
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
+}
+```
 
 ### Logging
 
@@ -187,14 +213,16 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
             let message = format!("Message from client {}", i);
             let response = client.echo_string(&message).await?;
             assert_eq!(response, message);
-            Ok::<(), color_eyre::eyre::Error>(())
+            Ok::<(), EchoError>(())
         });
         handles.push(handle);
     }
     
     // Wait for all clients to complete
     for handle in handles {
-        handle.await??;
+        if let Err(e) = handle.await {
+            return Err(EchoError::Config(format!("Task join error: {}", e)));
+        }
     }
     
     server_handle.abort();

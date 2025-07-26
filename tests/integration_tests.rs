@@ -1,5 +1,5 @@
 use echosrv::tcp::{Config, EchoClient, EchoServer};
-use color_eyre::eyre::{Context, Result};
+use echosrv::{Result, EchoError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,8 +12,8 @@ use tracing::{error, info};
 
 /// Helper function to create a test server that can be controlled and enforces connection limits
 async fn create_controlled_test_server_with_limit(max_connections: usize) -> Result<(tokio::task::JoinHandle<Result<()>>, SocketAddr)> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(EchoError::Tcp)?;
+    let addr = listener.local_addr().map_err(EchoError::Tcp)?;
     let connection_count = Arc::new(AtomicUsize::new(0));
 
     let server_handle = {
@@ -74,7 +74,7 @@ async fn handle_test_connection(
         let n = socket
             .read(&mut buffer)
             .await
-            .with_context(|| format!("Failed to read from connection {}", addr))?;
+            .map_err(EchoError::Tcp)?;
 
         if n == 0 {
             // Connection closed by client
@@ -85,12 +85,12 @@ async fn handle_test_connection(
         socket
             .write_all(&buffer[..n])
             .await
-            .with_context(|| format!("Failed to write to connection {}", addr))?;
+            .map_err(EchoError::Tcp)?;
 
         socket
             .flush()
             .await
-            .with_context(|| format!("Failed to flush connection {}", addr))?;
+            .map_err(EchoError::Tcp)?;
 
         info!("Test server: Echoed {} bytes to {}", n, addr);
     }
@@ -122,7 +122,9 @@ async fn test_multiple_concurrent_clients() -> Result<()> {
 
     // Wait for all clients to complete
     for handle in handles {
-        handle.await??;
+        if let Err(e) = handle.await {
+            return Err(EchoError::Config(format!("Task join error: {}", e)));
+        }
     }
     
     server_handle.abort();
@@ -139,8 +141,8 @@ async fn test_connection_limit() -> Result<()> {
         write_timeout: Some(Duration::from_secs(30)),
     };
 
-    let listener = TcpListener::bind(config.bind_addr).await?;
-    let addr = listener.local_addr()?;
+    let listener = TcpListener::bind(config.bind_addr).await.map_err(EchoError::Tcp)?;
+    let addr = listener.local_addr().map_err(EchoError::Tcp)?;
     drop(listener);
 
     let config = Config {
@@ -156,7 +158,7 @@ async fn test_connection_limit() -> Result<()> {
         tokio::time::timeout(
             Duration::from_secs(10),
             server.run()
-        ).await.map_err(|_| color_eyre::eyre::eyre!("Server timeout"))?
+        ).await.map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -173,7 +175,7 @@ async fn test_connection_limit() -> Result<()> {
                     match client.echo_string("test").await {
                         Ok(response) => {
                             if response == "test" {
-                                Ok::<usize, color_eyre::eyre::Error>(1) // Success
+                                Ok::<usize, EchoError>(1) // Success
                             } else {
                                 Ok(0) // Echo mismatch
                             }
@@ -276,7 +278,7 @@ async fn test_timeout_configuration() -> Result<()> {
         tokio::time::timeout(
             Duration::from_secs(5),
             server.run()
-        ).await.map_err(|_| color_eyre::eyre::eyre!("Server timeout"))?
+        ).await.map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -312,7 +314,7 @@ async fn test_stress_test() -> Result<()> {
                         match client.echo_string(&message).await {
                             Ok(response) => {
                                 if response == message {
-                                    return Ok::<usize, color_eyre::eyre::Error>(1); // Success
+                                    return Ok::<usize, EchoError>(1); // Success
                                 } else {
                                     return Ok(0); // Echo mismatch
                                 }

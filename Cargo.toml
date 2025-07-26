@@ -16,8 +16,12 @@ authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 tokio = { version = "1.32.0", features = ["full", "signal", "net"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
-eyre = "0.6.8"
+thiserror = "1.0"
 color-eyre = "0.6.2"
+
+[[bin]]
+name = "echosrv"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

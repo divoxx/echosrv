@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Context, Result};
+use crate::{Result, EchoError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -158,7 +158,7 @@ impl EchoServer {
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(self.config.bind_addr)
             .await
-            .with_context(|| format!("Failed to bind to {}", self.config.bind_addr))?;
+            .map_err(|e| EchoError::Config(format!("Failed to bind to {}: {}", self.config.bind_addr, e)))?;
 
         info!(address = %self.config.bind_addr, "TCP echo server listening");
 
@@ -230,7 +230,7 @@ impl EchoServer {
             let n = match read_result {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
-                    return Err(e).with_context(|| format!("Failed to read from connection {}", addr));
+                    return Err(EchoError::Tcp(e));
                 }
                 Err(_) => {
                     warn!(%addr, "Read timeout");
@@ -267,7 +267,7 @@ impl EchoServer {
                     info!(%addr, size = n, "Echoed data");
                 }
                 Ok(Err(e)) => {
-                    return Err(color_eyre::eyre::eyre!("Failed to write to connection {}: {}", addr, e));
+                    return Err(EchoError::Tcp(e));
                 }
                 Err(_) => {
                     warn!(%addr, "Write timeout");
@@ -338,7 +338,7 @@ impl EchoClient {
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
-            .with_context(|| format!("Failed to connect to {}", addr))?;
+            .map_err(|e| EchoError::Config(format!("Failed to connect to {}: {}", addr, e)))?;
         Ok(Self { stream })
     }
 
@@ -373,7 +373,7 @@ impl EchoClient {
             match timeout(Duration::from_millis(200), self.stream.read(&mut buffer)).await {
                 Ok(Ok(0)) => break, // Connection closed
                 Ok(Ok(n)) => response.extend_from_slice(&buffer[..n]),
-                Ok(Err(e)) => return Err(e.into()),
+                Ok(Err(e)) => return Err(EchoError::Tcp(e)),
                 Err(_) => break, // Timeout, assume done
             }
         }
@@ -400,7 +400,7 @@ impl EchoClient {
     /// ```
     pub async fn echo_string(&mut self, data: &str) -> Result<String> {
         let response = self.echo(data.as_bytes()).await?;
-        String::from_utf8(response).map_err(|e| color_eyre::eyre::eyre!("Invalid UTF-8: {}", e))
+        String::from_utf8(response).map_err(EchoError::Utf8)
     }
 }
 
@@ -411,8 +411,8 @@ mod tests {
 
     /// Helper function to create a simple test server
     async fn create_test_server() -> Result<(tokio::task::JoinHandle<Result<()>>, SocketAddr)> {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(EchoError::Tcp)?;
+        let addr = listener.local_addr().map_err(EchoError::Tcp)?;
 
         let server_handle = tokio::spawn(async move {
             loop {
@@ -454,7 +454,7 @@ mod tests {
             let n = socket
                 .read(&mut buffer)
                 .await
-                .with_context(|| format!("Failed to read from connection {}", addr))?;
+                .map_err(EchoError::Tcp)?;
 
             if n == 0 {
                 // Connection closed by client
@@ -465,12 +465,12 @@ mod tests {
             socket
                 .write_all(&buffer[..n])
                 .await
-                .with_context(|| format!("Failed to write to connection {}", addr))?;
+                .map_err(EchoError::Tcp)?;
 
             socket
                 .flush()
                 .await
-                .with_context(|| format!("Failed to flush connection {}", addr))?;
+                .map_err(EchoError::Tcp)?;
 
             info!("Test server: Echoed {} bytes to {}", n, addr);
         }

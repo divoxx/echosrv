@@ -1,5 +1,5 @@
 use echosrv::tcp::{Config, EchoServer};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr};
 use std::time::Duration;
 use tracing::info;
 
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting echo server");
 
     let server = EchoServer::new(config);
-    server.run().await?;
+    server.run().await.wrap_err("Failed to run echo server")?;
 
     Ok(())
 } 
