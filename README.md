@@ -135,13 +135,8 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = UnixStreamConfig {
-        socket_path: "/tmp/echo.sock".into(),
-        max_connections: 100,
-        buffer_size: 1024,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
-    };
+    let config = UnixStreamConfig::default()
+        .with_socket_path("/tmp/echo.sock".into());
 
     let server = UnixStreamEchoServer::new(config);
     server.run().await?;
@@ -153,16 +148,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = UnixDatagramConfig {
-        socket_path: "/tmp/echo_dgram.sock".into(),
-        buffer_size: 1024,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
-    };
+    let config = UnixDatagramConfig::default()
+        .with_socket_path("/tmp/echo_dgram.sock".into());
 
     let server = UnixDatagramEchoServer::new(config);
     server.run().await?;
@@ -172,8 +162,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Features
 
-- **Multi-Protocol Support**: TCP, UDP, and Unix domain sockets (stream and datagram)
+- **Multi-Protocol Support**: TCP, UDP, HTTP, and Unix domain sockets (stream and datagram)
 - **High Performance**: Async I/O with Tokio runtime
+- **Zero-Downtime Reloads**: File descriptor inheritance for seamless service restarts
 - **Connection Limits**: Configurable maximum concurrent connections (TCP/Unix stream)
 - **Timeouts**: Configurable read/write timeouts for all protocols
 - **Graceful Shutdown**: Responds to SIGINT/SIGTERM
@@ -183,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Common Interface**: Shared traits for consistent API across protocols
 - **Generic Architecture**: Extensible for future protocols (WebSockets, TLS, etc.)
 - **Unix Domain Sockets**: Efficient inter-process communication on Unix systems
+- **Systemd Integration**: Native support for systemd socket activation
 
 ## Use Cases
 
@@ -194,6 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Protocol Comparison**: Test and compare different transport protocols
 - **Inter-Process Communication**: Unix domain sockets for efficient local communication
 - **Container Communication**: Unix domain sockets for container-to-container communication
+- **Zero-Downtime Deployments**: File descriptor inheritance for production service updates
+- **Systemd Services**: Native integration with systemd socket activation and service management
 
 ## Configuration
 
@@ -223,24 +217,22 @@ let config = UdpConfig {
 ### Unix Domain Stream Configuration
 
 ```rust
-let config = UnixStreamConfig {
-    socket_path: "/tmp/echo.sock".into(),    // Unix socket file path
-    max_connections: 100,                     // Max concurrent connections
-    buffer_size: 1024,                       // Read/write buffer size
-    read_timeout: Duration::from_secs(30),   // Read timeout
-    write_timeout: Duration::from_secs(30),  // Write timeout
-};
+let config = UnixStreamConfig::default()
+    .with_socket_path("/tmp/echo.sock".into())
+    .with_max_connections(100)
+    .with_buffer_size(1024)
+    .with_read_timeout(Duration::from_secs(30))
+    .with_write_timeout(Duration::from_secs(30));
 ```
 
 ### Unix Domain Datagram Configuration
 
 ```rust
-let config = UnixDatagramConfig {
-    socket_path: "/tmp/echo_dgram.sock".into(), // Unix socket file path
-    buffer_size: 1024,                          // Read/write buffer size
-    read_timeout: Duration::from_secs(30),      // Read timeout
-    write_timeout: Duration::from_secs(30),     // Write timeout
-};
+let config = UnixDatagramConfig::default()
+    .with_socket_path("/tmp/echo_dgram.sock".into())
+    .with_buffer_size(1024)
+    .with_read_timeout(Duration::from_secs(30))
+    .with_write_timeout(Duration::from_secs(30));
 ```
 
 ## Testing
@@ -426,6 +418,124 @@ Add to your `Cargo.toml`:
 [dependencies]
 echosrv = "0.1.0"
 ```
+
+## Zero-Downtime Reloads
+
+EchoSrv supports file descriptor inheritance for zero-downtime service reloads, enabling seamless updates in production environments.
+
+### File Descriptor Inheritance
+
+The server can inherit pre-bound socket file descriptors from parent processes (like systemd), allowing for zero-downtime reloads:
+
+```rust
+use echosrv::tcp::{TcpConfig, TcpEchoServer};
+use echosrv::network::fd_inheritance::{BindStrategy, BindTarget, FdInheritanceConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Configure for FD inheritance with fallback to normal binding
+    let config = TcpConfig {
+        bind_addr: "127.0.0.1:8080".parse()?,
+        max_connections: 100,
+        buffer_size: 1024,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+    };
+
+    // Server automatically detects inherited FDs from environment
+    // Falls back to normal binding if no FDs are inherited
+    let server = TcpEchoServer::new(config.into());
+    server.run().await?;
+    Ok(())
+}
+```
+
+### Systemd Socket Activation
+
+For systemd integration, create socket and service files:
+
+**echo-server.socket**:
+```ini
+[Unit]
+Description=Echo Server Socket
+
+[Socket]
+ListenStream=8080
+Accept=false
+
+[Install]
+WantedBy=sockets.target
+```
+
+**echo-server.service**:
+```ini
+[Unit]
+Description=Echo Server
+Requires=echo-server.socket
+
+[Service]
+Type=simple
+ExecStart=/path/to/echosrv tcp
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl enable echo-server.socket
+sudo systemctl start echo-server.socket
+sudo systemctl start echo-server.service
+```
+
+### Unix Domain Socket Inheritance
+
+Unix domain sockets also support FD inheritance:
+
+```rust
+use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
+
+let config = UnixStreamConfig::default()
+    .with_fd_inheritance("echo-server".to_string()); // Service name for systemd
+
+let server = UnixStreamEchoServer::new(config);
+server.run().await?;
+```
+
+**Unix socket systemd configuration**:
+```ini
+# echo-unix.socket
+[Socket]
+ListenStream=/tmp/echo.sock
+Accept=false
+```
+
+### Manual FD Inheritance
+
+For custom deployment scenarios without systemd:
+
+```rust
+use echosrv::network::fd_inheritance::{BindStrategy, BindTarget};
+
+// Inherit specific file descriptor
+let bind_strategy = BindStrategy::Inherit { fd: 3 };
+
+// Inherit with fallback to normal binding
+let bind_strategy = BindStrategy::InheritOrBind {
+    service_name: "echo-server".to_string(),
+    fallback_target: BindTarget::Network("127.0.0.1:8080".parse()?),
+};
+```
+
+### Benefits
+
+- **Zero-Downtime**: No connection drops during service updates
+- **Systemd Integration**: Native support for systemd socket activation
+- **Fallback Safety**: Automatic fallback to normal binding when inheritance fails
+- **Multi-Protocol**: Supports TCP, UDP, and Unix domain socket inheritance
+- **Production Ready**: Robust error handling and validation
 
 ## License
 

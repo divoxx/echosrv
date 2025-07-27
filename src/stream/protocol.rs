@@ -1,4 +1,5 @@
 use super::config::StreamConfig;
+use crate::network::fd_inheritance::FdInheritanceConfig;
 use async_trait::async_trait;
 use std::net::SocketAddr;
 
@@ -6,6 +7,9 @@ use std::net::SocketAddr;
 ///
 /// This trait defines the interface that stream protocol implementations
 /// must provide to work with the generic stream echo server and client.
+/// 
+/// File descriptor inheritance support is provided through optional methods
+/// that protocols can implement for zero-downtime server reloads.
 #[async_trait]
 pub trait StreamProtocol {
     /// Error type for this protocol
@@ -16,7 +20,27 @@ pub trait StreamProtocol {
     type Stream: Send;
 
     /// Binds a listener to the given configuration (server-side)
+    /// 
+    /// This method provides backward compatibility and automatically detects
+    /// file descriptor inheritance from the environment (e.g., systemd).
     async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error>;
+
+    /// Binds a listener with explicit file descriptor inheritance configuration
+    /// 
+    /// This method enables advanced control over FD inheritance for custom
+    /// deployment scenarios or process managers that don't use standard
+    /// environment variables.
+    /// 
+    /// Default implementation falls back to the standard bind() method for
+    /// backward compatibility with existing protocol implementations.
+    async fn bind_with_inheritance(
+        config: &StreamConfig,
+        _fd_config: &FdInheritanceConfig,
+    ) -> std::result::Result<Self::Listener, Self::Error> {
+        // Default implementation ignores FD inheritance and uses standard binding
+        // Protocols that support inheritance should override this method
+        Self::bind(config).await
+    }
 
     /// Accepts a new connection from the listener (server-side)
     async fn accept(

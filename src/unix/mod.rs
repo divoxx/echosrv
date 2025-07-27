@@ -68,4 +68,5 @@ pub use client::{UnixDatagramEchoClient, UnixStreamEchoClient};
 pub use server::{UnixDatagramEchoServer, UnixStreamEchoServer};
 
 // Re-export protocol implementations
-pub use stream_protocol::{Protocol, StreamExt};
+pub use datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
+pub use stream_protocol::{UnixStreamProtocol, UnixStreamExt};

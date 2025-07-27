@@ -20,6 +20,10 @@ pub enum EchoError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// File descriptor inheritance errors
+    #[error("FD inheritance error: {0}")]
+    FdInheritance(String),
+
     /// Timeout errors
     #[error("Timeout error: {0}")]
     Timeout(String),

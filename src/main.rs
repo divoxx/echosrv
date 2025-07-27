@@ -98,19 +98,14 @@ async fn main() -> Result<()> {
                 .wrap_err("Failed to run UDP echo server")?;
         }
         "unix-stream" => {
-            let socket_path = socket_path_or_port
+            let socket_path: std::path::PathBuf = socket_path_or_port
                 .map(|p| p.into())
                 .unwrap_or_else(|| "/tmp/echosrv_stream.sock".into());
 
-            let config = UnixStreamConfig {
-                socket_path,
-                max_connections: 1000,
-                buffer_size: 1024,
-                read_timeout: Duration::from_secs(30),
-                write_timeout: Duration::from_secs(30),
-            };
+            let config = UnixStreamConfig::default()
+                .with_socket_path(socket_path.clone());
 
-            info!(socket_path = %config.socket_path.display(), max_connections = config.max_connections, "Starting Unix domain stream echo server");
+            info!(socket_path = %socket_path.display(), max_connections = config.max_connections, "Starting Unix domain stream echo server");
 
             let server = UnixStreamEchoServer::new(config);
             server
@@ -119,18 +114,14 @@ async fn main() -> Result<()> {
                 .wrap_err("Failed to run Unix domain stream echo server")?;
         }
         "unix-dgram" => {
-            let socket_path = socket_path_or_port
+            let socket_path: std::path::PathBuf = socket_path_or_port
                 .map(|p| p.into())
                 .unwrap_or_else(|| "/tmp/echosrv_datagram.sock".into());
 
-            let config = UnixDatagramConfig {
-                socket_path,
-                buffer_size: 1024,
-                read_timeout: Duration::from_secs(30),
-                write_timeout: Duration::from_secs(30),
-            };
+            let config = UnixDatagramConfig::default()
+                .with_socket_path(socket_path.clone());
 
-            info!(socket_path = %config.socket_path.display(), "Starting Unix domain datagram echo server");
+            info!(socket_path = %socket_path.display(), "Starting Unix domain datagram echo server");
 
             let server = UnixDatagramEchoServer::new(config);
             server

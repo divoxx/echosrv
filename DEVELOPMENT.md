@@ -13,6 +13,7 @@ EchoSrv is a high-performance async echo server library built with Tokio that su
 3. **Unified Address System**: Single address type supporting network and Unix sockets
 4. **Resource Management**: Built-in security, rate limiting, and performance optimizations
 5. **Configuration System**: Fluent builder pattern for type-safe configuration
+6. **File Descriptor Inheritance**: Zero-downtime reloads through FD inheritance from parent processes
 
 ### Module Structure
 
@@ -23,9 +24,11 @@ src/
 ├── common/             # Shared traits and utilities
 │   ├── traits.rs       # Core traits (EchoServerTrait, EchoClient)
 │   └── test_utils.rs   # Test utilities and helper functions
-├── network/            # Unified addressing and configuration
+├── network/            # Unified addressing and file descriptor inheritance
 │   ├── address.rs      # Address enum (Network/Unix)
-│   └── config.rs       # Configuration builders and types
+│   ├── config.rs       # Configuration builders and types
+│   ├── fd_inheritance.rs # FD inheritance configuration and systemd parsing
+│   └── socket_builder.rs # Generic socket building infrastructure
 ├── security/           # Resource limits and protection
 │   └── limits.rs       # Rate limiting, connection tracking, size validation
 ├── performance/        # Performance optimizations
@@ -43,18 +46,20 @@ src/
 ├── tcp/                # TCP protocol implementation
 │   ├── mod.rs          # Type aliases and exports
 │   ├── config.rs       # TcpConfig
-│   └── stream_protocol.rs # TcpProtocol implementation
+│   ├── stream_protocol.rs # TcpProtocol implementation
+│   └── socket_builder.rs # TCP socket builder with FD inheritance
 ├── udp/                # UDP protocol implementation
 │   ├── mod.rs          # Type aliases and exports
 │   ├── config.rs       # UdpConfig
-│   └── datagram_protocol.rs # UdpProtocol implementation
+│   ├── datagram_protocol.rs # UdpProtocol implementation
+│   └── socket_builder.rs # UDP socket builder with FD inheritance
 ├── unix/               # Unix domain socket implementation
 │   ├── mod.rs          # Type aliases and exports
 │   ├── config.rs       # Unix socket configurations
 │   ├── server.rs       # Unix-specific server implementations
 │   ├── client.rs       # Unix-specific client implementations
-│   ├── stream_protocol.rs # Unix stream protocol
-│   └── datagram_protocol.rs # Unix datagram protocol
+│   ├── stream_protocol.rs # Unix stream protocol with FD inheritance
+│   └── datagram_protocol.rs # Unix datagram protocol with FD inheritance
 └── http/               # HTTP protocol implementation
     ├── mod.rs          # Type aliases and exports
     ├── config.rs       # HttpConfig
@@ -63,6 +68,55 @@ src/
 ```
 
 ### Core Concepts
+
+#### File Descriptor Inheritance System
+
+The FD inheritance system enables zero-downtime reloads by inheriting pre-bound sockets from parent processes:
+
+```rust
+// Core types for FD inheritance
+pub enum BindStrategy {
+    Bind(BindTarget),                    // Normal binding
+    Inherit { fd: RawFd },               // Inherit specific FD
+    InheritOrBind {                      // Try inheritance, fallback to binding
+        service_name: String,
+        fallback_target: BindTarget,
+    },
+}
+
+pub enum BindTarget {
+    Network(SocketAddr),  // Network address for TCP/UDP
+    Unix(PathBuf),        // Unix socket path
+}
+
+// Systemd environment parsing
+pub struct FdInheritanceConfig {
+    pub listen_fds: u32,              // LISTEN_FDS count
+    pub listen_fdnames: Vec<String>,  // LISTEN_FDNAMES service names
+    pub listen_pid: Option<u32>,      // LISTEN_PID for validation
+}
+```
+
+#### Generic Socket Building
+
+Protocol-agnostic socket creation with validation:
+
+```rust
+// BuildSocket trait for protocol-specific builders
+pub trait BuildSocket<T> {
+    const SOCKET_TYPE: libc::c_int;           // SOCK_STREAM or SOCK_DGRAM
+    const VALID_FAMILIES: &'static [libc::c_int];  // AF_INET, AF_INET6, AF_UNIX
+    
+    fn from_fd(fd: RawFd) -> Result<T>;       // Convert inherited FD
+    fn bind_to(target: &BindTarget) -> Result<T>;  // Normal binding
+}
+
+// Socket builders for each protocol
+impl BuildSocket<TcpListener> for TcpSocketBuilder { }
+impl BuildSocket<UdpSocket> for UdpSocketBuilder { }
+impl BuildSocket<UnixListener> for UnixStreamSocketBuilder { }
+impl BuildSocket<UnixDatagram> for UnixDatagramSocketBuilder { }
+```
 
 #### Unified Address System
 
@@ -97,9 +151,10 @@ let udp_server = UdpEchoServer::new(config);
 
 #### Configuration System
 
-Fluent builder pattern for type-safe configuration:
+Fluent builder pattern for type-safe configuration with FD inheritance support:
 
 ```rust
+// TCP configuration with automatic FD inheritance detection
 let config = TcpConfig {
     bind_addr: "127.0.0.1:8080".parse()?,
     max_connections: 100,
@@ -108,11 +163,17 @@ let config = TcpConfig {
     write_timeout: Duration::from_secs(30),
 };
 
-// Or use builders for network configuration
-let config = Config::new("127.0.0.1:8080".into())
-    .with_buffer_size(4096)
-    .with_read_timeout(Duration::from_secs(60))
-    .build();
+// Unix socket configuration with explicit FD inheritance
+let config = UnixStreamConfig::default()
+    .with_socket_path("/tmp/echo.sock".into())
+    .with_fd_inheritance("echo-server".to_string());
+
+// Manual FD inheritance configuration
+let config = UnixStreamConfig::default()
+    .with_bind_strategy(BindStrategy::InheritOrBind {
+        service_name: "echo-server".to_string(),
+        fallback_target: BindTarget::Unix("/tmp/echo.sock".into()),
+    });
 ```
 
 #### Resource Management
@@ -266,7 +327,7 @@ fn example() -> Result<()> {
 
 ### Adding a New Stream Protocol
 
-1. **Implement the StreamProtocol trait**:
+1. **Implement the StreamProtocol trait with FD inheritance support**:
 ```rust
 pub struct MyStreamProtocol;
 
@@ -281,32 +342,123 @@ impl StreamProtocol for MyStreamProtocol {
     }
     
     async fn bind(config: &StreamConfig) -> Result<Self::Listener, Self::Error> {
-        // Bind implementation
+        // Normal bind implementation
+    }
+    
+    async fn bind_with_inheritance(
+        config: &StreamConfig,
+        fd_config: &FdInheritanceConfig,
+    ) -> Result<Self::Listener, Self::Error> {
+        // FD inheritance implementation using socket builder
+        MySocketBuilder::build(
+            &config.bind_strategy,
+            &config.service_name,
+            fd_config,
+        )
     }
     
     // ... other required methods
 }
 ```
 
-2. **Create type aliases**:
+2. **Create a socket builder with FD inheritance**:
+```rust
+pub struct MySocketBuilder;
+
+impl BuildSocket<MyListener> for MySocketBuilder {
+    const SOCKET_TYPE: libc::c_int = libc::SOCK_STREAM;
+    const VALID_FAMILIES: &'static [libc::c_int] = &[libc::AF_INET, libc::AF_INET6];
+    
+    fn from_fd(fd: RawFd) -> Result<MyListener> {
+        // Convert inherited FD to protocol-specific listener
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+        std_listener.set_nonblocking(true)?;
+        MyListener::from_std(std_listener)
+    }
+    
+    fn bind_to(target: &BindTarget) -> Result<MyListener> {
+        // Normal binding implementation
+        match target {
+            BindTarget::Network(addr) => {
+                let std_listener = std::net::TcpListener::bind(addr)?;
+                std_listener.set_nonblocking(true)?;
+                MyListener::from_std(std_listener)
+            }
+            BindTarget::Unix(_) => {
+                Err(EchoError::Config("Protocol does not support Unix sockets".into()))
+            }
+        }
+    }
+}
+```
+
+3. **Create type aliases**:
 ```rust
 pub type MyEchoServer = StreamEchoServer<MyStreamProtocol>;
 pub type MyEchoClient = StreamEchoClient<MyStreamProtocol>;
 ```
 
-3. **Add configuration**:
+4. **Add configuration with FD inheritance**:
 ```rust
 #[derive(Debug, Clone)]
 pub struct MyConfig {
-    pub bind_addr: SocketAddr,
+    pub bind_strategy: BindStrategy,
+    pub service_name: String,
     pub custom_option: String,
     // ... other protocol-specific options
+}
+
+impl MyConfig {
+    pub fn with_fd_inheritance(mut self, service_name: String) -> Self {
+        self.bind_strategy = BindStrategy::InheritOrBind {
+            service_name: service_name.clone(),
+            fallback_target: self.fallback_target.clone(),
+        };
+        self.service_name = service_name;
+        self
+    }
 }
 ```
 
 ### Adding a New Datagram Protocol
 
-Similar process but implement `DatagramProtocol` trait instead.
+Similar process but implement `DatagramProtocol` trait with FD inheritance support:
+
+```rust
+pub struct MyDatagramProtocol;
+
+#[async_trait]
+impl DatagramProtocol for MyDatagramProtocol {
+    type Error = MyError;
+    type Socket = MySocket;
+    
+    async fn bind(config: &DatagramConfig) -> Result<Self::Socket, Self::Error> {
+        // Normal bind implementation
+    }
+    
+    async fn bind_with_inheritance(
+        config: &DatagramConfig,
+        fd_config: &FdInheritanceConfig,
+    ) -> Result<Self::Socket, Self::Error> {
+        // FD inheritance implementation using socket builder
+        MyDatagramSocketBuilder::build(
+            &config.bind_strategy,
+            &config.service_name,
+            fd_config,
+        )
+    }
+    
+    // ... other required methods
+}
+
+// Socket builder for datagram protocol
+impl BuildSocket<MySocket> for MyDatagramSocketBuilder {
+    const SOCKET_TYPE: libc::c_int = libc::SOCK_DGRAM;
+    const VALID_FAMILIES: &'static [libc::c_int] = &[libc::AF_INET, libc::AF_INET6];
+    
+    // ... implement from_fd() and bind_to() methods
+}
+```
 
 ## Testing Guidelines
 
@@ -630,4 +782,58 @@ RUST_LOG=echosrv::tcp=trace cargo run tcp
 RUST_LOG=tokio=debug cargo test
 ```
 
-This guide provides the foundation for understanding and contributing to EchoSrv. The architecture is designed for extensibility while maintaining performance and security, making it suitable for both development testing and production deployment scenarios.
+## File Descriptor Inheritance Implementation Details
+
+### Systemd Integration
+
+The FD inheritance system seamlessly integrates with systemd socket activation:
+
+1. **Environment Variables**: Reads `LISTEN_FDS`, `LISTEN_FDNAMES`, and `LISTEN_PID`
+2. **FD Validation**: Validates socket type (stream/datagram) and address family
+3. **Service Matching**: Matches service names to inherited file descriptors
+4. **Fallback Handling**: Automatically falls back to normal binding when inheritance fails
+
+### Security Considerations
+
+- **FD Validation**: All inherited FDs are validated for correct socket type and family
+- **PID Verification**: Optional `LISTEN_PID` validation ensures FDs come from expected parent
+- **Error Handling**: Secure error messages that don't leak sensitive information
+- **Resource Limits**: Connection limits and timeouts still apply to inherited sockets
+
+### Performance Impact
+
+- **Zero-Copy**: FD inheritance avoids socket recreation overhead
+- **Connection Preservation**: Existing connections remain active during reload
+- **Startup Time**: Faster startup when inheriting vs. binding new sockets
+- **Memory Usage**: Minimal overhead for FD inheritance infrastructure
+
+### Debugging FD Inheritance
+
+```bash
+# Enable FD inheritance debugging
+RUST_LOG=echosrv::network::fd_inheritance=debug cargo run tcp
+
+# Test with manual FD inheritance
+LISTEN_FDS=1 LISTEN_FDNAMES=echo-server cargo run tcp
+
+# Systemd service debugging
+systemctl status echo-server.service
+journalctl -u echo-server.service -f
+```
+
+### Testing FD Inheritance
+
+The test suite includes comprehensive FD inheritance tests:
+
+```bash
+# Run FD inheritance specific tests
+cargo test fd_inheritance
+
+# Test systemd environment parsing
+cargo test test_systemd_env_parsing
+
+# Test socket validation
+cargo test test_socket_validation
+```
+
+This guide provides the foundation for understanding and contributing to EchoSrv. The architecture is designed for extensibility while maintaining performance and security, making it suitable for both development testing and production deployment scenarios with zero-downtime reload capabilities.

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod server;
+pub mod socket_builder;
 pub mod stream_protocol;
 pub mod tests;
 

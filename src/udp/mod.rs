@@ -1,6 +1,7 @@
 pub mod config;
 pub mod datagram_protocol;
 pub mod server;
+pub mod socket_builder;
 pub mod tests;
 
 pub use config::UdpConfig;
