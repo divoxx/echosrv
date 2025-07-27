@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
@@ -70,12 +70,12 @@ impl RateLimiter {
                 let permits_to_add = (elapsed.as_secs() as u32 * self.refill_rate) as usize;
                 let current_permits = self.permits.available_permits();
                 let max_permits = self.refill_rate as usize;
-                
+
                 if current_permits < max_permits {
                     let actual_add = std::cmp::min(permits_to_add, max_permits - current_permits);
                     self.permits.add_permits(actual_add);
                 }
-                
+
                 *last_refill = now;
             }
         }
@@ -112,12 +112,10 @@ impl ConnectionTracker {
     /// Attempt to acquire a connection slot
     pub async fn acquire_connection(&self) -> Result<ConnectionGuard, ConnectionError> {
         // Try to acquire a permit for the connection
-        let permit = timeout(
-            Duration::from_secs(1),
-            self.connection_semaphore.acquire()
-        ).await
-        .map_err(|_| ConnectionError::Timeout)?
-        .map_err(|_| ConnectionError::Closed)?;
+        let permit = timeout(Duration::from_secs(1), self.connection_semaphore.acquire())
+            .await
+            .map_err(|_| ConnectionError::Timeout)?
+            .map_err(|_| ConnectionError::Closed)?;
 
         let active = self.active_connections.fetch_add(1, Ordering::SeqCst) + 1;
         let total = self.total_connections.fetch_add(1, Ordering::SeqCst) + 1;
@@ -155,9 +153,13 @@ pub struct ConnectionGuard<'a> {
 
 impl<'a> Drop for ConnectionGuard<'a> {
     fn drop(&mut self) {
-        let active = self.tracker.active_connections.fetch_sub(1, Ordering::SeqCst) - 1;
+        let active = self
+            .tracker
+            .active_connections
+            .fetch_sub(1, Ordering::SeqCst)
+            - 1;
         let duration = self.start_time.elapsed();
-        
+
         tracing::info!(
             active_connections = active,
             connection_duration_ms = duration.as_millis(),
@@ -195,9 +197,9 @@ impl SizeValidator {
 
     pub fn validate_size(&self, size: usize) -> Result<(), SizeError> {
         if size > self.max_size {
-            Err(SizeError::TooLarge { 
-                actual: size, 
-                max: self.max_size 
+            Err(SizeError::TooLarge {
+                actual: size,
+                max: self.max_size,
             })
         } else {
             Ok(())

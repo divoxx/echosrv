@@ -1,11 +1,11 @@
-use crate::{Result, EchoError};
+use super::StreamProtocol;
 use crate::common::EchoClient;
 use crate::network::Address;
-use super::StreamProtocol;
-use std::time::Duration;
-use tokio::time::{timeout, Instant};
+use crate::{EchoError, Result};
 use async_trait::async_trait;
 use bytes::BytesMut;
+use std::time::Duration;
+use tokio::time::{Instant, timeout};
 
 /// Configuration for stream clients
 #[derive(Debug, Clone)]
@@ -55,15 +55,13 @@ where
     ) -> Result<Self> {
         let address = address.into();
         let stream = match &address {
-            Address::Network(addr) => {
-                timeout(config.connect_timeout, P::connect(*addr))
-                    .await
-                    .map_err(|_| EchoError::Timeout("Connection timeout".to_string()))?
-                    .map_err(|e| e.into())?
-            }
+            Address::Network(addr) => timeout(config.connect_timeout, P::connect(*addr))
+                .await
+                .map_err(|_| EchoError::Timeout("Connection timeout".to_string()))?
+                .map_err(|e| e.into())?,
             Address::Unix(_) => {
                 return Err(EchoError::Unsupported(
-                    "Use Unix-specific client for Unix domain sockets".to_string()
+                    "Use Unix-specific client for Unix domain sockets".to_string(),
                 ));
             }
         };
@@ -112,8 +110,9 @@ where
         loop {
             let read_result = timeout(
                 self.config.read_timeout,
-                P::read(&mut self.stream, &mut buffer)
-            ).await;
+                P::read(&mut self.stream, &mut buffer),
+            )
+            .await;
 
             match read_result {
                 Ok(Ok(0)) => {
@@ -129,9 +128,9 @@ where
                             self.config.max_response_size
                         )));
                     }
-                    
+
                     response.extend_from_slice(&buffer[..n]);
-                    
+
                     // For echo servers, we expect to receive exactly what we sent
                     // Stop reading when we have received at least as much as we sent
                     if response.len() >= data.len() {
@@ -265,16 +264,16 @@ mod tests {
     #[tokio::test]
     async fn test_client_idle_detection() {
         use std::net::SocketAddr;
-        
+
         // Create a dummy address for testing
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let _address = Address::Network(addr);
-        
+
         // This test would require a real connection, so we'll just test the builder
         let config = ClientConfigBuilder::new()
             .connect_timeout(Duration::from_millis(100))
             .build();
-        
+
         // Verify the config was built correctly
         assert_eq!(config.connect_timeout, Duration::from_millis(100));
     }

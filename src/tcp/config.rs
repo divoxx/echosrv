@@ -1,6 +1,6 @@
+use crate::stream::StreamConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
-use crate::stream::StreamConfig;
 
 /// TCP-specific configuration that extends the common config
 ///
@@ -44,8 +44,6 @@ impl Default for TcpConfig {
     }
 }
 
-
-
 impl From<TcpConfig> for StreamConfig {
     fn from(config: TcpConfig) -> Self {
         Self {
@@ -56,4 +54,4 @@ impl From<TcpConfig> for StreamConfig {
             write_timeout: config.write_timeout,
         }
     }
-} 
+}

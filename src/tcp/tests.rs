@@ -1,9 +1,7 @@
-
-
 #[cfg(test)]
 mod tests {
-    use crate::{TcpConfig, TcpEchoServer};
     use crate::common::traits::EchoServerTrait;
+    use crate::{TcpConfig, TcpEchoServer};
     use std::time::Duration;
 
     #[tokio::test]
@@ -22,4 +20,4 @@ mod tests {
         let server = TcpEchoServer::new(config.into());
         assert!(server.shutdown_signal().receiver_count() == 0);
     }
-} 
+}

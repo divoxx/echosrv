@@ -1,9 +1,9 @@
-use crate::{Result, EchoError};
-use crate::common::EchoClient;
 use super::{DatagramConfig, DatagramProtocol};
-use std::net::SocketAddr;
-use tokio::time::{timeout, Duration};
+use crate::common::EchoClient;
+use crate::{EchoError, Result};
 use async_trait::async_trait;
+use std::net::SocketAddr;
+use tokio::time::{Duration, timeout};
 
 /// Generic datagram-based echo client that works with any datagram protocol
 ///
@@ -32,7 +32,7 @@ pub struct DatagramEchoClient<P: DatagramProtocol> {
     server_addr: SocketAddr,
 }
 
-impl<P: DatagramProtocol> DatagramEchoClient<P> 
+impl<P: DatagramProtocol> DatagramEchoClient<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
@@ -45,9 +45,9 @@ where
             read_timeout: std::time::Duration::from_secs(30),
             write_timeout: std::time::Duration::from_secs(30),
         };
-        
+
         let socket = P::bind(&config).await.map_err(|e| e.into())?;
-        
+
         Ok(Self {
             socket,
             server_addr,
@@ -56,22 +56,27 @@ where
 }
 
 #[async_trait]
-impl<P: DatagramProtocol> EchoClient for DatagramEchoClient<P> 
+impl<P: DatagramProtocol> EchoClient for DatagramEchoClient<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
-        /// Sends data to the echo server and returns the echoed response
+    /// Sends data to the echo server and returns the echoed response
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         // Send data to server
-        P::send_to(&self.socket, data, self.server_addr).await.map_err(|e| e.into())?;
-        
+        P::send_to(&self.socket, data, self.server_addr)
+            .await
+            .map_err(|e| e.into())?;
+
         // Receive response with timeout
         let mut buffer = vec![0; 1024];
-        let (n, _) = timeout(Duration::from_millis(500), P::recv_from(&self.socket, &mut buffer))
-            .await
-            .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
-            .map_err(|e| e.into())?;
-        
+        let (n, _) = timeout(
+            Duration::from_millis(500),
+            P::recv_from(&self.socket, &mut buffer),
+        )
+        .await
+        .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
+        .map_err(|e| e.into())?;
+
         Ok(buffer[..n].to_vec())
     }
-} 
+}

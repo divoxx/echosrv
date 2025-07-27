@@ -44,4 +44,4 @@ impl Default for StreamConfig {
             write_timeout: Duration::from_secs(30),
         }
     }
-} 
+}

@@ -1,5 +1,5 @@
-use crate::datagram::DatagramEchoServer;
 use super::datagram_protocol::UdpProtocol;
+use crate::datagram::DatagramEchoServer;
 
 /// UDP echo server that handles UDP datagrams
 ///
@@ -56,5 +56,3 @@ use super::datagram_protocol::UdpProtocol;
 /// }
 /// ```
 pub type UdpEchoServer = DatagramEchoServer<UdpProtocol>;
-
- 

@@ -1,6 +1,6 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::fmt;
 use std::str::FromStr;
 
 /// Unified address type that supports both network and Unix domain sockets
@@ -15,7 +15,7 @@ pub enum Address {
 impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Address::Network(addr) => write!(f, "{}", addr),
+            Address::Network(addr) => write!(f, "{addr}"),
             Address::Unix(path) => write!(f, "unix:{}", path.display()),
         }
     }
@@ -35,8 +35,8 @@ impl From<PathBuf> for Address {
 
 impl From<&str> for Address {
     fn from(s: &str) -> Self {
-        if s.starts_with("unix:") {
-            Address::Unix(PathBuf::from(&s[5..]))
+        if let Some(stripped) = s.strip_prefix("unix:") {
+            Address::Unix(PathBuf::from(stripped))
         } else {
             Address::Network(s.parse().expect("Invalid socket address"))
         }
@@ -47,12 +47,12 @@ impl FromStr for Address {
     type Err = crate::EchoError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.starts_with("unix:") {
-            Ok(Address::Unix(PathBuf::from(&s[5..])))
+        if let Some(stripped) = s.strip_prefix("unix:") {
+            Ok(Address::Unix(PathBuf::from(stripped)))
         } else {
             s.parse::<SocketAddr>()
                 .map(Address::Network)
-                .map_err(|e| crate::EchoError::Config(format!("Invalid socket address: {}", e)))
+                .map_err(|e| crate::EchoError::Config(format!("Invalid socket address: {e}")))
         }
     }
 }
@@ -111,7 +111,7 @@ mod tests {
     fn test_display() {
         let net_addr: Address = "127.0.0.1:8080".into();
         let unix_addr: Address = "unix:/tmp/test.sock".into();
-        
+
         assert_eq!(net_addr.to_string(), "127.0.0.1:8080");
         assert_eq!(unix_addr.to_string(), "unix:/tmp/test.sock");
     }

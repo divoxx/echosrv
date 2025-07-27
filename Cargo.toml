@@ -1,6 +1,6 @@
 [package]
 name = "echosrv"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A high-performance set of async echo server library built with Tokio for testing and development environments"
 license = "MIT"

@@ -9,11 +9,11 @@ pub mod protocol;
 #[cfg(test)]
 mod tests;
 
+pub use crate::stream::{Client as StreamClient, StreamEchoServer};
 pub use config::HttpConfig;
 pub use protocol::HttpProtocol;
-pub use crate::stream::{StreamEchoServer, Client as StreamClient};
 
 /// Type alias for HTTP echo server
 pub type HttpEchoServer = StreamEchoServer<HttpProtocol>;
 /// Type alias for HTTP echo client
-pub type HttpEchoClient = StreamClient<HttpProtocol>; 
+pub type HttpEchoClient = StreamClient<HttpProtocol>;

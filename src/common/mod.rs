@@ -3,8 +3,8 @@
 //! This module contains the core traits that define the interface
 //! for echo servers and clients.
 
-pub mod traits;
 pub mod test_utils;
+pub mod traits;
 
-pub use traits::{EchoServerTrait, EchoClient};
-pub use test_utils::create_controlled_test_server_with_limit; 
+pub use test_utils::create_controlled_test_server_with_limit;
+pub use traits::{EchoClient, EchoServerTrait};

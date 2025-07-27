@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
-use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 /// A pool of reusable buffers to reduce allocations
 #[derive(Debug)]
@@ -24,7 +24,8 @@ impl BufferPool {
     pub fn get(&self) -> PooledBuffer {
         let buffer = {
             let mut pool = self.pool.lock().unwrap();
-            pool.pop_front().unwrap_or_else(|| BytesMut::with_capacity(self.buffer_size))
+            pool.pop_front()
+                .unwrap_or_else(|| BytesMut::with_capacity(self.buffer_size))
         };
 
         PooledBuffer {
@@ -97,7 +98,7 @@ impl Drop for PooledBuffer {
         if let Some(mut buffer) = self.buffer.take() {
             // Clear the buffer and return it to the pool if there's space
             buffer.clear();
-            
+
             let mut pool = self.pool.lock().unwrap();
             if pool.len() < self.max_pool_size {
                 pool.push_back(buffer);
@@ -141,7 +142,8 @@ pub fn global_pool() -> &'static BufferPool {
 
 /// Initialize the global buffer pool with custom settings
 pub fn init_global_pool(buffer_size: usize, max_pool_size: usize) -> Result<(), &'static str> {
-    GLOBAL_POOL.set(BufferPool::new(buffer_size, max_pool_size))
+    GLOBAL_POOL
+        .set(BufferPool::new(buffer_size, max_pool_size))
         .map_err(|_| "Global pool already initialized")
 }
 
@@ -152,23 +154,23 @@ mod tests {
     #[test]
     fn test_buffer_pool_basic() {
         let pool = BufferPool::new(1024, 5);
-        
+
         // Get a buffer
         let mut buffer = pool.get();
         assert_eq!(buffer.capacity(), 1024);
         assert!(buffer.is_empty());
-        
+
         // Use the buffer
         buffer.extend_from_slice(b"hello");
         assert_eq!(buffer.len(), 5);
-        
+
         // Stats should show no available buffers (one is checked out)
         let stats = pool.stats();
         assert_eq!(stats.available_buffers, 0);
-        
+
         // Drop the buffer (returns to pool)
         drop(buffer);
-        
+
         // Stats should show one available buffer
         let stats = pool.stats();
         assert_eq!(stats.available_buffers, 1);
@@ -177,13 +179,13 @@ mod tests {
     #[test]
     fn test_buffer_pool_reuse() {
         let pool = BufferPool::new(1024, 5);
-        
+
         // Get and use a buffer
         {
             let mut buffer = pool.get();
             buffer.extend_from_slice(b"test data");
         } // buffer returns to pool here
-        
+
         // Get another buffer - should be the same one, but cleared
         let buffer = pool.get();
         assert!(buffer.is_empty());
@@ -193,20 +195,20 @@ mod tests {
     #[test]
     fn test_buffer_pool_max_size() {
         let pool = BufferPool::new(1024, 2);
-        
+
         // Create more buffers than the pool can hold
         let _buffer1 = pool.get();
         let _buffer2 = pool.get();
         let _buffer3 = pool.get();
-        
+
         // All buffers are checked out
         assert_eq!(pool.stats().available_buffers, 0);
-        
+
         // Drop all buffers
         drop(_buffer1);
         drop(_buffer2);
         drop(_buffer3);
-        
+
         // Pool should only have 2 buffers (its max size)
         assert_eq!(pool.stats().available_buffers, 2);
     }

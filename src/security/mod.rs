@@ -3,7 +3,6 @@
 pub mod limits;
 
 pub use limits::{
-    ResourceLimits, RateLimiter, RateLimitError, 
-    ConnectionTracker, ConnectionGuard, ConnectionError, ConnectionMetrics,
-    SizeValidator, SizeError
+    ConnectionError, ConnectionGuard, ConnectionMetrics, ConnectionTracker, RateLimitError,
+    RateLimiter, ResourceLimits, SizeError, SizeValidator,
 };

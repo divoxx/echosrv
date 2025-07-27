@@ -1,14 +1,12 @@
-use echosrv::{TcpEchoServer, UdpEchoServer, EchoClient, EchoServerTrait, Address};
+use echosrv::common::create_controlled_test_server_with_limit;
+use echosrv::http::{HttpConfig, HttpEchoServer};
+use echosrv::{Address, EchoClient, EchoServerTrait, TcpEchoServer, UdpEchoServer};
+use echosrv::{EchoError, Result};
 use echosrv::{TcpConfig, TcpEchoClient};
 use echosrv::{UdpConfig, UdpEchoClient};
-use echosrv::{Result, EchoError};
-use echosrv::common::create_controlled_test_server_with_limit;
 use std::time::Duration;
-use tokio::{
-    net::{TcpListener, UdpSocket},
-};
+use tokio::net::{TcpListener, UdpSocket};
 use tracing::{error, info};
-use echosrv::http::{HttpConfig, HttpEchoServer};
 
 #[tokio::test]
 async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
@@ -38,7 +36,7 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
             return Err(EchoError::Config(format!("Task join error: {e}")));
         }
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -46,20 +44,23 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 #[tokio::test]
 async fn test_multiple_concurrent_udp_clients() -> Result<()> {
     // Create a UDP test server
-    let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(EchoError::Udp)?;
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(EchoError::Udp)?;
     let addr = socket.local_addr().map_err(EchoError::Udp)?;
 
     let server_handle = tokio::spawn(async move {
         let mut buffer = [0; 1024];
         loop {
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                socket.recv_from(&mut buffer)
-            ).await {
+            match tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await
+            {
                 Ok(Ok((n, client_addr))) => {
                     // Echo back the received data
                     if let Err(e) = socket.send_to(&buffer[..n], client_addr).await {
-                        error!("UDP test server: Failed to send echo to {}: {}", client_addr, e);
+                        error!(
+                            "UDP test server: Failed to send echo to {}: {}",
+                            client_addr, e
+                        );
                     } else {
                         info!("UDP test server: Echoed {} bytes to {}", n, client_addr);
                     }
@@ -98,9 +99,11 @@ async fn test_multiple_concurrent_udp_clients() -> Result<()> {
 
     // Wait for all clients to complete
     for handle in handles {
-        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {e}")))??;
+        handle
+            .await
+            .map_err(|e| EchoError::Config(format!("Task join error: {e}")))??;
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -115,7 +118,9 @@ async fn test_tcp_connection_limit() -> Result<()> {
         write_timeout: Duration::from_secs(30),
     };
 
-    let listener = TcpListener::bind(config.bind_addr).await.map_err(EchoError::Tcp)?;
+    let listener = TcpListener::bind(config.bind_addr)
+        .await
+        .map_err(EchoError::Tcp)?;
     let addr = listener.local_addr().map_err(EchoError::Tcp)?;
     drop(listener);
 
@@ -129,17 +134,16 @@ async fn test_tcp_connection_limit() -> Result<()> {
 
     let server = TcpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            server.run()
-        ).await.map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
+        tokio::time::timeout(Duration::from_secs(10), server.run())
+            .await
+            .map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Try to create more connections than the limit concurrently
     let mut handles = Vec::new();
-    
+
     for i in 0..5 {
         let addr = addr;
         let handle = tokio::spawn(async move {
@@ -172,7 +176,7 @@ async fn test_tcp_connection_limit() -> Result<()> {
     // Wait for all connections to complete
     let mut successful_connections = 0;
     let mut failed_connections = 0;
-    
+
     for handle in handles {
         match handle.await {
             Ok(Ok(result)) => {
@@ -189,9 +193,15 @@ async fn test_tcp_connection_limit() -> Result<()> {
     }
 
     // Should have at most 2 successful connections, and some failures
-    assert!(successful_connections <= 2, "Expected at most 2 successful connections, got {successful_connections}");
-    assert!(failed_connections > 0, "Expected some connection failures, got {failed_connections}");
-    
+    assert!(
+        successful_connections <= 2,
+        "Expected at most 2 successful connections, got {successful_connections}"
+    );
+    assert!(
+        failed_connections > 0,
+        "Expected some connection failures, got {failed_connections}"
+    );
+
     server_handle.abort();
     Ok(())
 }
@@ -209,7 +219,7 @@ async fn test_tcp_graceful_shutdown() -> Result<()> {
 
     // Shutdown server
     server_handle.abort();
-    
+
     // Give server time to shutdown
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -227,20 +237,23 @@ async fn test_tcp_graceful_shutdown() -> Result<()> {
 #[tokio::test]
 async fn test_udp_graceful_shutdown() -> Result<()> {
     // Create a UDP test server
-    let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(EchoError::Udp)?;
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(EchoError::Udp)?;
     let addr = socket.local_addr().map_err(EchoError::Udp)?;
 
     let server_handle = tokio::spawn(async move {
         let mut buffer = [0; 1024];
         loop {
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                socket.recv_from(&mut buffer)
-            ).await {
+            match tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await
+            {
                 Ok(Ok((n, client_addr))) => {
                     // Echo back the received data
                     if let Err(e) = socket.send_to(&buffer[..n], client_addr).await {
-                        error!("UDP test server: Failed to send echo to {}: {}", client_addr, e);
+                        error!(
+                            "UDP test server: Failed to send echo to {}: {}",
+                            client_addr, e
+                        );
                     } else {
                         info!("UDP test server: Echoed {} bytes to {}", n, client_addr);
                     }
@@ -268,7 +281,7 @@ async fn test_udp_graceful_shutdown() -> Result<()> {
 
     // Shutdown server
     server_handle.abort();
-    
+
     // Give server time to shutdown
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -309,10 +322,9 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
 
     let server = TcpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            server.run()
-        ).await.map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
+        tokio::time::timeout(Duration::from_secs(5), server.run())
+            .await
+            .map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -321,7 +333,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
     let mut client = TcpEchoClient::connect(addr).await?;
     let response = client.echo_string("quick test").await?;
     assert_eq!(response, "quick test");
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -338,10 +350,9 @@ async fn test_udp_timeout_configuration() -> Result<()> {
 
     let server = UdpEchoServer::new(config.into());
     let server_handle = tokio::spawn(async move {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            server.run()
-        ).await.map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
+        tokio::time::timeout(Duration::from_secs(5), server.run())
+            .await
+            .map_err(|_| EchoError::Timeout("Server timeout".to_string()))?
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -349,11 +360,11 @@ async fn test_udp_timeout_configuration() -> Result<()> {
     // Test that normal operations work with timeouts
     let addr = "127.0.0.1:0".parse().unwrap();
     let mut client = UdpEchoClient::connect(addr).await?;
-    
+
     // This should fail since we're not connecting to the actual server
     // but it tests that the client can be created with timeout config
     assert!(client.echo_string("quick test").await.is_err());
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -368,7 +379,7 @@ async fn test_tcp_stress_test() -> Result<()> {
     let mut handles = Vec::new();
     let mut successful_echoes = 0;
     let mut failed_connections = 0;
-    
+
     for i in 0..100 {
         let addr = addr;
         let handle = tokio::spawn(async move {
@@ -411,11 +422,17 @@ async fn test_tcp_stress_test() -> Result<()> {
             }
         }
     }
-    
+
     // Should have many successful echoes and some failures
-    assert!(successful_echoes > 0, "Expected some successful echoes, got {successful_echoes}");
-    info!("TCP stress test completed: {} successful echoes, {} failed connections", successful_echoes, failed_connections);
-    
+    assert!(
+        successful_echoes > 0,
+        "Expected some successful echoes, got {successful_echoes}"
+    );
+    info!(
+        "TCP stress test completed: {} successful echoes, {} failed connections",
+        successful_echoes, failed_connections
+    );
+
     server_handle.abort();
     Ok(())
 }
@@ -423,20 +440,23 @@ async fn test_tcp_stress_test() -> Result<()> {
 #[tokio::test]
 async fn test_udp_stress_test() -> Result<()> {
     // Create a UDP test server
-    let socket = UdpSocket::bind("127.0.0.1:0").await.map_err(EchoError::Udp)?;
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(EchoError::Udp)?;
     let addr = socket.local_addr().map_err(EchoError::Udp)?;
 
     let server_handle = tokio::spawn(async move {
         let mut buffer = [0; 1024];
         loop {
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                socket.recv_from(&mut buffer)
-            ).await {
+            match tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await
+            {
                 Ok(Ok((n, client_addr))) => {
                     // Echo back the received data
                     if let Err(e) = socket.send_to(&buffer[..n], client_addr).await {
-                        error!("UDP test server: Failed to send echo to {}: {}", client_addr, e);
+                        error!(
+                            "UDP test server: Failed to send echo to {}: {}",
+                            client_addr, e
+                        );
                     } else {
                         info!("UDP test server: Echoed {} bytes to {}", n, client_addr);
                     }
@@ -461,7 +481,7 @@ async fn test_udp_stress_test() -> Result<()> {
     let mut handles = Vec::new();
     let mut successful_echoes = 0;
     let mut failed_connections = 0;
-    
+
     for i in 0..100 {
         let addr = addr;
         let handle = tokio::spawn(async move {
@@ -504,16 +524,20 @@ async fn test_udp_stress_test() -> Result<()> {
             }
         }
     }
-    
+
     // Should have many successful echoes and some failures
-    assert!(successful_echoes > 0, "Expected some successful echoes, got {successful_echoes}");
-    info!("UDP stress test completed: {} successful echoes, {} failed connections", successful_echoes, failed_connections);
-    
+    assert!(
+        successful_echoes > 0,
+        "Expected some successful echoes, got {successful_echoes}"
+    );
+    info!(
+        "UDP stress test completed: {} successful echoes, {} failed connections",
+        successful_echoes, failed_connections
+    );
+
     server_handle.abort();
     Ok(())
-} 
-
-
+}
 
 #[tokio::test]
 async fn test_http_echo_post() -> Result<()> {
@@ -530,19 +554,18 @@ async fn test_http_echo_post() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Test POST request
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
     let mut stream = TcpStream::connect(test_addr).await?;
     let body = "post body";
     let request = format!(
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
-        body.len(), body
+        body.len(),
+        body
     );
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
@@ -570,14 +593,12 @@ async fn test_http_method_not_allowed() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Test GET request (should return 405)
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
     let mut stream = TcpStream::connect(test_addr).await?;
     let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
     stream.write_all(request.as_bytes()).await?;
@@ -607,33 +628,32 @@ async fn test_http_large_payload() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Test with a large payload (10KB)
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
     let mut stream = TcpStream::connect(test_addr).await?;
-    
+
     // Use a smaller payload that will definitely fit in the buffer (500 bytes)
     let large_body: String = (0..500).map(|i| (i % 26 + 97) as u8 as char).collect();
     let request = format!(
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
-        large_body.len(), large_body
+        large_body.len(),
+        large_body
     );
-    
+
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
-    
+
     let mut response = vec![0u8; 8192]; // Response buffer
     let n = stream.read(&mut response).await?;
     let response_str = String::from_utf8_lossy(&response[..n]);
-    
+
     // Should only contain the body content, no HTTP headers
     assert_eq!(response_str.trim(), large_body);
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -652,48 +672,50 @@ async fn test_http_concurrent_clients() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Test multiple concurrent HTTP clients
     let client_count = 10;
     let mut handles = Vec::new();
-    
+
     for i in 0..client_count {
         let addr = test_addr.to_string();
         let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             use tokio::net::TcpStream;
-            use tokio::io::{AsyncWriteExt, AsyncReadExt};
-            
+
             let mut stream = TcpStream::connect(&addr).await?;
             let body = format!("concurrent client {i}");
             let request = format!(
                 "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(), body
+                body.len(),
+                body
             );
-            
+
             stream.write_all(request.as_bytes()).await?;
             stream.flush().await?;
-            
+
             let mut response = vec![0u8; 4096];
             let n = stream.read(&mut response).await?;
             let response_str = String::from_utf8_lossy(&response[..n]);
-            
+
             // Should only contain the body content, no HTTP headers
             assert_eq!(response_str.trim(), body);
-            
+
             Ok::<(), std::io::Error>(())
         });
         handles.push(handle);
     }
-    
+
     // Wait for all clients to complete
     for handle in handles {
-        handle.await.map_err(|e| EchoError::Config(format!("Task join error: {e}")))?.map_err(EchoError::Tcp)?;
+        handle
+            .await
+            .map_err(|e| EchoError::Config(format!("Task join error: {e}")))?
+            .map_err(EchoError::Tcp)?;
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -712,21 +734,21 @@ async fn test_http_client_usage() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // Test using the HttpEchoClient with a simple request
     use echosrv::http::HttpEchoClient;
-    
-    let addr: Address = test_addr.parse().map_err(|e| EchoError::Config(format!("Invalid address: {e}")))?;
+
+    let addr: Address = test_addr
+        .parse()
+        .map_err(|e| EchoError::Config(format!("Invalid address: {e}")))?;
     let mut client = HttpEchoClient::connect(addr).await?;
-    
+
     // Test with a simple string that should work
     let message = "test";
     let response = client.echo_string(message).await;
-    
+
     // The HTTP client might not work as expected due to protocol differences
     // Let's just verify it doesn't crash and returns some result
     match response {
@@ -737,7 +759,7 @@ async fn test_http_client_usage() -> Result<()> {
             // This is expected due to the protocol mismatch
         }
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -756,20 +778,18 @@ async fn test_http_malformed_requests() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
-    
+
     // Test malformed request (missing Content-Length header)
     let mut stream = TcpStream::connect(test_addr).await?;
     let malformed_request = "POST / HTTP/1.1\r\nHost: localhost\r\n\r\nbody";
     stream.write_all(malformed_request.as_bytes()).await?;
     stream.flush().await?;
-    
+
     // The current implementation may handle this differently, so we'll just verify it doesn't crash
     let mut response = vec![0u8; 1024];
     match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response)).await {
@@ -780,7 +800,7 @@ async fn test_http_malformed_requests() -> Result<()> {
             // Connection closed or timeout is acceptable for malformed requests
         }
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -799,33 +819,31 @@ async fn test_http_different_methods() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
-    
+
     // Test various HTTP methods that should return 405
     let methods = ["GET", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
-    
+
     for method in &methods {
         let mut stream = TcpStream::connect(test_addr).await?;
         let request = format!("{method} / HTTP/1.1\r\nHost: localhost\r\n\r\n");
         stream.write_all(request.as_bytes()).await?;
         stream.flush().await?;
-        
+
         let mut response = vec![0u8; 4096];
         let n = stream.read(&mut response).await?;
         let response_str = String::from_utf8_lossy(&response[..n]);
-        
-            assert!(response_str.contains("405"));
-    assert!(response_str.contains("Method Not Allowed"));
-    assert!(response_str.contains("Allow: POST"));
-    assert!(response_str.contains(&format!("Method {method} not allowed")));
+
+        assert!(response_str.contains("405"));
+        assert!(response_str.contains("Method Not Allowed"));
+        assert!(response_str.contains("Allow: POST"));
+        assert!(response_str.contains(&format!("Method {method} not allowed")));
     }
-    
+
     server_handle.abort();
     Ok(())
 }
@@ -844,31 +862,30 @@ async fn test_http_headers_preservation() -> Result<()> {
         default_content_type: Some("text/plain".to_string()),
     };
     let server = HttpEchoServer::new(config.into());
-    let server_handle = tokio::spawn(async move {
-        server.run().await
-    });
+    let server_handle = tokio::spawn(async move { server.run().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
-    
+
     let mut stream = TcpStream::connect(test_addr).await?;
     let body = "test body";
     let request = format!(
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nContent-Type: application/json\r\nX-Custom-Header: test-value\r\n\r\n{}",
-        body.len(), body
+        body.len(),
+        body
     );
-    
+
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
-    
+
     let mut response = vec![0u8; 4096];
     let n = stream.read(&mut response).await?;
     let response_str = String::from_utf8_lossy(&response[..n]);
-    
+
     // Should only contain the body content, no HTTP headers
     assert_eq!(response_str.trim(), body);
-    
+
     server_handle.abort();
     Ok(())
-} 
+}

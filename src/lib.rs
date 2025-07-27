@@ -1,5 +1,5 @@
-use thiserror::Error;
 use crate::http::protocol::HttpProtocolError;
+use thiserror::Error;
 
 /// Error types for the echosrv library
 #[derive(Error, Debug)]
@@ -39,32 +39,36 @@ impl From<HttpProtocolError> for EchoError {
             HttpProtocolError::Io(e) => EchoError::Tcp(e),
             HttpProtocolError::HttpParse(msg) => EchoError::Config(msg),
             HttpProtocolError::InvalidRequest(msg) => EchoError::Config(msg),
-            HttpProtocolError::IncompleteRequest => EchoError::Config("Incomplete HTTP request".to_string()),
+            HttpProtocolError::IncompleteRequest => {
+                EchoError::Config("Incomplete HTTP request".to_string())
+            }
         }
     }
 }
-
 
 /// Result type for the echosrv library
 pub type Result<T> = std::result::Result<T, EchoError>;
 
 pub mod common;
 pub mod datagram;
+pub mod http;
+pub mod network;
+pub mod performance;
+pub mod security;
 pub mod stream;
 pub mod tcp;
 pub mod udp;
 pub mod unix;
-pub mod http;
-pub mod network;
-pub mod security;
-pub mod performance;
 
 // Re-export main types for convenience
-pub use common::{EchoServerTrait, EchoClient};
-pub use datagram::{DatagramConfig, DatagramEchoServer, DatagramEchoClient};
-pub use stream::{StreamConfig, StreamEchoServer, Client as StreamClient};
-pub use tcp::{TcpEchoServer, TcpEchoClient, TcpConfig};
-pub use udp::{UdpEchoServer, UdpEchoClient, UdpConfig};
-pub use unix::{UnixStreamEchoServer, UnixStreamEchoClient, UnixStreamConfig, UnixDatagramEchoServer, UnixDatagramEchoClient, UnixDatagramConfig};
-pub use http::{HttpConfig, HttpProtocol, HttpEchoServer, HttpEchoClient};
-pub use network::Address; 
+pub use common::{EchoClient, EchoServerTrait};
+pub use datagram::{DatagramConfig, DatagramEchoClient, DatagramEchoServer};
+pub use http::{HttpConfig, HttpEchoClient, HttpEchoServer, HttpProtocol};
+pub use network::Address;
+pub use stream::{Client as StreamClient, StreamConfig, StreamEchoServer};
+pub use tcp::{TcpConfig, TcpEchoClient, TcpEchoServer};
+pub use udp::{UdpConfig, UdpEchoClient, UdpEchoServer};
+pub use unix::{
+    UnixDatagramConfig, UnixDatagramEchoClient, UnixDatagramEchoServer, UnixStreamConfig,
+    UnixStreamEchoClient, UnixStreamEchoServer,
+};

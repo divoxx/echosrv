@@ -1,12 +1,12 @@
 use crate::EchoError;
-use crate::stream::StreamProtocol;
 use crate::stream::StreamConfig;
+use crate::stream::StreamProtocol;
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{UnixListener, UnixStream};
 
 /// Unix domain stream protocol implementation
@@ -66,11 +66,17 @@ impl AsyncWrite for ManagedUnixStream {
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -131,9 +137,8 @@ impl StreamProtocol for Protocol {
         if let Some(parent) = socket_path.parent() {
             if !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    EchoError::Unix(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to create directory {}: {}", parent.display(), e)
+                    EchoError::Unix(std::io::Error::other(
+                        format!("Failed to create directory {}: {}", parent.display(), e),
                     ))
                 })?;
             }
@@ -143,7 +148,9 @@ impl StreamProtocol for Protocol {
         Ok(ManagedUnixListener::new(listener, socket_path))
     }
 
-    async fn accept(listener: &mut Self::Listener) -> std::result::Result<(Self::Stream, SocketAddr), EchoError> {
+    async fn accept(
+        listener: &mut Self::Listener,
+    ) -> std::result::Result<(Self::Stream, SocketAddr), EchoError> {
         listener.accept().await.map_err(EchoError::Unix)
     }
 
@@ -151,11 +158,14 @@ impl StreamProtocol for Protocol {
         // This method signature is problematic for Unix sockets since it takes SocketAddr
         // In the improved design, we'd have a connect_unix method instead
         Err(EchoError::Unsupported(
-            "Use connect_unix method for Unix domain socket connections".to_string()
+            "Use connect_unix method for Unix domain socket connections".to_string(),
         ))
     }
 
-    async fn read(stream: &mut Self::Stream, buffer: &mut [u8]) -> std::result::Result<usize, EchoError> {
+    async fn read(
+        stream: &mut Self::Stream,
+        buffer: &mut [u8],
+    ) -> std::result::Result<usize, EchoError> {
         stream.inner.read(buffer).await.map_err(EchoError::Unix)
     }
 
@@ -176,18 +186,24 @@ impl StreamProtocol for Protocol {
 #[async_trait]
 pub trait StreamExt {
     /// Bind to a Unix domain socket using a path
-    async fn bind_unix(socket_path: &PathBuf) -> std::result::Result<ManagedUnixListener, EchoError>;
-    
+    async fn bind_unix(
+        socket_path: &PathBuf,
+    ) -> std::result::Result<ManagedUnixListener, EchoError>;
+
     /// Connect to a Unix domain socket using a path
-    async fn connect_unix(socket_path: &PathBuf) -> std::result::Result<ManagedUnixStream, EchoError>;
-    
+    async fn connect_unix(
+        socket_path: &PathBuf,
+    ) -> std::result::Result<ManagedUnixStream, EchoError>;
+
     /// Create an anonymous client socket (for testing or temporary connections)
     async fn connect_anonymous() -> std::result::Result<ManagedUnixStream, EchoError>;
 }
 
 #[async_trait]
 impl StreamExt for Protocol {
-    async fn bind_unix(socket_path: &PathBuf) -> std::result::Result<ManagedUnixListener, EchoError> {
+    async fn bind_unix(
+        socket_path: &PathBuf,
+    ) -> std::result::Result<ManagedUnixListener, EchoError> {
         // Remove existing socket file if it exists
         let _ = std::fs::remove_file(socket_path);
 
@@ -195,9 +211,8 @@ impl StreamExt for Protocol {
         if let Some(parent) = socket_path.parent() {
             if !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    EchoError::Unix(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to create directory {}: {}", parent.display(), e)
+                    EchoError::Unix(std::io::Error::other(
+                        format!("Failed to create directory {}: {}", parent.display(), e),
                     ))
                 })?;
             }
@@ -207,8 +222,12 @@ impl StreamExt for Protocol {
         Ok(ManagedUnixListener::new(listener, socket_path.clone()))
     }
 
-    async fn connect_unix(socket_path: &PathBuf) -> std::result::Result<ManagedUnixStream, EchoError> {
-        let stream = UnixStream::connect(socket_path).await.map_err(EchoError::Unix)?;
+    async fn connect_unix(
+        socket_path: &PathBuf,
+    ) -> std::result::Result<ManagedUnixStream, EchoError> {
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .map_err(EchoError::Unix)?;
         Ok(ManagedUnixStream::new(stream))
     }
 
@@ -228,8 +247,10 @@ impl StreamExt for Protocol {
         let _ = std::fs::remove_file(&client_socket_path);
 
         // Bind to create the socket, then we can use it to connect
-        let stream = UnixStream::connect(&client_socket_path).await.map_err(EchoError::Unix)?;
-        
+        let stream = UnixStream::connect(&client_socket_path)
+            .await
+            .map_err(EchoError::Unix)?;
+
         Ok(ManagedUnixStream::with_path(stream, client_socket_path))
     }
 }
@@ -243,10 +264,10 @@ mod tests {
     async fn test_unix_stream_bind_and_cleanup() {
         let temp_dir = tempdir().unwrap();
         let socket_path = temp_dir.path().join("test.sock");
-        
+
         // Test basic socket path creation
         assert!(!socket_path.exists());
-        
+
         // For now, just test the types work
         // Full testing would require integrating with the new config system
         let _socket_path_clone = socket_path.clone();
@@ -256,10 +277,10 @@ mod tests {
     async fn test_unix_stream_connect() {
         let temp_dir = tempdir().unwrap();
         let socket_path = temp_dir.path().join("test_connect.sock");
-        
+
         // Test connection attempt (will fail, but tests the API)
         let connect_result = Protocol::connect_unix(&socket_path).await;
-        
+
         // Should fail since no server is listening
         assert!(connect_result.is_err());
     }

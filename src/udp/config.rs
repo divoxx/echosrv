@@ -1,6 +1,6 @@
+use crate::datagram::DatagramConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
-use crate::datagram::DatagramConfig;
 
 /// UDP-specific configuration that extends the common config
 ///
@@ -49,4 +49,4 @@ impl From<UdpConfig> for DatagramConfig {
             write_timeout: config.write_timeout,
         }
     }
-} 
+}

@@ -1,11 +1,11 @@
-use crate::common::EchoClient;
-use crate::unix::stream_protocol::{Protocol, StreamExt, ManagedUnixStream};
-use crate::unix::datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
 use crate::Result;
-use std::path::PathBuf;
-use tokio::net::UnixDatagram;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::common::EchoClient;
+use crate::unix::datagram_protocol::{UnixDatagramExt, UnixDatagramProtocol};
+use crate::unix::stream_protocol::{ManagedUnixStream, Protocol, StreamExt};
 use async_trait::async_trait;
+use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixDatagram;
 
 /// Unix domain stream echo client
 ///
@@ -46,23 +46,30 @@ impl UnixStreamEchoClient {
 impl EchoClient for UnixStreamEchoClient {
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         // Send the data
-        self.stream.write_all(data).await.map_err(crate::EchoError::Unix)?;
+        self.stream
+            .write_all(data)
+            .await
+            .map_err(crate::EchoError::Unix)?;
         self.stream.flush().await.map_err(crate::EchoError::Unix)?;
-        
+
         // Read the echoed response
         let mut buffer = vec![0u8; data.len()];
         let mut response = Vec::new();
         let mut total_read = 0;
-        
+
         while total_read < data.len() {
-            let n = self.stream.read(&mut buffer).await.map_err(crate::EchoError::Unix)?;
+            let n = self
+                .stream
+                .read(&mut buffer)
+                .await
+                .map_err(crate::EchoError::Unix)?;
             if n == 0 {
                 break; // Connection closed
             }
             response.extend_from_slice(&buffer[..n]);
             total_read += n;
         }
-        
+
         Ok(response)
     }
 }
@@ -99,7 +106,10 @@ impl UnixDatagramEchoClient {
     /// Connects to a Unix domain datagram echo server at the given socket path
     pub async fn connect(server_path: PathBuf) -> Result<Self> {
         let socket = UnixDatagramProtocol::connect_unix(&server_path).await?;
-        Ok(Self { socket, server_path })
+        Ok(Self {
+            socket,
+            server_path,
+        })
     }
 }
 
@@ -107,12 +117,19 @@ impl UnixDatagramEchoClient {
 impl EchoClient for UnixDatagramEchoClient {
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         // Send the data to the server
-        self.socket.send_to(data, &self.server_path).await.map_err(crate::EchoError::Unix)?;
-        
+        self.socket
+            .send_to(data, &self.server_path)
+            .await
+            .map_err(crate::EchoError::Unix)?;
+
         // Receive the echoed response
         let mut buffer = vec![0u8; data.len()];
-        let (len, _) = self.socket.recv_from(&mut buffer).await.map_err(crate::EchoError::Unix)?;
-        
+        let (len, _) = self
+            .socket
+            .recv_from(&mut buffer)
+            .await
+            .map_err(crate::EchoError::Unix)?;
+
         Ok(buffer[..len].to_vec())
     }
-} 
+}

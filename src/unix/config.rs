@@ -1,7 +1,7 @@
+use crate::datagram::DatagramConfig;
+use crate::stream::StreamConfig;
 use std::path::PathBuf;
 use std::time::Duration;
-use crate::stream::StreamConfig;
-use crate::datagram::DatagramConfig;
 
 /// Unix domain stream socket configuration
 ///
@@ -50,7 +50,7 @@ impl From<UnixStreamConfig> for StreamConfig {
         Self {
             bind_addr: std::net::SocketAddr::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                0
+                0,
             ),
             max_connections: config.max_connections,
             buffer_size: config.buffer_size,
@@ -103,11 +103,11 @@ impl From<UnixDatagramConfig> for DatagramConfig {
         Self {
             bind_addr: std::net::SocketAddr::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                0
+                0,
             ),
             buffer_size: config.buffer_size,
             read_timeout: config.read_timeout,
             write_timeout: config.write_timeout,
         }
     }
-} 
+}

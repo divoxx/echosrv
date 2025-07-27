@@ -1,5 +1,5 @@
-use crate::stream::StreamEchoServer;
 use super::stream_protocol::TcpProtocol;
+use crate::stream::StreamEchoServer;
 
 /// TCP echo server that handles TCP connections
 ///
@@ -57,5 +57,3 @@ use super::stream_protocol::TcpProtocol;
 /// }
 /// ```
 pub type TcpEchoServer = StreamEchoServer<TcpProtocol>;
-
- 

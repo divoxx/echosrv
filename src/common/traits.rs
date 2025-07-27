@@ -1,4 +1,4 @@
-use crate::{Result, EchoError};
+use crate::{EchoError, Result};
 use async_trait::async_trait;
 
 /// Common trait for echo servers
@@ -28,4 +28,4 @@ pub trait EchoClient {
         let response = self.echo(data.as_bytes()).await?;
         String::from_utf8(response).map_err(EchoError::Utf8)
     }
-} 
+}

@@ -1,9 +1,7 @@
-
-
 #[cfg(test)]
 mod tests {
-    use crate::{UdpConfig, UdpEchoServer};
     use crate::common::traits::EchoServerTrait;
+    use crate::{UdpConfig, UdpEchoServer};
     use std::time::Duration;
 
     #[tokio::test]
@@ -21,4 +19,4 @@ mod tests {
         let server = UdpEchoServer::new(config.into());
         assert!(server.shutdown_signal().receiver_count() == 0);
     }
-} 
+}

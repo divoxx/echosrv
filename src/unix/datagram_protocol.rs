@@ -95,4 +95,3 @@ impl UnixDatagramExt for UnixDatagramProtocol {
         Ok(socket)
     }
 }
-

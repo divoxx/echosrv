@@ -1,5 +1,5 @@
-use echosrv::{TcpEchoServer, TcpEchoClient, TcpConfig, EchoClient, EchoServerTrait};
 use echosrv::common::create_controlled_test_server_with_limit;
+use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
 use proptest::prelude::*;
 use std::time::Duration;
 
@@ -16,17 +16,17 @@ proptest! {
 
             // Create a test server
             let (server_handle, addr) = create_controlled_test_server_with_limit(10).await
-                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {e}")))?;
 
             // Give server time to start
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             // Connect client and test echo
             let mut client = TcpEchoClient::connect(addr).await
-                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {e}")))?;
 
             let response = client.echo(&data).await
-                .map_err(|e| TestCaseError::fail(format!("Echo failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Echo failed: {e}")))?;
 
             // Clean shutdown
             server_handle.abort();
@@ -46,15 +46,15 @@ proptest! {
             }
 
             let (server_handle, addr) = create_controlled_test_server_with_limit(10).await
-                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {e}")))?;
 
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             let mut client = TcpEchoClient::connect(addr).await
-                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {e}")))?;
 
             let response = client.echo_string(&text).await
-                .map_err(|e| TestCaseError::fail(format!("Echo string failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Echo string failed: {e}")))?;
 
             server_handle.abort();
 
@@ -71,7 +71,7 @@ proptest! {
     ) {
         tokio_test::block_on(async {
             let (server_handle, addr) = create_controlled_test_server_with_limit(20).await
-                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Server setup failed: {e}")))?;
 
             tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -81,7 +81,7 @@ proptest! {
                 if message.is_empty() {
                     continue; // Skip empty messages
                 }
-                
+
                 let addr = addr;
                 let message = message.clone();
                 let handle = tokio::spawn(async move {
@@ -96,8 +96,8 @@ proptest! {
             let mut results = Vec::new();
             for (i, handle) in handles {
                 let result = handle.await
-                    .map_err(|e| TestCaseError::fail(format!("Task {} join error: {}", i, e)))?
-                    .map_err(|e| TestCaseError::fail(format!("Client {} error: {}", i, e)))?;
+                    .map_err(|e| TestCaseError::fail(format!("Task {i} join error: {e}")))?
+                    .map_err(|e| TestCaseError::fail(format!("Client {i} error: {e}")))?;
                 results.push(result);
             }
 
@@ -120,14 +120,14 @@ proptest! {
     ) {
         tokio_test::block_on(async {
             use tokio::net::TcpListener;
-            
+
             // First bind to get the actual address
             let listener = TcpListener::bind("127.0.0.1:0").await
-                .map_err(|e| TestCaseError::fail(format!("Failed to bind listener: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Failed to bind listener: {e}")))?;
             let addr = listener.local_addr()
-                .map_err(|e| TestCaseError::fail(format!("Failed to get local address: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Failed to get local address: {e}")))?;
             drop(listener); // Close the listener so the server can bind to the same address
-            
+
             // Create server with custom buffer size
             let config = TcpConfig {
                 bind_addr: addr,
@@ -146,10 +146,10 @@ proptest! {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             let mut client = TcpEchoClient::connect(addr).await
-                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Client connection failed: {e}")))?;
 
             let response = client.echo(&data).await
-                .map_err(|e| TestCaseError::fail(format!("Echo failed: {}", e)))?;
+                .map_err(|e| TestCaseError::fail(format!("Echo failed: {e}")))?;
 
             server_handle.abort();
 
@@ -163,9 +163,8 @@ proptest! {
 /// Stress test with many connections
 #[tokio::test]
 async fn stress_test_many_connections() {
-    
     let (server_handle, addr) = create_controlled_test_server_with_limit(100).await.unwrap();
-    
+
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create 50 concurrent connections
@@ -174,7 +173,7 @@ async fn stress_test_many_connections() {
         let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = TcpEchoClient::connect(addr).await?;
-            let message = format!("Stress test message from client {}", i);
+            let message = format!("Stress test message from client {i}");
             let response = client.echo_string(&message).await?;
             assert_eq!(response, message);
             Ok::<(), echosrv::EchoError>(())
@@ -194,17 +193,17 @@ async fn stress_test_many_connections() {
 #[tokio::test]
 async fn rapid_connect_disconnect() {
     let (server_handle, addr) = create_controlled_test_server_with_limit(50).await.unwrap();
-    
+
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Rapidly connect and disconnect
     for i in 0..20 {
         let mut client = TcpEchoClient::connect(addr).await.unwrap();
-        let message = format!("Rapid test {}", i);
+        let message = format!("Rapid test {i}");
         let response = client.echo_string(&message).await.unwrap();
         assert_eq!(response, message);
         drop(client); // Explicit disconnect
-        
+
         // Small delay to avoid overwhelming the server
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -216,11 +215,11 @@ async fn rapid_connect_disconnect() {
 #[tokio::test]
 async fn binary_data_with_nulls() {
     let (server_handle, addr) = create_controlled_test_server_with_limit(10).await.unwrap();
-    
+
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut client = TcpEchoClient::connect(addr).await.unwrap();
-    
+
     // Binary data with null bytes and various patterns
     let test_data = vec![
         vec![0, 1, 2, 3, 0, 255, 128, 0],

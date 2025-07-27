@@ -40,4 +40,4 @@ impl Default for DatagramConfig {
             write_timeout: Duration::from_secs(30),
         }
     }
-} 
+}

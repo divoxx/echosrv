@@ -1,13 +1,10 @@
-use crate::{Result, EchoError};
-use crate::common::EchoServerTrait;
 use super::{DatagramConfig, DatagramProtocol};
-use std::sync::Arc;
-use tokio::{
-    signal,
-    time::timeout,
-};
-use tracing::{error, info, warn};
+use crate::common::EchoServerTrait;
+use crate::{EchoError, Result};
 use async_trait::async_trait;
+use std::sync::Arc;
+use tokio::{signal, time::timeout};
+use tracing::{error, info, warn};
 
 /// Generic datagram-based echo server that works with any datagram protocol
 ///
@@ -44,7 +41,7 @@ pub struct DatagramEchoServer<P: DatagramProtocol> {
     shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
-impl<P: DatagramProtocol> DatagramEchoServer<P> 
+impl<P: DatagramProtocol> DatagramEchoServer<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
@@ -60,7 +57,7 @@ where
 }
 
 #[async_trait]
-impl<P: DatagramProtocol + Sync> EchoServerTrait for DatagramEchoServer<P> 
+impl<P: DatagramProtocol + Sync> EchoServerTrait for DatagramEchoServer<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
@@ -80,7 +77,7 @@ where
                         Ok(Ok((n, addr))) => {
                             let preview = String::from_utf8_lossy(&buffer[..n]);
                             info!(%addr, size = n, preview = %preview, "Received datagram");
-                            
+
                             if let Err(e) = P::send_to(&socket, &buffer[..n], addr).await {
                                 error!(%addr, error = %e, "Failed to send echo response");
                             } else {
@@ -114,4 +111,4 @@ where
     fn shutdown_signal(&self) -> tokio::sync::broadcast::Sender<()> {
         self.shutdown_signal.as_ref().clone()
     }
-} 
+}

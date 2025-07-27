@@ -51,21 +51,21 @@
 //! }
 //! ```
 
+pub mod client;
 pub mod config;
-pub mod stream_protocol;
 pub mod datagram_protocol;
 pub mod server;
-pub mod client;
+pub mod stream_protocol;
 
 #[cfg(test)]
 mod tests;
 
 // Re-export configuration types
-pub use config::{UnixStreamConfig, UnixDatagramConfig};
+pub use config::{UnixDatagramConfig, UnixStreamConfig};
 
 // Re-export server and client types
-pub use server::{UnixStreamEchoServer, UnixDatagramEchoServer};
-pub use client::{UnixStreamEchoClient, UnixDatagramEchoClient};
+pub use client::{UnixDatagramEchoClient, UnixStreamEchoClient};
+pub use server::{UnixDatagramEchoServer, UnixStreamEchoServer};
 
 // Re-export protocol implementations
-pub use stream_protocol::{Protocol, StreamExt}; 
+pub use stream_protocol::{Protocol, StreamExt};

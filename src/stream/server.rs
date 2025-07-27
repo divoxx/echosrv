@@ -1,15 +1,12 @@
-use crate::{Result, EchoError};
-use crate::common::EchoServerTrait;
 use super::{StreamConfig, StreamProtocol};
+use crate::common::EchoServerTrait;
+use crate::{EchoError, Result};
+use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::{
-    signal,
-    time::timeout,
-};
-use tracing::{error, info, warn, Instrument};
-use async_trait::async_trait;
+use tokio::{signal, time::timeout};
+use tracing::{Instrument, error, info, warn};
 
 /// Generic stream-based echo server that works with any stream protocol
 ///
@@ -47,7 +44,7 @@ pub struct StreamEchoServer<P: StreamProtocol> {
     shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
-impl<P: StreamProtocol> StreamEchoServer<P> 
+impl<P: StreamProtocol> StreamEchoServer<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
@@ -60,7 +57,7 @@ where
             shutdown_signal: Arc::new(shutdown_signal),
         }
     }
-    
+
     /// Handles a single stream-based connection
     async fn handle_connection(
         mut stream: P::Stream,
@@ -93,7 +90,8 @@ where
             info!(%addr, size = n, preview = %preview, "Received data");
 
             // Echo back the received data with timeout
-            let write_result = timeout(config.write_timeout, P::write(&mut stream, &buffer[..n])).await;
+            let write_result =
+                timeout(config.write_timeout, P::write(&mut stream, &buffer[..n])).await;
             match write_result {
                 Ok(Ok(())) => {
                     P::flush(&mut stream).await.map_err(|e| e.into())?;
@@ -114,12 +112,12 @@ where
 }
 
 #[async_trait]
-impl<P: StreamProtocol + Sync> EchoServerTrait for StreamEchoServer<P> 
+impl<P: StreamProtocol + Sync> EchoServerTrait for StreamEchoServer<P>
 where
     P::Error: Into<EchoError> + std::fmt::Display,
     P::Stream: 'static,
 {
-        /// Starts the stream-based echo server and listens for connections
+    /// Starts the stream-based echo server and listens for connections
     async fn run(&self) -> Result<()> {
         let mut listener = P::bind(&self.config).await.map_err(|e| e.into())?;
 
@@ -146,7 +144,7 @@ where
                             let config = self.config.clone();
                             let connection_count = connection_count.clone();
                             let span = tracing::info_span!("connection", %addr, current = new_count);
-                            
+
                             // Handle connection in a separate task with proper Send bounds
                             tokio::spawn(async move {
                                 let result = Self::handle_connection(stream, addr, config).instrument(span).await;
@@ -181,4 +179,4 @@ where
     fn shutdown_signal(&self) -> tokio::sync::broadcast::Sender<()> {
         self.shutdown_signal.as_ref().clone()
     }
-} 
+}
