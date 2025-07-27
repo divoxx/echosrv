@@ -11,4 +11,4 @@ pub mod client;
 pub use config::StreamConfig;
 pub use protocol::StreamProtocol;
 pub use server::StreamEchoServer;
-pub use client::StreamEchoClient; 
+pub use client::{Client, ClientConfig, ClientConfigBuilder}; 

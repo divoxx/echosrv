@@ -1,9 +1,9 @@
 use crate::common::EchoClient;
-use crate::unix::stream_protocol::{UnixStreamProtocol, UnixStreamExt};
+use crate::unix::stream_protocol::{Protocol, StreamExt, ManagedUnixStream};
 use crate::unix::datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
 use crate::Result;
 use std::path::PathBuf;
-use tokio::net::{UnixStream, UnixDatagram};
+use tokio::net::UnixDatagram;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use async_trait::async_trait;
 
@@ -31,13 +31,13 @@ use async_trait::async_trait;
 /// }
 /// ```
 pub struct UnixStreamEchoClient {
-    stream: UnixStream,
+    stream: ManagedUnixStream,
 }
 
 impl UnixStreamEchoClient {
     /// Connects to a Unix domain stream echo server at the given socket path
     pub async fn connect(socket_path: PathBuf) -> Result<Self> {
-        let stream = UnixStreamProtocol::connect_unix(&socket_path).await?;
+        let stream = Protocol::connect_unix(&socket_path).await?;
         Ok(Self { stream })
     }
 }

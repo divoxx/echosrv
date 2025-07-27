@@ -21,6 +21,8 @@ color-eyre = "0.6.2"
 async-trait = "0.1.88"
 http = "1.0"
 httparse = "1.8"
+bytes = "1.4"
+tokio-util = { version = "0.7", features = ["codec"] }
 
 [[bin]]
 name = "echosrv"
@@ -29,4 +31,6 @@ path = "src/main.rs"
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
+proptest = "1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
 

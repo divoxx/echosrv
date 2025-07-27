@@ -1,6 +1,6 @@
 use crate::common::EchoServerTrait;
 use crate::unix::config::{UnixStreamConfig, UnixDatagramConfig};
-use crate::unix::stream_protocol::{UnixStreamProtocol, UnixStreamExt};
+use crate::unix::stream_protocol::{Protocol, StreamExt};
 use crate::unix::datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
 use crate::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -59,7 +59,7 @@ impl EchoServerTrait for UnixStreamEchoServer {
         // Remove existing socket file if it exists
         let _ = std::fs::remove_file(socket_path);
         
-        let listener = UnixStreamProtocol::bind_unix(socket_path).await?;
+        let mut listener = Protocol::bind_unix(socket_path).await?;
         info!("Unix domain stream server bound to {}", socket_path.display());
         
         let mut shutdown_rx = self.shutdown_tx.subscribe();

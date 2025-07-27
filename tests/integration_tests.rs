@@ -1,4 +1,4 @@
-use echosrv::{TcpEchoServer, UdpEchoServer, EchoClient, EchoServerTrait};
+use echosrv::{TcpEchoServer, UdpEchoServer, EchoClient, EchoServerTrait, Address};
 use echosrv::{TcpConfig, TcpEchoClient};
 use echosrv::{UdpConfig, UdpEchoClient};
 use echosrv::{Result, EchoError};
@@ -720,7 +720,7 @@ async fn test_http_client_usage() -> Result<()> {
     // Test using the HttpEchoClient with a simple request
     use echosrv::http::HttpEchoClient;
     
-    let addr = test_addr.parse().map_err(|e| EchoError::Config(format!("Invalid address: {e}")))?;
+    let addr: Address = test_addr.parse().map_err(|e| EchoError::Config(format!("Invalid address: {e}")))?;
     let mut client = HttpEchoClient::connect(addr).await?;
     
     // Test with a simple string that should work

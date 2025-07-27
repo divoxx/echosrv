@@ -44,6 +44,7 @@ impl From<HttpProtocolError> for EchoError {
     }
 }
 
+
 /// Result type for the echosrv library
 pub type Result<T> = std::result::Result<T, EchoError>;
 
@@ -54,12 +55,16 @@ pub mod tcp;
 pub mod udp;
 pub mod unix;
 pub mod http;
+pub mod network;
+pub mod security;
+pub mod performance;
 
 // Re-export main types for convenience
 pub use common::{EchoServerTrait, EchoClient};
 pub use datagram::{DatagramConfig, DatagramEchoServer, DatagramEchoClient};
-pub use stream::{StreamConfig, StreamEchoServer, StreamEchoClient};
+pub use stream::{StreamConfig, StreamEchoServer, Client as StreamClient};
 pub use tcp::{TcpEchoServer, TcpEchoClient, TcpConfig};
 pub use udp::{UdpEchoServer, UdpEchoClient, UdpConfig};
 pub use unix::{UnixStreamEchoServer, UnixStreamEchoClient, UnixStreamConfig, UnixDatagramEchoServer, UnixDatagramEchoClient, UnixDatagramConfig};
-pub use http::{HttpConfig, HttpProtocol, HttpEchoServer, HttpEchoClient}; 
+pub use http::{HttpConfig, HttpProtocol, HttpEchoServer, HttpEchoClient};
+pub use network::Address; 

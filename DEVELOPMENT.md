@@ -1,308 +1,263 @@
 # Development Guide
 
-This document outlines the development practices, architecture decisions, and guidelines for contributing to the Echo Server project.
+This document provides comprehensive guidance for developers working with the EchoSrv codebase, covering architecture, development practices, and contribution guidelines.
 
 ## Architecture Overview
 
 ### System Design
 
-The Echo Server is built around a clean, generic, multi-protocol architecture:
+EchoSrv is a high-performance async echo server library built with Tokio that supports multiple protocols through a clean, generic architecture:
 
-1. **Generic Interface**: Shared traits and utilities for both stream and datagram protocols
-2. **Protocol Trait System**: `StreamProtocol` and `DatagramProtocol` traits define protocol interfaces
-3. **Generic Implementations**: `StreamEchoServer/Client` and `DatagramEchoServer/Client` work with any protocol
-4. **Type Aliases**: Concrete TCP/UDP clients are type aliases to generic implementations
-5. **Configuration Management**: Protocol-specific configuration structs
-6. **Connection Handling**: Async tasks handle connections/datagrams per protocol
+1. **Generic Protocol System**: Abstract protocol implementations through traits
+2. **Type Aliases**: Concrete protocol types are aliases over generic components
+3. **Unified Address System**: Single address type supporting network and Unix sockets
+4. **Resource Management**: Built-in security, rate limiting, and performance optimizations
+5. **Configuration System**: Fluent builder pattern for type-safe configuration
 
 ### Module Structure
 
 ```
 src/
-├── lib.rs              # Library entry point, exports all modules
+├── lib.rs              # Library entry point and error types
 ├── main.rs             # Binary entry point for standalone server
-├── common/             # Shared components
-│   ├── mod.rs          # Common module exports
+├── common/             # Shared traits and utilities
 │   ├── traits.rs       # Core traits (EchoServerTrait, EchoClient)
-│   └── test_utils.rs   # Test utilities
+│   └── test_utils.rs   # Test utilities and helper functions
+├── network/            # Unified addressing and configuration
+│   ├── address.rs      # Address enum (Network/Unix)
+│   └── config.rs       # Configuration builders and types
+├── security/           # Resource limits and protection
+│   └── limits.rs       # Rate limiting, connection tracking, size validation
+├── performance/        # Performance optimizations
+│   └── buffer_pool.rs  # Buffer pooling and memory management
 ├── stream/             # Generic stream implementation
-│   ├── mod.rs          # Stream module exports
-│   ├── server.rs       # Generic stream server (StreamEchoServer<P>)
-│   ├── client.rs       # Generic stream client (StreamEchoClient<P>)
-│   ├── protocol.rs     # StreamProtocol trait
-│   └── config.rs       # StreamConfig
+│   ├── server.rs       # StreamEchoServer<P> generic server
+│   ├── client.rs       # StreamEchoClient<P> generic client
+│   ├── protocol.rs     # StreamProtocol trait definition
+│   └── config.rs       # Stream-specific configuration
 ├── datagram/           # Generic datagram implementation
-│   ├── mod.rs          # Datagram module exports
-│   ├── server.rs       # Generic datagram server (DatagramEchoServer<P>)
-│   ├── client.rs       # Generic datagram client (DatagramEchoClient<P>)
-│   ├── protocol.rs     # DatagramProtocol trait
-│   └── config.rs       # DatagramConfig
-├── tcp/                # TCP-specific implementation
-│   ├── mod.rs          # Type aliases: TcpEchoClient = StreamEchoClient<TcpProtocol>
-│   ├── server.rs       # Type alias: TcpEchoServer = StreamEchoServer<TcpProtocol>
+│   ├── server.rs       # DatagramEchoServer<P> generic server
+│   ├── client.rs       # DatagramEchoClient<P> generic client
+│   ├── protocol.rs     # DatagramProtocol trait definition
+│   └── config.rs       # Datagram-specific configuration
+├── tcp/                # TCP protocol implementation
+│   ├── mod.rs          # Type aliases and exports
 │   ├── config.rs       # TcpConfig
-│   ├── stream_protocol.rs # TcpProtocol implementation
-│   └── tests.rs        # TCP-specific tests
-├── udp/                # UDP-specific implementation
-│   ├── mod.rs          # Type aliases: UdpEchoClient = DatagramEchoClient<UdpProtocol>
-│   ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
+│   └── stream_protocol.rs # TcpProtocol implementation
+├── udp/                # UDP protocol implementation
+│   ├── mod.rs          # Type aliases and exports
 │   ├── config.rs       # UdpConfig
-│   ├── datagram_protocol.rs # UdpProtocol implementation
-│   └── tests.rs        # UDP-specific tests
-└── unix/               # Unix domain socket implementation
-    ├── mod.rs          # Module exports and type aliases
-    ├── config.rs       # UnixStreamConfig, UnixDatagramConfig
-    ├── server.rs       # UnixStreamEchoServer, UnixDatagramEchoServer
-    ├── client.rs       # UnixStreamEchoClient, UnixDatagramEchoClient
-    ├── stream_protocol.rs # UnixStreamProtocol implementation
-    ├── datagram_protocol.rs # UnixDatagramProtocol implementation
-    └── tests.rs        # Unix domain socket tests
+│   └── datagram_protocol.rs # UdpProtocol implementation
+├── unix/               # Unix domain socket implementation
+│   ├── mod.rs          # Type aliases and exports
+│   ├── config.rs       # Unix socket configurations
+│   ├── server.rs       # Unix-specific server implementations
+│   ├── client.rs       # Unix-specific client implementations
+│   ├── stream_protocol.rs # Unix stream protocol
+│   └── datagram_protocol.rs # Unix datagram protocol
 └── http/               # HTTP protocol implementation
-    ├── mod.rs          # Module exports and type aliases
+    ├── mod.rs          # Type aliases and exports
     ├── config.rs       # HttpConfig
     ├── protocol.rs     # HttpProtocol implementation
-    ├── client.rs       # HttpEchoClient type alias
-    └── tests.rs        # HTTP protocol unit tests
+    └── client.rs       # HttpEchoClient type alias
 ```
 
-### Key Design Decisions
+### Core Concepts
 
-#### 1. Generic Architecture
-- **Implementation**: Generic `StreamEchoServer<P>` and `DatagramEchoServer<P>` over protocol traits
-- **Benefits**: Code reuse, extensibility, consistent API across protocols
-- **Design**: Protocol traits (`StreamProtocol`, `DatagramProtocol`) define the interface
+#### Unified Address System
 
-#### 2. Type Alias Pattern
-- **Implementation**: Concrete clients are type aliases to generic implementations
-- **Benefits**: Zero-cost abstraction, familiar API, extensibility
-- **Example**: `pub type TcpEchoClient = StreamEchoClient<TcpProtocol>`
-- **Unix Domain Sockets**: Both stream and datagram variants follow the same pattern
+All protocols use the `Address` enum for addressing:
 
-#### 3. Protocol Trait System
-- **StreamProtocol**: Defines interface for stream-based protocols (TCP, Unix streams, WebSockets)
-- **DatagramProtocol**: Defines interface for datagram-based protocols (UDP, Unix datagrams)
-- **Benefits**: Easy to add new protocols, consistent interface, compile-time safety
-- **Unix Domain Sockets**: Implement both stream and datagram variants for maximum flexibility
+```rust
+pub enum Address {
+    Network(SocketAddr),  // TCP, UDP, HTTP
+    Unix(PathBuf),        // Unix domain sockets
+}
 
-#### 4. Async Architecture
-- **Implementation**: Uses Tokio runtime for async/await support
-- **Benefits**: Efficient resource utilization, high concurrency
+// Usage examples
+let tcp_addr: Address = "127.0.0.1:8080".parse()?;
+let unix_addr: Address = "unix:/tmp/echo.sock".into();
+```
 
-#### 5. Error Handling Architecture
-- **Library**: Uses `thiserror` for structured error types
-- **Binary**: Uses `color-eyre` for user-friendly error reporting
-- **Benefits**: Library independence, composable errors, better debugging experience
+#### Generic Protocol Architecture
 
-#### 6. Logging
-- **Implementation**: Uses `tracing` for structured logging
-- **Benefits**: Configurable log levels, structured data, performance
+Concrete protocol types are type aliases over generic implementations:
 
-#### 7. Connection Management
-- **TCP**: Atomic connection counting with configurable limits
-- **UDP**: Stateless datagram handling
-- **Benefits**: Predictable resource usage, graceful degradation
+```rust
+// Type aliases provide familiar APIs
+pub type TcpEchoServer = StreamEchoServer<TcpProtocol>;
+pub type TcpEchoClient = StreamEchoClient<TcpProtocol>;
+pub type UdpEchoServer = DatagramEchoServer<UdpProtocol>;
+pub type UdpEchoClient = DatagramEchoClient<UdpProtocol>;
 
-#### 8. Timeout Configuration
-- **Implementation**: Configurable read/write timeouts per protocol
-- **Benefits**: Automatic cleanup, predictable behavior
+// All share the same generic implementation
+let tcp_server = TcpEchoServer::new(config);
+let udp_server = UdpEchoServer::new(config);
+```
+
+#### Configuration System
+
+Fluent builder pattern for type-safe configuration:
+
+```rust
+let config = TcpConfig {
+    bind_addr: "127.0.0.1:8080".parse()?,
+    max_connections: 100,
+    buffer_size: 8192,
+    read_timeout: Duration::from_secs(30),
+    write_timeout: Duration::from_secs(30),
+};
+
+// Or use builders for network configuration
+let config = Config::new("127.0.0.1:8080".into())
+    .with_buffer_size(4096)
+    .with_read_timeout(Duration::from_secs(60))
+    .build();
+```
+
+#### Resource Management
+
+Built-in protection against resource exhaustion:
+
+```rust
+// Rate limiting
+let limiter = RateLimiter::new(100); // 100 requests per second
+
+// Connection tracking
+let limits = ResourceLimits {
+    max_connections: 1000,
+    max_connections_per_ip: 10,
+    connection_timeout: Duration::from_secs(300),
+};
+
+// Size validation
+let validator = SizeValidator::new(1024 * 1024); // 1MB max
+```
+
+#### Performance Optimizations
+
+Buffer pooling reduces allocations:
+
+```rust
+// Global buffer pool
+let pool = global_pool();
+let buffer = pool.get(); // Reusable buffer
+
+// Pool statistics
+let stats = pool.stats();
+println!("Pool hits: {}, misses: {}", stats.hits, stats.misses);
+```
 
 ## Development Setup
 
 ### Prerequisites
 
-- Rust 1.70+ (for async traits in traits)
-- Cargo
-- Git
+- Rust 1.70+ (for async traits)
+- Cargo for build management
+- Git for version control
 
-### Local Development
+### Quick Start
 
 ```bash
-# Clone the repository
+# Clone and build
 git clone <repository-url>
 cd echosrv
-
-# Build the project
 cargo build
 
 # Run tests
 cargo test
 
-# Run with logging
-RUST_LOG=info cargo test -- --nocapture
+# Run specific protocol tests
+cargo test tcp
+cargo test udp
+cargo test http
+cargo test unix
 
-# Test specific protocol
-cargo test --test integration_tests test_tcp
-cargo test --test integration_tests test_udp
-cargo test --test integration_tests test_http
+# Code quality checks
+cargo clippy
+cargo fmt
+
+# Run examples
+cargo run tcp          # TCP server on port 8080
+cargo run udp 9090     # UDP server on specific port
+cargo run http         # HTTP server on port 8080
+cargo run unix-stream /tmp/echo.sock
 ```
 
 ### Development Workflow
 
 1. **Feature Development**:
    ```bash
-   # Create feature branch
    git checkout -b feature/new-feature
-   
    # Make changes
-   # Run tests
    cargo test
-   
-   # Check code quality
    cargo clippy
    cargo fmt
-   
-   # Commit changes
    git commit -m "feat: add new feature"
    ```
 
 2. **Testing Strategy**:
-   - Unit tests for individual functions
-   - Integration tests for component interaction
-   - Protocol-specific tests
-   - Manual testing for edge cases
+   - Unit tests for individual components
+   - Integration tests for cross-component interaction
+   - Property-based tests for data validation
+   - Performance benchmarks for regression detection
 
-## Code Style and Standards
+## Core APIs
 
-### Documentation
+### Server Usage
 
-All public APIs must be documented with:
-
-- **Purpose**: What the function/struct does
-- **Examples**: Usage examples in doc comments
-- **Error Conditions**: When and why errors occur
-- **Thread Safety**: Concurrency considerations
-
-Example:
 ```rust
-/// Handles a single stream connection with configurable timeouts
-///
-/// This function reads data from the stream and echoes it back.
-/// It respects the configured timeouts and buffer sizes.
-///
-/// # Examples
-///
-/// ```no_run
-/// use echosrv::stream::{StreamConfig, StreamEchoServer};
-/// use echosrv::tcp::TcpProtocol;
-///
-/// let config = StreamConfig::default();
-/// let server: StreamEchoServer<TcpProtocol> = StreamEchoServer::new(config);
-/// ```
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - Reading from the stream fails
-/// - Writing to the stream fails
-/// - Timeouts occur
-pub async fn handle_connection(/* ... */) -> Result<()> {
-    // Implementation
+use echosrv::{TcpEchoServer, TcpConfig, EchoServerTrait};
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = TcpConfig {
+        bind_addr: "127.0.0.1:8080".parse()?,
+        max_connections: 100,
+        buffer_size: 4096,
+        read_timeout: Duration::from_secs(30),
+        write_timeout: Duration::from_secs(30),
+    };
+    
+    let server = TcpEchoServer::new(config.into());
+    server.run().await?;
+    Ok(())
+}
+```
+
+### Client Usage
+
+```rust
+use echosrv::{TcpEchoClient, EchoClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = TcpEchoClient::connect("127.0.0.1:8080").await?;
+    
+    let response = client.echo_string("Hello, World!").await?;
+    println!("Response: {}", response);
+    
+    Ok(())
 }
 ```
 
 ### Error Handling
 
-#### Library Code
-- Use `echosrv::Result` (alias for `Result<T, EchoError>`) for all public APIs
-- Define custom error types using `thiserror` derive macro
-- Convert underlying errors to appropriate `EchoError` variants
-- Don't panic in library code
-
-#### Binary Code
-- Use `color_eyre::eyre::Result` for the main binary
-- Convert library errors to `eyre::Report` using `.wrap_err()` or automatic conversion
-- Provide user-friendly error messages
-
-#### Error Types
-```rust
-#[derive(Error, Debug)]
-pub enum EchoError {
-    #[error("TCP error: {0}")]
-    Tcp(#[from] std::io::Error),
-    
-    #[error("UDP error: {0}")]
-    Udp(#[from] std::io::Error),
-    
-    #[error("Configuration error: {0}")]
-    Config(String),
-    
-    #[error("Timeout error: {0}")]
-    Timeout(String),
-    
-    #[error("UTF-8 error: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
-}
-```
-
-### Logging
-
-- Use structured logging with `tracing`
-- Include relevant context in log messages
-- Use appropriate log levels:
-  - `error!`: Errors that prevent normal operation
-  - `warn!`: Issues that don't prevent operation but should be noted
-  - `info!`: Important state changes and operations
-  - `debug!`: Detailed information for debugging
-
-### Testing
-
-#### Unit Tests
-
-- Test individual functions in isolation
-- Mock external dependencies
-- Test both success and error cases
-- Use descriptive test names
+The library uses structured error types:
 
 ```rust
-#[tokio::test]
-async fn test_stream_echo_server_new_creates_valid_instance() {
-    let config = StreamConfig::default();
-    let server: StreamEchoServer<TcpProtocol> = StreamEchoServer::new(config);
-    assert!(server.shutdown_signal().receiver_count() == 0);
-}
+use echosrv::{Result, EchoError};
 
-#[tokio::test]
-async fn test_datagram_echo_server_new_creates_valid_instance() {
-    let config = DatagramConfig::default();
-    let server: DatagramEchoServer<UdpProtocol> = DatagramEchoServer::new(config);
-    assert!(server.shutdown_signal().receiver_count() == 0);
-}
-```
-
-#### Integration Tests
-
-- Test component interaction
-- Test real network connections
-- Test concurrent scenarios
-- Clean up resources properly
-
-```rust
-#[tokio::test]
-async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
-    let (server_handle, addr) = create_controlled_test_server_with_limit(10).await?;
-    
-    // Test multiple clients concurrently
-    let mut handles = Vec::new();
-    for i in 0..5 {
-        let addr = addr;
-        let handle = tokio::spawn(async move {
-            let mut client = TcpEchoClient::connect(addr).await?;
-            let message = format!("Message from TCP client {}", i);
-            let response = client.echo_string(&message).await?;
-            assert_eq!(response, message);
-            Ok::<(), EchoError>(())
-        });
-        handles.push(handle);
+fn example() -> Result<()> {
+    // Library functions return Result<T, EchoError>
+    match some_operation() {
+        Ok(value) => println!("Success: {:?}", value),
+        Err(EchoError::Tcp(io_err)) => eprintln!("TCP error: {}", io_err),
+        Err(EchoError::Timeout(msg)) => eprintln!("Timeout: {}", msg),
+        Err(EchoError::Config(msg)) => eprintln!("Configuration error: {}", msg),
+        Err(err) => eprintln!("Other error: {}", err),
     }
-    
-    // Wait for all clients to complete
-    for handle in handles {
-        if let Err(e) = handle.await {
-            return Err(EchoError::Config(format!("Task join error: {}", e)));
-        }
-    }
-    
-    server_handle.abort();
     Ok(())
 }
 ```
@@ -311,21 +266,22 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
 
 ### Adding a New Stream Protocol
 
-1. **Implement StreamProtocol trait**:
+1. **Implement the StreamProtocol trait**:
 ```rust
 pub struct MyStreamProtocol;
 
+#[async_trait]
 impl StreamProtocol for MyStreamProtocol {
     type Error = MyError;
     type Listener = MyListener;
     type Stream = MyStream;
     
-    async fn connect(addr: SocketAddr) -> Result<MyStream, MyError> {
-        // Implementation
+    async fn connect(addr: SocketAddr) -> Result<Self::Stream, Self::Error> {
+        // Connect implementation
     }
     
-    fn bind(config: &StreamConfig) -> impl Future<Output = Result<MyListener, MyError>> + Send {
-        // Implementation
+    async fn bind(config: &StreamConfig) -> Result<Self::Listener, Self::Error> {
+        // Bind implementation
     }
     
     // ... other required methods
@@ -338,14 +294,13 @@ pub type MyEchoServer = StreamEchoServer<MyStreamProtocol>;
 pub type MyEchoClient = StreamEchoClient<MyStreamProtocol>;
 ```
 
-3. **Add tests**:
+3. **Add configuration**:
 ```rust
-#[tokio::test]
-async fn test_my_protocol_echo() -> Result<()> {
-    let mut client: StreamEchoClient<MyStreamProtocol> = StreamEchoClient::connect(addr).await?;
-    let response = client.echo_string("test").await?;
-    assert_eq!(response, "test");
-    Ok(())
+#[derive(Debug, Clone)]
+pub struct MyConfig {
+    pub bind_addr: SocketAddr,
+    pub custom_option: String,
+    // ... other protocol-specific options
 }
 ```
 
@@ -353,181 +308,270 @@ async fn test_my_protocol_echo() -> Result<()> {
 
 Similar process but implement `DatagramProtocol` trait instead.
 
-### Unix Domain Socket Implementation
+## Testing Guidelines
 
-The Unix domain socket implementation demonstrates how to add a new protocol that supports both stream and datagram variants:
+### Unit Tests
 
-1. **Configuration**: Create protocol-specific config structs (`UnixStreamConfig`, `UnixDatagramConfig`)
-2. **Protocol Implementation**: Implement both `StreamProtocol` and `DatagramProtocol` traits
-3. **Server/Client**: Create dedicated server and client implementations for better Unix-specific handling
-4. **Socket Management**: Handle socket file cleanup and anonymous socket support
-5. **Testing**: Comprehensive tests for both stream and datagram variants
-
-Key considerations for Unix domain sockets:
-- Socket file cleanup on server shutdown
-- Anonymous socket support for datagram clients
-- Path-based addressing instead of network addresses
-- Proper error handling for Unix-specific operations
-
-### HTTP Protocol Implementation
-
-The HTTP protocol implementation demonstrates how to add a protocol that requires custom request/response handling:
-
-1. **Protocol Design**: HTTP requires parsing headers and handling request/response framing
-2. **Buffer Management**: HTTP requests may be split across multiple reads, requiring buffering
-3. **Method Validation**: Only POST requests are accepted, others return 405 Method Not Allowed
-4. **Response Generation**: HTTP responses include proper headers and status codes
-5. **Error Handling**: Graceful handling of malformed requests and incomplete data
-
-Key considerations for HTTP protocol:
-- HTTP header parsing using `httparse` crate
-- Request body extraction after header parsing
-- **Body-only echo**: POST requests echo only the body content (no HTTP headers)
-- **Error responses**: Non-POST requests receive proper HTTP 405 responses with headers
-- Method validation and error responses
-- Buffer management for large requests
-
-#### HTTP Protocol Testing
-
-The HTTP protocol includes comprehensive testing:
-
-**Unit Tests** (`src/http/tests.rs`):
-- Protocol binding and connection tests
-- Simple POST request handling
-- Method validation (405 responses for non-POST)
-- Incomplete request handling
-
-**Integration Tests** (`tests/integration_tests.rs`):
-- Basic HTTP echo functionality (body-only responses)
-- Large payload handling (500+ byte requests)
-- Concurrent client testing
-- Malformed request handling
-- Different HTTP method testing (405 responses)
-- Header preservation verification
-
-**Test Coverage**:
-```bash
-# Run HTTP unit tests
-cargo test http::tests
-
-# Run HTTP integration tests
-cargo test test_http
-
-# Run all HTTP tests with output
-cargo test test_http -- --nocapture
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_component_functionality() {
+        // Test individual component behavior
+        let component = MyComponent::new();
+        let result = component.process("test").await;
+        assert_eq!(result.unwrap(), "expected");
+    }
+    
+    #[test]
+    fn test_configuration_validation() {
+        // Test configuration validation
+        let config = MyConfig::default();
+        assert!(config.validate().is_ok());
+    }
+}
 ```
 
-**Recent Improvements**:
-- **Simplified HTTP response handling**: Removed complex HTTP response formatting for POST requests
-- **Body-only echo**: POST requests now echo only the request body content without HTTP headers
-- **Clean error handling**: Non-POST requests still receive proper HTTP 405 responses
-- **Removed debug output**: Clean test output without debug print statements
-- **Optimized dependencies**: Removed unused HTTP response formatting functions
+### Integration Tests
 
-**Example HTTP Test Output**:
+```rust
+#[tokio::test]
+async fn test_end_to_end_communication() -> Result<()> {
+    // Start server
+    let (server_handle, addr) = create_test_server().await?;
+    
+    // Test client communication
+    let mut client = TcpEchoClient::connect(addr).await?;
+    let response = client.echo_string("test message").await?;
+    assert_eq!(response, "test message");
+    
+    // Cleanup
+    server_handle.abort();
+    Ok(())
+}
 ```
-test test_http_echo_post ... ok
-# POST requests echo only the body content (no headers)
-# Non-POST requests return proper HTTP error responses
+
+### Property-Based Tests
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn echo_preserves_data(data in prop::collection::vec(any::<u8>(), 0..1024)) {
+        tokio_test::block_on(async {
+            let (server_handle, addr) = create_test_server().await.unwrap();
+            let mut client = TcpEchoClient::connect(addr).await.unwrap();
+            let response = client.echo(&data).await.unwrap();
+            assert_eq!(response, data);
+            server_handle.abort();
+        });
+    }
+}
 ```
 
 ## Performance Considerations
 
 ### Memory Management
 
-- Use appropriate buffer sizes (configurable via `Config`)
-- Avoid unnecessary allocations in hot paths
-- Use `Vec::with_capacity()` when size is known
-- Consider using `Bytes` for zero-copy operations in future
+- **Buffer Pooling**: Use `global_pool()` for reusable buffers
+- **Size Limits**: Configure appropriate buffer and message sizes
+- **Zero-Copy**: Leverage `Bytes` type where possible
 
 ### Concurrency
 
-- Use atomic operations for shared state
-- Avoid blocking operations in async contexts
-- Use appropriate synchronization primitives
-- Consider connection pooling for high-load scenarios
-
-### I/O Optimization
-
-- Use async I/O operations consistently
-- Implement proper backpressure handling
-- Consider using `BufReader`/`BufWriter` for efficiency
-- Profile and optimize hot paths
+- **Connection Limits**: Set appropriate `max_connections`
+- **Timeout Configuration**: Balance responsiveness vs resource usage
+- **Resource Tracking**: Monitor connection and buffer pool metrics
 
 ### Protocol-Specific Optimizations
 
-#### Stream Protocols (TCP, Unix streams)
-- Connection pooling for high-load scenarios
-- Keep-alive connections for repeated requests
-- Connection limits to prevent resource exhaustion
+- **Stream Protocols**: Connection pooling, keep-alive
+- **Datagram Protocols**: Batch processing, stateless scaling
+- **HTTP**: Request pipelining, header optimization
 
-#### Datagram Protocols (UDP, Unix datagrams)
-- Datagram size optimization
-- Connectionless nature allows for stateless scaling
-- Consider batching for high-throughput scenarios
-
-## Security Considerations
+## Security Guidelines
 
 ### Input Validation
 
-- Validate all configuration parameters
-- Sanitize log output to prevent injection
-- Use appropriate buffer sizes to prevent DoS
-- Implement rate limiting if needed
+```rust
+// Validate configuration
+if config.buffer_size > MAX_BUFFER_SIZE {
+    return Err(EchoError::Config("Buffer size too large".to_string()));
+}
 
-### Resource Management
+// Validate request sizes
+let validator = SizeValidator::new(config.max_request_size);
+validator.validate(&request_data)?;
+```
 
-- Limit maximum connections to prevent DoS (stream protocols)
-- Implement timeouts to prevent hanging connections
-- Use proper error handling to prevent information leakage
-- Consider implementing connection rate limiting
+### Resource Protection
 
-### Protocol-Specific Security
+```rust
+// Rate limiting
+let limiter = RateLimiter::new(config.rate_limit);
+limiter.acquire().await?;
 
-#### Stream Protocols
-- Connection limits prevent DoS attacks
-- Timeout configuration prevents hanging connections
-- Graceful shutdown ensures clean resource cleanup
+// Connection tracking
+let tracker = ConnectionTracker::new(limits);
+let _guard = tracker.acquire_connection(client_addr).await?;
+```
 
-#### Datagram Protocols
-- Stateless nature reduces attack surface
-- Datagram size limits prevent amplification attacks
-- Timeout configuration prevents resource exhaustion
+### Error Handling
 
-## Future Enhancements
+```rust
+// Don't leak sensitive information
+match internal_operation() {
+    Ok(result) => Ok(result),
+    Err(_) => Err(EchoError::Config("Operation failed".to_string())),
+}
+```
 
-### Planned Features
+## Debugging and Monitoring
 
-1. **Configuration File Support**: Load configuration from files
-2. **Metrics Collection**: Prometheus metrics for monitoring
-3. **Connection Pooling**: Reuse connections for better performance (stream protocols)
-4. **Protocol Extensions**: Support for Unix streams, WebSockets, etc.
-5. **TLS Support**: Secure connections with TLS (stream protocols)
-6. **DTLS Support**: Secure datagram transport (datagram protocols)
+### Logging
 
-### Architecture Improvements
+```rust
+use tracing::{info, debug, error, instrument};
 
-1. **Plugin System**: Extensible echo behavior
-2. **Middleware Support**: Request/response processing pipeline
-3. **Health Checks**: Built-in health check endpoints
-4. **Graceful Reload**: Configuration reload without restart
-5. **Protocol Bridging**: Bridge between stream and datagram protocols
+#[instrument]
+async fn handle_connection(stream: TcpStream, addr: SocketAddr) -> Result<()> {
+    info!("New connection from {}", addr);
+    
+    match process_request(&stream).await {
+        Ok(()) => debug!("Request processed successfully"),
+        Err(e) => error!("Request failed: {}", e),
+    }
+    
+    Ok(())
+}
+```
+
+### Metrics
+
+```rust
+// Connection metrics
+let stats = connection_tracker.stats();
+println!("Active connections: {}", stats.active);
+
+// Buffer pool metrics
+let pool_stats = global_pool().stats();
+println!("Pool efficiency: {:.2}%", 
+         pool_stats.hits as f64 / (pool_stats.hits + pool_stats.misses) as f64 * 100.0);
+
+// Rate limiting metrics
+let rate_stats = rate_limiter.stats();
+println!("Requests allowed: {}, denied: {}", rate_stats.allowed, rate_stats.denied);
+```
+
+### Performance Profiling
+
+```bash
+# Run benchmarks
+cargo bench
+
+# Profile with perf
+perf record --call-graph=dwarf cargo test --release
+perf report
+
+# Memory profiling with valgrind
+valgrind --tool=massif cargo test --release
+
+# Async runtime debugging
+TOKIO_CONSOLE_BIND=127.0.0.1:6669 cargo run --features tokio-console
+```
+
+## Code Style and Standards
+
+### Documentation
+
+```rust
+/// Handles client connections with configurable timeouts and resource limits.
+///
+/// This function processes incoming client connections, applying rate limiting,
+/// connection tracking, and size validation before echoing data back.
+///
+/// # Arguments
+///
+/// * `stream` - The incoming TCP stream
+/// * `config` - Server configuration including timeouts and limits
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion or an `EchoError` on failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// use echosrv::{TcpConfig, handle_connection};
+///
+/// let config = TcpConfig::default();
+/// handle_connection(stream, config).await?;
+/// ```
+///
+/// # Errors
+///
+/// * `EchoError::Timeout` - Operation exceeded configured timeout
+/// * `EchoError::RateLimit` - Client exceeded rate limit
+/// * `EchoError::Tcp` - Underlying I/O error
+pub async fn handle_connection(stream: TcpStream, config: &TcpConfig) -> Result<()> {
+    // Implementation
+}
+```
+
+### Error Patterns
+
+```rust
+// Good: Structured errors with context
+return Err(EchoError::Config(format!(
+    "Invalid buffer size: {} (max: {})", 
+    size, MAX_BUFFER_SIZE
+)));
+
+// Good: Convert underlying errors
+stream.read(&mut buffer).await
+    .map_err(EchoError::Tcp)?;
+
+// Avoid: Generic error messages
+return Err(EchoError::Config("Invalid configuration".to_string()));
+```
+
+### Testing Patterns
+
+```rust
+// Good: Descriptive test names
+#[tokio::test]
+async fn tcp_server_rejects_connections_when_limit_exceeded() {
+    // Test implementation
+}
+
+// Good: Proper cleanup
+#[tokio::test]
+async fn test_with_cleanup() -> Result<()> {
+    let (server_handle, _addr) = create_test_server().await?;
+    
+    // Test logic here
+    
+    server_handle.abort(); // Always cleanup
+    Ok(())
+}
+```
 
 ## Contributing
 
 ### Pull Request Process
 
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes**: Follow the coding standards
-4. **Add tests**: Ensure all new code is tested for both protocols
-5. **Update documentation**: Update README.md and DEVELOPMENT.md if needed
-6. **Run the test suite**: `cargo test`
-7. **Submit a pull request**: Include a clear description of changes
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make changes following the style guide
+4. Add comprehensive tests
+5. Update documentation as needed
+6. Run the full test suite: `cargo test`
+7. Submit a pull request with clear description
 
 ### Commit Message Format
-
-Use conventional commit format:
 
 ```
 <type>(<scope>): <description>
@@ -537,64 +581,53 @@ Use conventional commit format:
 [optional footer]
 ```
 
-Types:
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes
-- `refactor`: Code refactoring
-- `test`: Adding or updating tests
-- `chore`: Maintenance tasks
-
-Scopes:
-- `stream`: Stream protocol changes
-- `datagram`: Datagram protocol changes
-- `tcp`: TCP-specific changes
-- `udp`: UDP-specific changes
-- `common`: Shared component changes
-- `arch`: Architectural changes
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
+Scopes: `tcp`, `udp`, `http`, `unix`, `stream`, `datagram`, `security`, `perf`
 
 ### Code Review Guidelines
 
-- Review for correctness and completeness
-- Check for security issues
+- Verify correctness and test coverage
+- Check for security implications
+- Review performance impact
 - Ensure proper error handling
-- Verify test coverage for both protocols
-- Check documentation updates
-- Review performance implications
+- Validate documentation updates
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Connection Refused**: Check if server is running and port is available
-2. **Timeout Errors**: Verify timeout configuration and network conditions
-3. **Memory Issues**: Check connection limits and buffer sizes
-4. **Test Failures**: Ensure no other processes are using test ports
-5. **Protocol Mismatch**: Ensure client and server use the same protocol
+**Connection Refused**: Server not running or port unavailable
+```bash
+netstat -tlnp | grep 8080  # Check if port is in use
+```
 
-### Debugging
+**Test Failures**: Port conflicts or resource cleanup issues
+```bash
+cargo test -- --test-threads=1  # Run tests sequentially
+```
 
-- Enable debug logging: `RUST_LOG=debug cargo run`
-- Use `tracing` spans for request tracing
-- Monitor system resources during testing
-- Use `cargo test -- --nocapture` to see test output
+**Memory Issues**: Check connection limits and buffer pool configuration
+```rust
+let stats = global_pool().stats();
+println!("Pool stats: {:?}", stats);
+```
 
-### Performance Profiling
+**Performance Issues**: Profile and check resource utilization
+```bash
+cargo bench  # Run performance benchmarks
+```
 
-- Use `cargo bench` for benchmarking (when implemented)
-- Profile with `perf` or `flamegraph`
-- Monitor memory usage with `valgrind`
-- Use `tokio-console` for async runtime debugging
+### Debug Logging
 
-### Protocol-Specific Debugging
+```bash
+# Enable detailed logging
+RUST_LOG=debug cargo test -- --nocapture
 
-#### Stream Protocols
-- Monitor connection counts and limits
-- Check for connection leaks
-- Verify timeout configurations
+# Protocol-specific logging
+RUST_LOG=echosrv::tcp=trace cargo run tcp
 
-#### Datagram Protocols
-- Monitor datagram sizes and rates
-- Check for packet loss
-- Verify timeout configurations 
+# Async runtime debugging
+RUST_LOG=tokio=debug cargo test
+```
+
+This guide provides the foundation for understanding and contributing to EchoSrv. The architecture is designed for extensibility while maintaining performance and security, making it suitable for both development testing and production deployment scenarios.
