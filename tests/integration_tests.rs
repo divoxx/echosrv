@@ -1,4 +1,5 @@
-use echosrv::common::create_controlled_test_server_with_limit;
+mod common;
+use common::create_controlled_test_server_with_limit;
 use echosrv::http::{HttpConfig, HttpEchoServer};
 use echosrv::{Address, EchoClient, EchoServerTrait, TcpEchoServer, UdpEchoServer};
 use echosrv::{EchoError, Result};
@@ -19,7 +20,6 @@ async fn test_multiple_concurrent_tcp_clients() -> Result<()> {
     let mut handles = Vec::new();
 
     for i in 0..client_count {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = TcpEchoClient::connect(addr).await?;
             let message = format!("Message from TCP client {i}");
@@ -86,7 +86,6 @@ async fn test_multiple_concurrent_udp_clients() -> Result<()> {
     let mut handles = Vec::new();
 
     for i in 0..client_count {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = UdpEchoClient::connect(addr).await?;
             let message = format!("Message from UDP client {i}");
@@ -145,7 +144,6 @@ async fn test_tcp_connection_limit() -> Result<()> {
     let mut handles = Vec::new();
 
     for i in 0..5 {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             match TcpEchoClient::connect(addr).await {
                 Ok(mut client) => {
@@ -381,7 +379,6 @@ async fn test_tcp_stress_test() -> Result<()> {
     let mut failed_connections = 0;
 
     for i in 0..100 {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             match TcpEchoClient::connect(addr).await {
                 Ok(mut client) => {
@@ -483,7 +480,6 @@ async fn test_udp_stress_test() -> Result<()> {
     let mut failed_connections = 0;
 
     for i in 0..100 {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             match UdpEchoClient::connect(addr).await {
                 Ok(mut client) => {

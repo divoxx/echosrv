@@ -1,10 +1,8 @@
 use crate::Result;
 use crate::common::EchoServerTrait;
 use crate::unix::config::{UnixDatagramConfig, UnixStreamConfig};
-use crate::unix::datagram_protocol::{UnixDatagramExt, UnixDatagramProtocol};
-use crate::unix::stream_protocol::{UnixStreamProtocol, UnixStreamExt};
-use crate::stream::protocol::StreamProtocol;
-use crate::datagram::protocol::DatagramProtocol;
+use crate::unix::datagram_protocol::UnixDatagramProtocol;
+use crate::unix::stream_protocol::UnixStreamProtocol;
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
@@ -26,11 +24,11 @@ use tracing::{error, info};
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = UnixStreamConfig {
-///         socket_path: "/tmp/echo.sock".into(),
 ///         max_connections: 100,
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..UnixStreamConfig::default().with_socket_path("/tmp/echo.sock".into())
 ///     };
 ///
 ///     let server = UnixStreamEchoServer::new(config);
@@ -60,11 +58,11 @@ impl EchoServerTrait for UnixStreamEchoServer {
         // Extract socket path from bind strategy for logging
         let socket_path = match &self.config.bind_strategy {
             crate::network::fd_inheritance::BindStrategy::Bind(
-                crate::network::fd_inheritance::BindTarget::Unix(path)
+                crate::network::fd_inheritance::BindTarget::Unix(path),
             ) => path.clone(),
-            crate::network::fd_inheritance::BindStrategy::InheritOrBind { 
-                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path), 
-                .. 
+            crate::network::fd_inheritance::BindStrategy::InheritOrBind {
+                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path),
+                ..
             } => path.clone(),
             _ => std::path::PathBuf::from("/tmp/unknown.sock"), // fallback
         };
@@ -75,10 +73,11 @@ impl EchoServerTrait for UnixStreamEchoServer {
         );
 
         // Use the new protocol implementation with FD inheritance
-        let mut listener = UnixStreamProtocol::bind_unix_with_inheritance(
-            &self.config, 
-            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?
-        ).await?;
+        let listener = UnixStreamProtocol::bind_unix_with_inheritance(
+            &self.config,
+            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?,
+        )
+        .await?;
         info!(
             "Unix domain stream server bound to {}",
             socket_path.display()
@@ -172,10 +171,10 @@ impl EchoServerTrait for UnixStreamEchoServer {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = UnixDatagramConfig {
-///         socket_path: "/tmp/echo_dgram.sock".into(),
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..UnixDatagramConfig::default().with_socket_path("/tmp/echo_dgram.sock".into())
 ///     };
 ///
 ///     let server = UnixDatagramEchoServer::new(config);
@@ -205,11 +204,11 @@ impl EchoServerTrait for UnixDatagramEchoServer {
         // Extract socket path from bind strategy for logging
         let socket_path = match &self.config.bind_strategy {
             crate::network::fd_inheritance::BindStrategy::Bind(
-                crate::network::fd_inheritance::BindTarget::Unix(path)
+                crate::network::fd_inheritance::BindTarget::Unix(path),
             ) => path.clone(),
-            crate::network::fd_inheritance::BindStrategy::InheritOrBind { 
-                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path), 
-                .. 
+            crate::network::fd_inheritance::BindStrategy::InheritOrBind {
+                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path),
+                ..
             } => path.clone(),
             _ => std::path::PathBuf::from("/tmp/unknown.sock"), // fallback
         };
@@ -221,9 +220,10 @@ impl EchoServerTrait for UnixDatagramEchoServer {
 
         // Use the new protocol implementation with FD inheritance
         let socket = UnixDatagramProtocol::bind_unix_with_inheritance(
-            &self.config, 
-            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?
-        ).await?;
+            &self.config,
+            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?,
+        )
+        .await?;
         info!(
             "Unix domain datagram server bound to {}",
             socket_path.display()

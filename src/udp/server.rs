@@ -48,7 +48,7 @@ use crate::datagram::DatagramEchoServer;
 ///     });
 ///
 ///     // Do other work...
-///     
+///
 ///     // Gracefully shutdown
 ///     let _ = shutdown_signal.send(());
 ///     server_handle.await??;

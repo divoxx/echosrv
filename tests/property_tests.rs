@@ -1,4 +1,5 @@
-use echosrv::common::create_controlled_test_server_with_limit;
+mod common;
+use common::create_controlled_test_server_with_limit;
 use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
 use proptest::prelude::*;
 use std::time::Duration;
@@ -82,7 +83,6 @@ proptest! {
                     continue; // Skip empty messages
                 }
 
-                let addr = addr;
                 let message = message.clone();
                 let handle = tokio::spawn(async move {
                     let mut client = TcpEchoClient::connect(addr).await?;
@@ -170,7 +170,6 @@ async fn stress_test_many_connections() {
     // Create 50 concurrent connections
     let mut handles = Vec::new();
     for i in 0..50 {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = TcpEchoClient::connect(addr).await?;
             let message = format!("Stress test message from client {i}");

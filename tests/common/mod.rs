@@ -1,5 +1,5 @@
-use crate::common::EchoServerTrait;
-use crate::{EchoError, Result};
+use echosrv::common::EchoServerTrait;
+use echosrv::{EchoError, Result};
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
 
@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 pub async fn create_controlled_test_server_with_limit(
     max_connections: usize,
 ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
-    use crate::{TcpConfig, TcpEchoServer};
+    use echosrv::{TcpConfig, TcpEchoServer};
     use std::time::Duration;
     use tokio::net::TcpListener;
 

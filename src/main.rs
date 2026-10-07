@@ -102,8 +102,7 @@ async fn main() -> Result<()> {
                 .map(|p| p.into())
                 .unwrap_or_else(|| "/tmp/echosrv_stream.sock".into());
 
-            let config = UnixStreamConfig::default()
-                .with_socket_path(socket_path.clone());
+            let config = UnixStreamConfig::default().with_socket_path(socket_path.clone());
 
             info!(socket_path = %socket_path.display(), max_connections = config.max_connections, "Starting Unix domain stream echo server");
 
@@ -118,8 +117,7 @@ async fn main() -> Result<()> {
                 .map(|p| p.into())
                 .unwrap_or_else(|| "/tmp/echosrv_datagram.sock".into());
 
-            let config = UnixDatagramConfig::default()
-                .with_socket_path(socket_path.clone());
+            let config = UnixDatagramConfig::default().with_socket_path(socket_path.clone());
 
             info!(socket_path = %socket_path.display(), "Starting Unix domain datagram echo server");
 

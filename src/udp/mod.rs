@@ -2,7 +2,8 @@ pub mod config;
 pub mod datagram_protocol;
 pub mod server;
 pub mod socket_builder;
-pub mod tests;
+#[cfg(test)]
+mod tests;
 
 pub use config::UdpConfig;
 pub use datagram_protocol::UdpProtocol;

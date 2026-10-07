@@ -49,7 +49,7 @@ use crate::stream::StreamEchoServer;
 ///     });
 ///
 ///     // Do other work...
-///     
+///
 ///     // Gracefully shutdown
 ///     let _ = shutdown_signal.send(());
 ///     server_handle.await??;

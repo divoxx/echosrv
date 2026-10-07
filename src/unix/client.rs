@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::common::EchoClient;
 use crate::unix::datagram_protocol::{UnixDatagramExt, UnixDatagramProtocol};
-use crate::unix::stream_protocol::{UnixStreamProtocol, UnixStreamExt};
+use crate::unix::stream_protocol::{UnixStreamExt, UnixStreamProtocol};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,7 +24,7 @@ use tokio::net::{UnixDatagram, UnixStream};
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let socket_path = PathBuf::from("/tmp/echo.sock");
 ///     let mut client = UnixStreamEchoClient::connect(socket_path).await?;
-///     
+///
 ///     let response = client.echo_string("Hello, Unix Stream Server!").await?;
 ///     println!("Server echoed: {}", response);
 ///     Ok(())
@@ -91,7 +91,7 @@ impl EchoClient for UnixStreamEchoClient {
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let socket_path = PathBuf::from("/tmp/echo_dgram.sock");
 ///     let mut client = UnixDatagramEchoClient::connect(socket_path).await?;
-///     
+///
 ///     let response = client.echo_string("Hello, Unix Datagram Server!").await?;
 ///     println!("Server echoed: {}", response);
 ///     Ok(())

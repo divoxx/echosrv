@@ -1,6 +1,4 @@
 use echosrv::network::Address;
-use echosrv::performance::{BufferPool, global_pool};
-use echosrv::security::{ConnectionTracker, RateLimiter, ResourceLimits, SizeValidator};
 use echosrv::{EchoClient, EchoError, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
 use std::time::Duration;
 use tempfile::tempdir;
@@ -35,59 +33,6 @@ async fn test_unified_config() {
 
     // For now, just test that the address system works
     // The full config system would be tested when fully integrated
-}
-
-/// Integration test for security and rate limiting
-#[tokio::test]
-async fn test_security_features() {
-    // Test rate limiter - basic functionality
-    let _limiter = RateLimiter::new(2); // 2 requests per second
-
-    // For now, just test that we can create it
-    // The full rate limiting would need more complex testing with timing
-
-    // Test connection tracker
-    let limits = ResourceLimits {
-        max_concurrent_connections: 3,
-        ..Default::default()
-    };
-    let tracker = ConnectionTracker::new(limits);
-
-    // Acquire 3 connections
-    let _guard1 = tracker.acquire_connection().await.unwrap();
-    let _guard2 = tracker.acquire_connection().await.unwrap();
-    let _guard3 = tracker.acquire_connection().await.unwrap();
-
-    // 4th connection should timeout
-    assert!(tracker.acquire_connection().await.is_err());
-
-    // Test size validator
-    let validator = SizeValidator::new(100);
-    assert!(validator.validate_size(50).is_ok());
-    assert!(validator.validate_size(150).is_err());
-}
-
-/// Integration test for performance optimizations
-#[tokio::test]
-async fn test_performance_optimizations() {
-    // Test buffer pool
-    let pool = BufferPool::new(1024, 5);
-
-    // Get a buffer, use it, and return it
-    {
-        let mut buffer = pool.get();
-        buffer.extend_from_slice(b"test data");
-        assert_eq!(buffer.len(), 9);
-    } // Buffer returns to pool here
-
-    // Get another buffer - should be reused
-    let buffer = pool.get();
-    assert!(buffer.is_empty()); // Should be cleared
-    assert_eq!(buffer.capacity(), 1024);
-
-    // Test global pool
-    let global_buffer = global_pool().get();
-    assert!(global_buffer.capacity() > 0);
 }
 
 /// Integration test for client with timeout handling
@@ -140,7 +85,7 @@ async fn test_end_to_end_improvements() -> Result<(), Box<dyn std::error::Error>
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Test with multiple clients using different data sizes
-    let test_cases = vec![
+    let test_cases = [
         b"small".to_vec(),
         vec![b'x'; 1024],                                 // 1KB
         vec![b'y'; 4096],                                 // 4KB
@@ -156,7 +101,6 @@ async fn test_end_to_end_improvements() -> Result<(), Box<dyn std::error::Error>
     // Test concurrent access
     let mut handles = Vec::new();
     for i in 0..10 {
-        let addr = addr;
         let handle = tokio::spawn(async move {
             let mut client = TcpEchoClient::connect(addr).await?;
             let message = format!("Concurrent test message {i}");
@@ -206,13 +150,13 @@ async fn test_error_handling() {
 #[tokio::test]
 #[cfg(unix)]
 async fn test_unix_socket_improvements() {
-    use echosrv::unix::{Protocol, StreamExt};
+    use echosrv::unix::{UnixStreamExt, UnixStreamProtocol};
 
     let temp_dir = tempdir().unwrap();
     let socket_path = temp_dir.path().join("test.sock");
 
     // Test connection using extension trait
-    let connect_result = Protocol::connect_unix(&socket_path).await;
+    let connect_result = UnixStreamProtocol::connect_unix(&socket_path).await;
 
     // Connection should fail since no server is listening
     assert!(connect_result.is_err());

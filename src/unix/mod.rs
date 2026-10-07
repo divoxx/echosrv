@@ -16,14 +16,14 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = UnixStreamConfig {
-//!         socket_path: "/tmp/echo.sock".into(),
 //!         max_connections: 100,
 //!         buffer_size: 1024,
 //!         read_timeout: Duration::from_secs(30),
 //!         write_timeout: Duration::from_secs(30),
+//!         ..UnixStreamConfig::default().with_socket_path("/tmp/echo.sock".into())
 //!     };
 //!
-//!     let server = UnixStreamEchoServer::new(config.into());
+//!     let server = UnixStreamEchoServer::new(config);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -39,13 +39,13 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = UnixDatagramConfig {
-//!         socket_path: "/tmp/echo_dgram.sock".into(),
 //!         buffer_size: 1024,
 //!         read_timeout: Duration::from_secs(30),
 //!         write_timeout: Duration::from_secs(30),
+//!         ..UnixDatagramConfig::default().with_socket_path("/tmp/echo_dgram.sock".into())
 //!     };
 //!
-//!     let server = UnixDatagramEchoServer::new(config.into());
+//!     let server = UnixDatagramEchoServer::new(config);
 //!     server.run().await?;
 //!     Ok(())
 //! }
@@ -68,5 +68,5 @@ pub use client::{UnixDatagramEchoClient, UnixStreamEchoClient};
 pub use server::{UnixDatagramEchoServer, UnixStreamEchoServer};
 
 // Re-export protocol implementations
-pub use datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
-pub use stream_protocol::{UnixStreamProtocol, UnixStreamExt};
+pub use datagram_protocol::{UnixDatagramExt, UnixDatagramProtocol};
+pub use stream_protocol::{UnixStreamExt, UnixStreamProtocol};

@@ -1,6 +1,6 @@
 use crate::datagram::DatagramConfig;
-use crate::stream::StreamConfig;
 use crate::network::fd_inheritance::{BindStrategy, BindTarget};
+use crate::stream::StreamConfig;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,11 +13,11 @@ use std::time::Duration;
 /// use std::time::Duration;
 ///
 /// let config = UnixStreamConfig {
-///     socket_path: "/tmp/echo.sock".into(),
 ///     max_connections: 100,
 ///     buffer_size: 1024,
 ///     read_timeout: Duration::from_secs(30),
 ///     write_timeout: Duration::from_secs(30),
+///     ..UnixStreamConfig::default().with_socket_path("/tmp/echo.sock".into())
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ impl UnixStreamConfig {
         self.bind_strategy = BindStrategy::Bind(BindTarget::Unix(path));
         self
     }
-    
+
     /// Enable FD inheritance with fallback to socket path
     pub fn with_fd_inheritance(mut self, service_name: String, fallback_path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::InheritOrBind {
@@ -91,10 +91,10 @@ impl From<UnixStreamConfig> for StreamConfig {
 /// use std::time::Duration;
 ///
 /// let config = UnixDatagramConfig {
-///     socket_path: "/tmp/echo_dgram.sock".into(),
 ///     buffer_size: 1024,
 ///     read_timeout: Duration::from_secs(30),
 ///     write_timeout: Duration::from_secs(30),
+///     ..UnixDatagramConfig::default().with_socket_path("/tmp/echo_dgram.sock".into())
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -114,7 +114,9 @@ pub struct UnixDatagramConfig {
 impl Default for UnixDatagramConfig {
     fn default() -> Self {
         Self {
-            bind_strategy: BindStrategy::Bind(BindTarget::Unix("/tmp/echosrv_datagram.sock".into())),
+            bind_strategy: BindStrategy::Bind(BindTarget::Unix(
+                "/tmp/echosrv_datagram.sock".into(),
+            )),
             service_name: "unix-datagram".to_string(),
             buffer_size: 1024,
             read_timeout: Duration::from_secs(30),
@@ -129,7 +131,7 @@ impl UnixDatagramConfig {
         self.bind_strategy = BindStrategy::Bind(BindTarget::Unix(path));
         self
     }
-    
+
     /// Enable FD inheritance with fallback to socket path
     pub fn with_fd_inheritance(mut self, service_name: String, fallback_path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::InheritOrBind {

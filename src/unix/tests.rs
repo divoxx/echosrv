@@ -11,8 +11,7 @@ async fn test_unix_stream_echo() {
     let temp_dir = tempdir().unwrap();
     let socket_path = temp_dir.path().join("test_stream.sock");
 
-    let config = UnixStreamConfig::default()
-        .with_socket_path(socket_path.clone());
+    let config = UnixStreamConfig::default().with_socket_path(socket_path.clone());
 
     let server = UnixStreamEchoServer::new(config);
     let shutdown_signal = server.shutdown_signal();
@@ -46,8 +45,7 @@ async fn test_unix_datagram_echo() {
     let temp_dir = tempdir().unwrap();
     let socket_path = temp_dir.path().join("test_datagram.sock");
 
-    let config = UnixDatagramConfig::default()
-        .with_socket_path(socket_path.clone());
+    let config = UnixDatagramConfig::default().with_socket_path(socket_path.clone());
 
     let server = UnixDatagramEchoServer::new(config);
     let shutdown_signal = server.shutdown_signal();
@@ -87,8 +85,7 @@ async fn test_unix_stream_multiple_clients() {
     let temp_dir = tempdir().unwrap();
     let socket_path = temp_dir.path().join("test_multi_stream.sock");
 
-    let config = UnixStreamConfig::default()
-        .with_socket_path(socket_path.clone());
+    let config = UnixStreamConfig::default().with_socket_path(socket_path.clone());
 
     let server = UnixStreamEchoServer::new(config);
     let shutdown_signal = server.shutdown_signal();
@@ -128,8 +125,7 @@ async fn test_unix_stream_large_data() {
     let temp_dir = tempdir().unwrap();
     let socket_path = temp_dir.path().join("test_large_stream.sock");
 
-    let config = UnixStreamConfig::default()
-        .with_socket_path(socket_path.clone());
+    let config = UnixStreamConfig::default().with_socket_path(socket_path.clone());
 
     let server = UnixStreamEchoServer::new(config);
     let shutdown_signal = server.shutdown_signal();

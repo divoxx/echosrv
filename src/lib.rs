@@ -57,8 +57,6 @@ pub mod common;
 pub mod datagram;
 pub mod http;
 pub mod network;
-pub mod performance;
-pub mod security;
 pub mod stream;
 pub mod tcp;
 pub mod udp;

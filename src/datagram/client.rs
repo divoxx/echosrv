@@ -21,7 +21,7 @@ use tokio::time::{Duration, timeout};
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let addr = "127.0.0.1:8080".parse()?;
 ///     let mut client: DatagramEchoClient<UdpProtocol> = DatagramEchoClient::connect(addr).await?;
-///     
+///
 ///     let response = client.echo_string("Hello, World!").await?;
 ///     println!("Echo response: {}", response);
 ///     Ok(())
