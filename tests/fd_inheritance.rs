@@ -171,7 +171,7 @@ async fn inherit_or_bind_prefers_fd_then_falls_back() {
     let fd = InheritedFd::from(OwnedFd::from(listener));
     let strategy = BindStrategy::InheritOrBind {
         fd: Some(fd),
-        fallback_target: BindTarget::Network("127.0.0.1:0".parse().unwrap()),
+        fallback_target: Some(BindTarget::Network("127.0.0.1:0".parse().unwrap())),
     };
 
     let with_fd = start_tcp(TcpConfig {
@@ -203,6 +203,35 @@ async fn with_fd_inheritance_binds_when_nothing_is_inherited() {
     let mut client = TcpEchoClient::connect(server.addr).await.unwrap();
     assert_eq!(client.echo_string("fallback").await.unwrap(), "fallback");
     drop(client);
+    server.stop().await;
+}
+
+/// `bind_addr` changed after `with_fd_inheritance` is the address bound.
+#[tokio::test]
+async fn with_fd_inheritance_binds_bind_addr_set_afterwards() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let wanted: SocketAddr = ([127, 0, 0, 1], port).into();
+
+    let mut config = TcpConfig::default().with_fd_inheritance("tcp");
+    config.bind_addr = wanted;
+    let server = start_tcp(config).await;
+    assert_eq!(server.addr, wanted);
+    server.stop().await;
+
+    let mut config = UdpConfig::default().with_fd_inheritance("udp");
+    config.bind_addr = wanted;
+    let server = start_udp(config).await;
+    assert_eq!(server.addr, wanted);
+    server.stop().await;
+
+    let mut config = HttpConfig::default().with_fd_inheritance("http");
+    config.bind_addr = wanted;
+    let server = start_http(config).await;
+    assert_eq!(server.addr, wanted);
     server.stop().await;
 }
 

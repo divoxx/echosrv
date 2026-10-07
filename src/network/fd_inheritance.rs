@@ -144,27 +144,53 @@ pub enum BindStrategy {
     /// Try to inherit first, fall back to binding if no descriptor is available.
     ///
     /// The explicit `fd` is tried first; if it is `None` (or already consumed),
-    /// the server's service name is looked up in the [`FdInheritanceConfig`]
-    /// (e.g. systemd's `LISTEN_FDNAMES`). If nothing is found, `fallback_target`
-    /// is bound.
+    /// a descriptor is taken from the [`FdInheritanceConfig`] (e.g. systemd's
+    /// `LISTEN_FDNAMES`) using
+    /// [`take_named_or_sole`](FdInheritanceConfig::take_named_or_sole): the
+    /// one named after the server's service name, else the only descriptor
+    /// passed. If nothing is found, the fallback target is bound.
     InheritOrBind {
         /// Explicit FD to inherit (if None, will look up by service name)
         fd: Option<InheritedFd>,
-        /// Target to bind to if inheritance fails
-        fallback_target: BindTarget,
+        /// Target to bind to if inheritance fails.
+        ///
+        /// `None` means "the server config's own address": network configs
+        /// ([`StreamConfig`](crate::stream::StreamConfig),
+        /// [`DatagramConfig`](crate::datagram::DatagramConfig) and the TCP,
+        /// UDP and HTTP configs) resolve it to their `bind_addr` when the
+        /// socket is bound, so changing `bind_addr` after
+        /// `with_fd_inheritance` takes effect. Unix configs have no such
+        /// address and need an explicit target.
+        fallback_target: Option<BindTarget>,
     },
 }
 
 impl BindStrategy {
     /// The target this strategy would bind to (either the `Bind` target or the
-    /// `InheritOrBind` fallback). Returns `None` for [`BindStrategy::Inherit`].
+    /// `InheritOrBind` fallback). Returns `None` for [`BindStrategy::Inherit`]
+    /// and for an `InheritOrBind` whose fallback has not been resolved yet.
     pub fn bind_target(&self) -> Option<&BindTarget> {
         match self {
             BindStrategy::Bind(target) => Some(target),
             BindStrategy::InheritOrBind {
                 fallback_target, ..
-            } => Some(fallback_target),
+            } => fallback_target.as_ref(),
             BindStrategy::Inherit(_) => None,
+        }
+    }
+
+    /// Fills in an unset `InheritOrBind` fallback target with `default`.
+    /// Other strategies are returned unchanged.
+    pub fn with_default_fallback(self, default: BindTarget) -> Self {
+        match self {
+            BindStrategy::InheritOrBind {
+                fd,
+                fallback_target: None,
+            } => BindStrategy::InheritOrBind {
+                fd,
+                fallback_target: Some(default),
+            },
+            other => other,
         }
     }
 }
@@ -258,17 +284,30 @@ impl FdInheritanceConfig {
             }
         };
 
-        let mut pool = Vec::with_capacity(parsed.len());
-        for (name, raw) in parsed {
+        // SAFETY: systemd hands these descriptors to this process (LISTEN_PID
+        // matched), and this function runs at most once per process (guarded
+        // by `SYSTEMD_POOL`), so no other `OwnedFd` for them is ever created by
+        // this crate.
+        unsafe { Self::from_raw_named_fds(parsed) }
+    }
+
+    /// Builds a pool from raw descriptors, setting `FD_CLOEXEC` on each and
+    /// skipping descriptors that are not open.
+    ///
+    /// # Safety
+    ///
+    /// Every *open* descriptor in `fds` must not be owned by anything else in
+    /// the process: ownership is transferred to the pool.
+    unsafe fn from_raw_named_fds(fds: Vec<(String, RawFd)>) -> Self {
+        let mut pool = Vec::with_capacity(fds.len());
+        for (name, raw) in fds {
             // Mark close-on-exec; this also checks that the descriptor is open.
             if let Err(e) = set_cloexec(raw) {
                 tracing::warn!(fd = raw, name = %name, error = %e, "Skipping invalid inherited file descriptor");
                 continue;
             }
-            // SAFETY: systemd hands these descriptors to this process (LISTEN_PID
-            // matched), they are open (fcntl succeeded above), and this function
-            // runs at most once per process (guarded by `SYSTEMD_POOL`), so no
-            // other `OwnedFd` for them is ever created by this crate.
+            // SAFETY: the descriptor is open (fcntl succeeded above) and the
+            // caller guarantees nothing else owns it.
             let fd = unsafe { OwnedFd::from_raw_fd(raw) };
             pool.push(NamedFd { name, fd });
         }
@@ -532,13 +571,41 @@ pub mod validation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 
     const PID: u32 = 4242;
+
+    fn names(parsed: &[(String, RawFd)]) -> Vec<&str> {
+        parsed.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    fn tcp_fd() -> OwnedFd {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().into()
+    }
+
+    // --- parse_systemd_env -------------------------------------------------
+    //
+    // `from_systemd_env` reads the real process environment into a
+    // process-wide `OnceLock`, and every server in this test binary calls it.
+    // Setting `LISTEN_PID`/`LISTEN_FDS` to this process would make that pool
+    // adopt fds 3.. (which belong to the test harness) and close them, so the
+    // environment is deliberately never mutated here (it would also need
+    // edition-2024 `unsafe { std::env::set_var }` while other test threads
+    // run). The parsing rules are covered through the pure
+    // `parse_systemd_env`, and the descriptor adoption step through
+    // `from_raw_named_fds`.
 
     #[test]
     fn parse_requires_listen_pid() {
         assert!(
-            parse_systemd_env(None, Some("2"), None, PID)
+            parse_systemd_env(None, Some("2"), Some("a:b"), PID)
+                .unwrap()
+                .is_empty()
+        );
+        // Without LISTEN_PID even garbage elsewhere is ignored.
+        assert!(
+            parse_systemd_env(None, Some("garbage"), None, PID)
                 .unwrap()
                 .is_empty()
         );
@@ -551,12 +618,52 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // The PID check happens before LISTEN_FDS is parsed.
+        assert!(
+            parse_systemd_env(Some("1"), Some("garbage"), None, PID)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_matching_pid_tolerates_whitespace() {
+        let parsed = parse_systemd_env(Some(" 4242\n"), Some(" 1 "), None, PID).unwrap();
+        assert_eq!(parsed, vec![(SYSTEMD_UNNAMED_FD.to_string(), 3)]);
     }
 
     #[test]
     fn parse_rejects_garbage() {
-        assert!(parse_systemd_env(Some("abc"), Some("1"), None, PID).is_err());
-        assert!(parse_systemd_env(Some("4242"), Some("x"), None, PID).is_err());
+        for pid in ["abc", "", "-1", "4242x", "99999999999"] {
+            let err = parse_systemd_env(Some(pid), Some("1"), None, PID).unwrap_err();
+            assert!(err.contains("LISTEN_PID"), "{pid:?}: {err}");
+        }
+        for fds in ["x", "", "-1", "1.5", "65536"] {
+            let err = parse_systemd_env(Some("4242"), Some(fds), None, PID).unwrap_err();
+            assert!(err.contains("LISTEN_FDS"), "{fds:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_zero_or_missing_fds() {
+        assert!(
+            parse_systemd_env(Some("4242"), Some("0"), Some("a:b"), PID)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_systemd_env(Some("4242"), None, Some("a"), PID)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_numbers_fds_consecutively_from_three() {
+        let parsed = parse_systemd_env(Some("4242"), Some("4"), None, PID).unwrap();
+        let fds: Vec<RawFd> = parsed.iter().map(|(_, fd)| *fd).collect();
+        assert_eq!(fds, vec![3, 4, 5, 6]);
+        assert!(names(&parsed).iter().all(|n| *n == SYSTEMD_UNNAMED_FD));
     }
 
     #[test]
@@ -573,46 +680,410 @@ mod tests {
     }
 
     #[test]
-    fn parse_zero_or_missing_fds() {
-        assert!(
-            parse_systemd_env(Some("4242"), Some("0"), None, PID)
-                .unwrap()
-                .is_empty()
+    fn parse_fewer_names_than_fds_defaults_the_rest() {
+        let parsed = parse_systemd_env(Some("4242"), Some("3"), Some("http"), PID).unwrap();
+        assert_eq!(
+            names(&parsed),
+            vec!["http", SYSTEMD_UNNAMED_FD, SYSTEMD_UNNAMED_FD]
         );
-        assert!(
-            parse_systemd_env(Some("4242"), None, None, PID)
-                .unwrap()
-                .is_empty()
+    }
+
+    #[test]
+    fn parse_more_names_than_fds_ignores_extras() {
+        let parsed = parse_systemd_env(Some("4242"), Some("2"), Some("a:b:c:d"), PID).unwrap();
+        assert_eq!(parsed, vec![("a".to_string(), 3), ("b".to_string(), 4)]);
+    }
+
+    #[test]
+    fn parse_empty_names_and_empty_segments_default() {
+        let parsed = parse_systemd_env(Some("4242"), Some("2"), Some(""), PID).unwrap();
+        assert_eq!(names(&parsed), vec![SYSTEMD_UNNAMED_FD, SYSTEMD_UNNAMED_FD]);
+
+        let parsed = parse_systemd_env(Some("4242"), Some("3"), Some(":mid:"), PID).unwrap();
+        assert_eq!(
+            names(&parsed),
+            vec![SYSTEMD_UNNAMED_FD, "mid", SYSTEMD_UNNAMED_FD]
         );
+    }
+
+    #[test]
+    fn parse_keeps_duplicate_names() {
+        let parsed = parse_systemd_env(Some("4242"), Some("2"), Some("web:web"), PID).unwrap();
+        assert_eq!(parsed, vec![("web".to_string(), 3), ("web".to_string(), 4)]);
+    }
+
+    // --- from_systemd_env / pool adoption ----------------------------------
+
+    #[test]
+    fn systemd_pool_is_process_wide_singleton() {
+        let a = FdInheritanceConfig::from_systemd_env().unwrap();
+        let b = FdInheritanceConfig::from_systemd_env().unwrap();
+        assert!(Arc::ptr_eq(&a.pool, &b.pool));
+    }
+
+    #[test]
+    fn raw_pool_adopts_open_fds_sets_cloexec_and_skips_closed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let raw = listener.into_raw_fd();
+        // Clear FD_CLOEXEC so we can observe the pool setting it.
+        // SAFETY: plain fcntl on a descriptor we own.
+        assert_eq!(unsafe { libc::fcntl(raw, libc::F_SETFD, 0) }, 0);
+
+        // A descriptor number far above anything the test process opens.
+        let closed: RawFd = 1_000_000;
+        // SAFETY: `raw` is open and owned by nobody else (into_raw_fd released
+        // it); `closed` is not open, so it is skipped without being adopted.
+        let pool = unsafe {
+            FdInheritanceConfig::from_raw_named_fds(vec![
+                ("bad".to_string(), closed),
+                ("tcp".to_string(), raw),
+            ])
+        };
+        assert_eq!(pool.inherited_service_names(), vec!["tcp".to_string()]);
+        assert_eq!(pool.get_fd("tcp"), Some(raw));
+        // SAFETY: as above.
+        let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0, "FD_CLOEXEC not set");
+
+        let fd = pool.take("tcp").unwrap();
+        let listener = std::net::TcpListener::from(fd);
+        assert_eq!(listener.local_addr().unwrap(), addr);
+    }
+
+    #[test]
+    fn set_cloexec_rejects_closed_fd() {
+        let err = set_cloexec(1_000_000).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+    }
+
+    // --- FdInheritanceConfig pool ------------------------------------------
+
+    #[test]
+    fn empty_pool_has_nothing() {
+        let pool = FdInheritanceConfig::empty();
+        assert!(!pool.has_inherited_fds());
+        assert!(pool.take("x").is_none());
+        assert!(pool.take_named_or_sole("x").is_none());
+        assert!(pool.get_fd("x").is_none());
+        assert!(pool.inherited_service_names().is_empty());
+        assert_eq!(format!("{pool:?}"), "{}");
     }
 
     #[test]
     fn pool_take_is_once() {
-        let a = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let b = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let pool = FdInheritanceConfig::from_fds([("a".into(), a.into()), ("b".into(), b.into())]);
+        let pool = FdInheritanceConfig::from_fds([("a".into(), tcp_fd()), ("b".into(), tcp_fd())]);
         let clone = pool.clone();
-        assert!(pool.get_fd("a").is_some());
-        assert!(pool.take("a").is_some());
+        let raw_a = pool.get_fd("a").unwrap();
+        // get_fd does not consume.
+        assert_eq!(pool.get_fd("a"), Some(raw_a));
+        assert_eq!(pool.take("a").unwrap().as_raw_fd(), raw_a);
+        // Clones share the pool.
         assert!(clone.take("a").is_none());
-        // Only "b" remains, so the sole-descriptor fallback applies.
-        assert!(pool.take_named_or_sole("zzz").is_some());
-        assert!(!pool.has_inherited_fds());
+        assert!(clone.get_fd("a").is_none());
+        assert_eq!(clone.inherited_service_names(), vec!["b".to_string()]);
+        assert!(clone.has_inherited_fds());
     }
 
     #[test]
-    fn validation_detects_type_family_and_listening() {
+    fn pool_duplicate_names_are_taken_in_order() {
+        let first = tcp_fd();
+        let second = tcp_fd();
+        let (raw1, raw2) = (first.as_raw_fd(), second.as_raw_fd());
+        let pool = FdInheritanceConfig::from_fds([
+            ("web".to_string(), first),
+            ("web".to_string(), second),
+        ]);
+        assert_eq!(
+            pool.inherited_service_names(),
+            vec!["web".to_string(), "web".to_string()]
+        );
+        assert_eq!(pool.get_fd("web"), Some(raw1));
+        assert_eq!(pool.take("web").unwrap().as_raw_fd(), raw1);
+        assert_eq!(pool.take("web").unwrap().as_raw_fd(), raw2);
+        assert!(pool.take("web").is_none());
+    }
+
+    #[test]
+    fn take_named_or_sole_prefers_name_then_sole() {
+        // Named match among several.
+        let pool = FdInheritanceConfig::from_fds([("a".into(), tcp_fd()), ("b".into(), tcp_fd())]);
+        let raw_b = pool.get_fd("b").unwrap();
+        assert_eq!(pool.take_named_or_sole("b").unwrap().as_raw_fd(), raw_b);
+
+        // Exactly one left: taken regardless of name.
+        let raw_a = pool.get_fd("a").unwrap();
+        assert_eq!(pool.take_named_or_sole("zzz").unwrap().as_raw_fd(), raw_a);
+        assert!(!pool.has_inherited_fds());
+        assert!(pool.take_named_or_sole("zzz").is_none());
+    }
+
+    #[test]
+    fn take_named_or_sole_is_none_when_ambiguous() {
+        let pool = FdInheritanceConfig::from_fds([("a".into(), tcp_fd()), ("b".into(), tcp_fd())]);
+        assert!(pool.take_named_or_sole("zzz").is_none());
+        // Nothing was taken.
+        assert_eq!(pool.inherited_service_names().len(), 2);
+    }
+
+    #[test]
+    fn pool_debug_lists_names_and_fds() {
+        let fd = tcp_fd();
+        let raw = fd.as_raw_fd();
+        let pool = FdInheritanceConfig::from_fds([("svc".to_string(), fd)]);
+        assert_eq!(format!("{pool:?}"), format!("{{\"svc\": {raw}}}"));
+    }
+
+    // --- InheritedFd / BindStrategy ----------------------------------------
+
+    #[test]
+    fn inherited_fd_take_once_across_clones() {
+        let owned = tcp_fd();
+        let raw = owned.as_raw_fd();
+        let fd = InheritedFd::from(owned);
+        let clone = fd.clone();
+        assert_eq!(fd.raw_fd(), raw);
+        assert!(!clone.is_consumed());
+        assert!(format!("{fd:?}").contains("consumed: false"));
+
+        assert_eq!(clone.take().unwrap().as_raw_fd(), raw);
+        assert!(fd.is_consumed());
+        assert!(fd.take().is_none());
+        // The raw number stays available for diagnostics.
+        assert_eq!(fd.raw_fd(), raw);
+        assert!(format!("{fd:?}").contains("consumed: true"));
+    }
+
+    #[test]
+    fn inherited_fd_from_raw_fd_takes_ownership() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let raw = listener.into_raw_fd();
+        // SAFETY: `raw` is open and its previous owner released it.
+        let fd = unsafe { InheritedFd::from_raw_fd(raw) };
+        let listener = std::net::TcpListener::from(fd.take().unwrap());
+        assert_eq!(listener.local_addr().unwrap(), addr);
+    }
+
+    #[test]
+    fn bind_strategy_bind_target() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let bind = BindStrategy::Bind(BindTarget::Network(addr));
+        assert!(matches!(bind.bind_target(), Some(BindTarget::Network(a)) if *a == addr));
+
+        let fallback = BindStrategy::InheritOrBind {
+            fd: None,
+            fallback_target: Some(BindTarget::Unix("/x.sock".into())),
+        };
+        assert!(
+            matches!(fallback.bind_target(), Some(BindTarget::Unix(p)) if p.as_os_str() == "/x.sock")
+        );
+
+        let unresolved = BindStrategy::InheritOrBind {
+            fd: None,
+            fallback_target: None,
+        };
+        assert!(unresolved.bind_target().is_none());
+
+        let inherit = BindStrategy::Inherit(tcp_fd().into());
+        assert!(inherit.bind_target().is_none());
+    }
+
+    #[test]
+    fn with_default_fallback_fills_only_unset_fallback() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let default = || BindTarget::Network(addr);
+
+        let unresolved = BindStrategy::InheritOrBind {
+            fd: None,
+            fallback_target: None,
+        };
+        assert!(matches!(
+            unresolved.with_default_fallback(default()).bind_target(),
+            Some(BindTarget::Network(a)) if *a == addr
+        ));
+
+        // An explicit fallback is kept.
+        let explicit = BindStrategy::InheritOrBind {
+            fd: None,
+            fallback_target: Some(BindTarget::Unix("/x.sock".into())),
+        };
+        assert!(matches!(
+            explicit.with_default_fallback(default()).bind_target(),
+            Some(BindTarget::Unix(_))
+        ));
+
+        // The explicit fd survives and other strategies are untouched.
+        let fd = InheritedFd::from(tcp_fd());
+        let with_fd = BindStrategy::InheritOrBind {
+            fd: Some(fd.clone()),
+            fallback_target: None,
+        }
+        .with_default_fallback(default());
+        match with_fd {
+            BindStrategy::InheritOrBind {
+                fd: Some(inner), ..
+            } => {
+                assert!(inner.take().is_some());
+                assert!(fd.is_consumed());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let bind =
+            BindStrategy::Bind(BindTarget::Unix("/y.sock".into())).with_default_fallback(default());
+        assert!(matches!(bind, BindStrategy::Bind(BindTarget::Unix(_))));
+        let inherit = BindStrategy::Inherit(tcp_fd().into()).with_default_fallback(default());
+        assert!(inherit.bind_target().is_none());
+    }
+
+    // --- validation ----------------------------------------------------------
+
+    use validation::{validate_listening, validate_socket_family, validate_socket_type};
+
+    #[track_caller]
+    fn assert_fd_err(result: Result<()>, needle: &str) {
+        match result {
+            Err(EchoError::FdInheritance(msg)) => {
+                assert!(msg.contains(needle), "{msg:?} does not mention {needle:?}")
+            }
+            other => panic!("expected FdInheritance error, got {other:?}"),
+        }
+    }
+
+    /// Whether the platform reports SO_ACCEPTCONN (some platforms do not, in
+    /// which case `validate_listening` skips the check).
+    fn acceptconn_supported() -> bool {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut value: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: valid out-pointers for an int-valued option.
+        let rc = unsafe {
+            libc::getsockopt(
+                listener.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                &mut value as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        rc == 0
+    }
+
+    #[test]
+    fn validate_tcp_listener() {
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        validation::validate_socket_type(&tcp, libc::SOCK_STREAM).unwrap();
-        validation::validate_socket_family(&tcp, libc::AF_INET).unwrap();
-        validation::validate_listening(&tcp).unwrap();
-        assert!(validation::validate_socket_type(&tcp, libc::SOCK_DGRAM).is_err());
-        assert!(validation::validate_socket_family(&tcp, libc::AF_UNIX).is_err());
+        validate_socket_type(&tcp, libc::SOCK_STREAM).unwrap();
+        validate_socket_family(&tcp, libc::AF_INET).unwrap();
+        validate_listening(&tcp).unwrap();
+        assert_fd_err(validate_socket_type(&tcp, libc::SOCK_DGRAM), "SOCK_DGRAM");
+        assert_fd_err(
+            validate_socket_family(&tcp, libc::AF_UNIX),
+            "AF_INET (IPv4)",
+        );
+        assert_fd_err(
+            validate_socket_family(&tcp, libc::AF_INET6),
+            "expected AF_INET6",
+        );
+    }
 
+    #[test]
+    fn validate_tcp_ipv6_listener() {
+        let Ok(tcp) = std::net::TcpListener::bind("[::1]:0") else {
+            eprintln!("IPv6 loopback unavailable; skipping");
+            return;
+        };
+        validate_socket_family(&tcp, libc::AF_INET6).unwrap();
+        assert_fd_err(
+            validate_socket_family(&tcp, libc::AF_INET),
+            "AF_INET6 (IPv6)",
+        );
+    }
+
+    #[test]
+    fn validate_connected_tcp_stream_is_not_listening() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        for socket in [stream.as_fd(), accepted.as_fd()] {
+            validate_socket_type(socket, libc::SOCK_STREAM).unwrap();
+            validate_socket_family(socket, libc::AF_INET).unwrap();
+            if acceptconn_supported() {
+                assert_fd_err(validate_listening(socket), "not a listening socket");
+            } else {
+                validate_listening(socket).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn validate_udp_socket() {
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        validation::validate_socket_type(&udp, libc::SOCK_DGRAM).unwrap();
+        validate_socket_type(&udp, libc::SOCK_DGRAM).unwrap();
+        validate_socket_family(&udp, libc::AF_INET).unwrap();
+        assert_fd_err(validate_socket_type(&udp, libc::SOCK_STREAM), "SOCK_STREAM");
+        assert_fd_err(validate_socket_family(&udp, libc::AF_UNIX), "AF_UNIX");
+        if acceptconn_supported() {
+            assert_fd_err(validate_listening(&udp), "not a listening socket");
+        }
+    }
 
+    #[test]
+    fn validate_unix_stream_listener_and_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(dir.path().join("s.sock")).unwrap();
+        validate_socket_type(&listener, libc::SOCK_STREAM).unwrap();
+        validate_socket_family(&listener, libc::AF_UNIX).unwrap();
+        validate_listening(&listener).unwrap();
+        assert_fd_err(validate_socket_family(&listener, libc::AF_INET), "AF_UNIX");
+
+        let (a, _b) = UnixStream::pair().unwrap();
+        validate_socket_type(&a, libc::SOCK_STREAM).unwrap();
+        validate_socket_family(&a, libc::AF_UNIX).unwrap();
+        if acceptconn_supported() {
+            assert_fd_err(validate_listening(&a), "not a listening socket");
+        }
+    }
+
+    #[test]
+    fn validate_unix_datagram() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = UnixDatagram::bind(dir.path().join("d.sock")).unwrap();
+        validate_socket_type(&socket, libc::SOCK_DGRAM).unwrap();
+        validate_socket_family(&socket, libc::AF_UNIX).unwrap();
+        assert_fd_err(
+            validate_socket_type(&socket, libc::SOCK_STREAM),
+            "SOCK_STREAM",
+        );
+
+        // Unbound sockets still report their family.
+        let unbound = UnixDatagram::unbound().unwrap();
+        validate_socket_family(&unbound, libc::AF_UNIX).unwrap();
+    }
+
+    #[test]
+    fn validate_regular_file_is_rejected() {
         let file = tempfile::tempfile().unwrap();
-        assert!(validation::validate_socket_type(&file, libc::SOCK_STREAM).is_err());
+        assert_fd_err(
+            validate_socket_type(&file, libc::SOCK_STREAM),
+            "Failed to get socket type",
+        );
+        assert_fd_err(
+            validate_socket_family(&file, libc::AF_INET),
+            "Failed to get socket address",
+        );
+        assert_fd_err(validate_listening(&file), "SO_ACCEPTCONN");
+    }
+
+    #[test]
+    fn validate_unknown_expected_values_are_named() {
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        assert_fd_err(
+            validate_socket_type(&tcp, libc::SOCK_RAW),
+            "unknown socket type",
+        );
+        assert_fd_err(
+            validate_socket_family(&tcp, libc::AF_UNSPEC),
+            "unknown address family",
+        );
     }
 }

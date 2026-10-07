@@ -1,6 +1,6 @@
 use color_eyre::eyre::{Result, WrapErr};
 use echosrv::http::{DEFAULT_MAX_BODY_SIZE, HttpConfig, HttpEchoServer};
-use echosrv::network::{BindStrategy, FdInheritanceConfig, InheritedFd};
+use echosrv::network::FdInheritanceConfig;
 use echosrv::tcp::TcpConfig;
 use echosrv::udp::UdpConfig;
 use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
@@ -11,7 +11,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_PORT: u16 = 8080;
@@ -229,8 +229,10 @@ fn run(cli: Cli) -> Result<()> {
 
     // Take ownership of socket-activation descriptors (if any) and clear the
     // variables while the process is still single-threaded, so they are not
-    // passed on to child processes.
-    let inherited = FdInheritanceConfig::from_systemd_env()?;
+    // passed on to child processes. The servers below use the same
+    // process-wide pool: the socket named after the protocol, else the only
+    // socket passed, else they bind.
+    FdInheritanceConfig::from_systemd_env()?;
     if std::env::var_os("LISTEN_FDS").is_some() {
         for var in ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"] {
             // SAFETY: no other threads exist yet (the Tokio runtime is built
@@ -243,36 +245,11 @@ fn run(cli: Cli) -> Result<()> {
         .enable_all()
         .build()
         .wrap_err("Failed to start Tokio runtime")?;
-    runtime.block_on(start(cli, inherited))
+    runtime.block_on(start(cli))
 }
 
-/// Picks the inherited socket for `protocol`, if any was passed.
-fn inherited_strategy(fds: &FdInheritanceConfig, protocol: Protocol) -> Option<BindStrategy> {
-    if !fds.has_inherited_fds() {
-        return None;
-    }
-    match fds.take_named_or_sole(protocol.service_name()) {
-        Some(fd) => {
-            info!(
-                service = protocol.service_name(),
-                "Using socket inherited from parent process"
-            );
-            Some(BindStrategy::Inherit(InheritedFd::new(fd)))
-        }
-        None => {
-            warn!(
-                service = protocol.service_name(),
-                available = ?fds.inherited_service_names(),
-                "No matching inherited socket; binding a new one"
-            );
-            None
-        }
-    }
-}
-
-async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
+async fn start(cli: Cli) -> Result<()> {
     let bind_addr = SocketAddr::new(cli.host, cli.port);
-    let inherit = inherited_strategy(&fds, cli.protocol);
     let service_name = cli.protocol.service_name().to_string();
 
     match cli.protocol {
@@ -283,9 +260,9 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
                 buffer_size: 1024,
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),
-                bind_strategy: inherit,
-                service_name,
-            };
+                ..Default::default()
+            }
+            .with_fd_inheritance(service_name);
             info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting TCP echo server");
             serve(TcpEchoServer::new(config.into()))
                 .await
@@ -294,10 +271,9 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
         Protocol::Udp => {
             let config = UdpConfig {
                 bind_addr,
-                bind_strategy: inherit,
-                service_name,
                 ..Default::default()
-            };
+            }
+            .with_fd_inheritance(service_name);
             info!(address = %config.bind_addr, "Starting UDP echo server");
             serve(UdpEchoServer::new(config.into()))
                 .await
@@ -311,10 +287,9 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),
                 max_body_size: DEFAULT_MAX_BODY_SIZE,
-                bind_strategy: inherit,
-                service_name,
                 ..Default::default()
-            };
+            }
+            .with_fd_inheritance(service_name);
             info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting HTTP echo server");
             serve(HttpEchoServer::new(config))
                 .await
@@ -324,10 +299,8 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
             let path = cli
                 .socket_path
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_STREAM_PATH));
-            let mut config = UnixStreamConfig::default().with_socket_path(path.clone());
-            if let Some(strategy) = inherit {
-                config.bind_strategy = strategy;
-            }
+            let config =
+                UnixStreamConfig::default().with_fd_inheritance(service_name, path.clone());
             info!(socket_path = %path.display(), max_connections = config.max_connections, "Starting Unix domain stream echo server");
             serve(UnixStreamEchoServer::new(config))
                 .await
@@ -337,10 +310,8 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
             let path = cli
                 .socket_path
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_DATAGRAM_PATH));
-            let mut config = UnixDatagramConfig::default().with_socket_path(path.clone());
-            if let Some(strategy) = inherit {
-                config.bind_strategy = strategy;
-            }
+            let config =
+                UnixDatagramConfig::default().with_fd_inheritance(service_name, path.clone());
             info!(socket_path = %path.display(), "Starting Unix domain datagram echo server");
             serve(UnixDatagramEchoServer::new(config))
                 .await

@@ -89,10 +89,9 @@ async fn echoes_one_mebibyte_payload() {
     server.stop().await;
 }
 
-/// `Client::echo` writes the whole request before reading, so payloads larger
-/// than the loopback socket buffers can deadlock against the echo server.
+/// Payloads larger than the loopback socket buffers must not deadlock:
+/// `Client::echo` reads the echo while it is still writing the request.
 #[tokio::test]
-#[ignore = "BUG: stream Client::echo writes the full payload before reading the echo; payloads larger than the socket buffers (8 MiB on macOS loopback) deadlock until the write timeout"]
 async fn client_echoes_eight_mebibyte_payload() {
     let server = start_tcp(TcpConfig {
         buffer_size: 64 * 1024,

@@ -7,7 +7,7 @@ use crate::stream::ClientConfig;
 use crate::{EchoError, Result};
 use async_trait::async_trait;
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -100,7 +100,11 @@ impl HttpEchoClient {
             .map_err(EchoError::Tcp)
     }
 
-    async fn read_some(&self, stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<usize> {
+    async fn read_some<R: AsyncRead + Unpin>(
+        &self,
+        stream: &mut R,
+        buf: &mut Vec<u8>,
+    ) -> Result<usize> {
         let mut chunk = [0u8; 8192];
         let n = timeout(self.config.read_timeout, stream.read(&mut chunk))
             .await
@@ -112,7 +116,11 @@ impl HttpEchoClient {
 
     /// Reads the final (non-1xx) response head. Body bytes received after it
     /// are left in `buf`.
-    async fn read_head(&self, stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<ResponseHead> {
+    async fn read_head<R: AsyncRead + Unpin>(
+        &self,
+        stream: &mut R,
+        buf: &mut Vec<u8>,
+    ) -> Result<ResponseHead> {
         loop {
             if let Some(head) = parse_response_head(buf)? {
                 if (100..200).contains(&head.status) {
@@ -132,6 +140,50 @@ impl HttpEchoClient {
                 ));
             }
         }
+    }
+
+    /// Reads the response and returns its body. Errors on a non-2xx status,
+    /// a body larger than `max_response_size`, or a truncated body.
+    async fn read_response<R: AsyncRead + Unpin>(&self, stream: &mut R) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        let head = self.read_head(stream, &mut buf).await?;
+        buf.drain(..head.head_len);
+
+        let max = self.config.max_response_size;
+        if head.content_length.is_some_and(|len| len > max) {
+            return Err(EchoError::Config(format!(
+                "Response size exceeds maximum of {max} bytes"
+            )));
+        }
+        // Without Content-Length, the body is delimited by connection close.
+        let expected = head.content_length.unwrap_or(usize::MAX);
+        while buf.len() < expected {
+            if buf.len() > max {
+                return Err(EchoError::Config(format!(
+                    "Response size exceeds maximum of {max} bytes"
+                )));
+            }
+            if self.read_some(stream, &mut buf).await? == 0 {
+                if head.content_length.is_some() {
+                    return Err(EchoError::Http(format!(
+                        "HTTP response body truncated: expected {expected} bytes, got {}",
+                        buf.len()
+                    )));
+                }
+                break;
+            }
+        }
+        buf.truncate(expected);
+
+        if !(200..300).contains(&head.status) {
+            return Err(EchoError::Http(format!(
+                "HTTP {} {}: {}",
+                head.status,
+                head.reason,
+                String::from_utf8_lossy(&buf)
+            )));
+        }
+        Ok(buf)
     }
 }
 
@@ -182,49 +234,47 @@ impl EchoClient for HttpEchoClient {
         )
         .into_bytes();
         request.extend_from_slice(data);
-        timeout(self.config.write_timeout, stream.write_all(&request))
-            .await
-            .map_err(|_| EchoError::Timeout("Write timeout".to_string()))?
-            .map_err(EchoError::Tcp)?;
+        // The server echoes the body while it is still receiving it, so the
+        // response is read concurrently with the request being written;
+        // otherwise bodies larger than the socket buffers would deadlock.
+        let write_timeout = self.config.write_timeout;
+        let (mut reader, mut writer) = stream.split();
+        let write = async {
+            let send = async {
+                writer.write_all(&request).await?;
+                writer.flush().await
+            };
+            timeout(write_timeout, send)
+                .await
+                .map_err(|_| EchoError::Timeout("Write timeout".to_string()))?
+                .map_err(EchoError::Tcp)
+        };
+        let read = self.read_response(&mut reader);
+        tokio::pin!(write, read);
 
-        let mut buf = Vec::new();
-        let head = self.read_head(&mut stream, &mut buf).await?;
-        buf.drain(..head.head_len);
-
-        let max = self.config.max_response_size;
-        if head.content_length.is_some_and(|len| len > max) {
-            return Err(EchoError::Config(format!(
-                "Response size exceeds maximum of {max} bytes"
-            )));
-        }
-        // Without Content-Length, the body is delimited by connection close.
-        let expected = head.content_length.unwrap_or(usize::MAX);
-        while buf.len() < expected {
-            if buf.len() > max {
-                return Err(EchoError::Config(format!(
-                    "Response size exceeds maximum of {max} bytes"
-                )));
-            }
-            if self.read_some(&mut stream, &mut buf).await? == 0 {
-                if head.content_length.is_some() {
-                    return Err(EchoError::Http(format!(
-                        "HTTP response body truncated: expected {expected} bytes, got {}",
-                        buf.len()
-                    )));
+        let mut written = false;
+        let mut write_error = None;
+        loop {
+            tokio::select! {
+                result = &mut write, if !written => {
+                    written = true;
+                    match result {
+                        Ok(()) => {}
+                        Err(e @ EchoError::Timeout(_)) => return Err(e),
+                        // The server may have answered early (e.g. 413) and
+                        // stopped reading; its response is still worth reading.
+                        Err(e) => write_error = Some(e),
+                    }
                 }
-                break;
+                result = &mut read => {
+                    // An I/O error while reading is usually a consequence of
+                    // the failed write; report the write error instead.
+                    return match (result, write_error) {
+                        (Err(EchoError::Tcp(_)), Some(write_error)) => Err(write_error),
+                        (result, _) => result,
+                    };
+                }
             }
         }
-        buf.truncate(expected);
-
-        if !(200..300).contains(&head.status) {
-            return Err(EchoError::Http(format!(
-                "HTTP {} {}: {}",
-                head.status,
-                head.reason,
-                String::from_utf8_lossy(&buf)
-            )));
-        }
-        Ok(buf)
     }
 }

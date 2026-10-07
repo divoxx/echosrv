@@ -395,6 +395,35 @@ async fn test_http_client_round_trip() -> Result<()> {
     Ok(())
 }
 
+/// Bodies larger than the socket buffers must not deadlock: the server echoes
+/// while it is still receiving, so the client reads while it writes.
+#[tokio::test]
+async fn test_http_client_echoes_eight_mebibyte_body() -> Result<()> {
+    use echosrv::http::HttpEchoClient;
+    use echosrv::stream::ClientConfig;
+
+    let server = http_support::start(HttpConfig {
+        buffer_size: 64 * 1024,
+        max_body_size: 16 * 1024 * 1024,
+        read_timeout: common::WAIT,
+        write_timeout: common::WAIT,
+        ..http_support::config()
+    })
+    .await;
+    let config = ClientConfig {
+        read_timeout: common::WAIT,
+        write_timeout: common::WAIT,
+        ..Default::default()
+    };
+    let mut client = HttpEchoClient::connect_with_config(server.addr, config).await?;
+    let body = http_support::payload(8 * 1024 * 1024);
+    let echoed = client.echo(&body).await?;
+    assert!(echoed == body, "8 MiB body was not echoed intact");
+
+    server.stop().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_http_client_reports_error_status() -> Result<()> {
     use echosrv::http::HttpEchoClient;
@@ -407,6 +436,28 @@ async fn test_http_client_reports_error_status() -> Result<()> {
     let mut client = HttpEchoClient::connect(server.addr).await?;
     let err = client
         .echo(b"too long")
+        .await
+        .expect_err("413 must be an error");
+    assert!(err.to_string().contains("413"), "{err}");
+
+    server.stop().await;
+    Ok(())
+}
+
+/// A large body rejected up front (413) is reported as the HTTP error, not as
+/// the write failure caused by the server no longer reading.
+#[tokio::test]
+async fn test_http_client_reports_413_for_large_body() -> Result<()> {
+    use echosrv::http::HttpEchoClient;
+
+    let server = http_support::start(HttpConfig {
+        max_body_size: 4,
+        ..http_support::config()
+    })
+    .await;
+    let mut client = HttpEchoClient::connect(server.addr).await?;
+    let err = client
+        .echo(&http_support::payload(8 * 1024 * 1024))
         .await
         .expect_err("413 must be an error");
     assert!(err.to_string().contains("413"), "{err}");

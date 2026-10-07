@@ -1,5 +1,5 @@
 use crate::datagram::{DEFAULT_DATAGRAM_BUFFER_SIZE, DatagramConfig};
-use crate::network::{BindStrategy, BindTarget};
+use crate::network::BindStrategy;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -52,11 +52,14 @@ impl Default for UdpConfig {
 impl UdpConfig {
     /// Prefer an inherited descriptor named `service_name`, falling back to
     /// binding `bind_addr`.
+    ///
+    /// The fallback address is read when the server binds, so `bind_addr`
+    /// may still be changed afterwards.
     pub fn with_fd_inheritance(mut self, service_name: impl Into<String>) -> Self {
         self.service_name = service_name.into();
         self.bind_strategy = Some(BindStrategy::InheritOrBind {
             fd: None,
-            fallback_target: BindTarget::Network(self.bind_addr),
+            fallback_target: None,
         });
         self
     }
@@ -71,6 +74,80 @@ impl From<UdpConfig> for DatagramConfig {
             write_timeout: config.write_timeout,
             bind_strategy: config.bind_strategy,
             service_name: config.service_name,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::BindTarget;
+
+    #[test]
+    fn from_preserves_every_field() {
+        let config = UdpConfig {
+            bind_addr: "[::]:5300".parse().unwrap(),
+            buffer_size: 99,
+            read_timeout: Duration::from_millis(11),
+            write_timeout: Duration::from_millis(22),
+            bind_strategy: Some(BindStrategy::Bind(BindTarget::Network(
+                "127.0.0.1:5301".parse().unwrap(),
+            ))),
+            service_name: "dns".into(),
+        };
+        let dgram: DatagramConfig = config.into();
+        assert_eq!(dgram.bind_addr, "[::]:5300".parse().unwrap());
+        assert_eq!(dgram.buffer_size, 99);
+        assert_eq!(dgram.read_timeout, Duration::from_millis(11));
+        assert_eq!(dgram.write_timeout, Duration::from_millis(22));
+        assert_eq!(dgram.service_name, "dns");
+        match dgram.bind_strategy {
+            Some(BindStrategy::Bind(BindTarget::Network(addr))) => {
+                assert_eq!(addr, "127.0.0.1:5301".parse().unwrap())
+            }
+            other => panic!("strategy not preserved: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_converts_to_valid_datagram_config() {
+        let config = UdpConfig::default();
+        assert_eq!(config.bind_addr, "127.0.0.1:0".parse().unwrap());
+        assert!(config.bind_strategy.is_none());
+        let dgram: DatagramConfig = config.into();
+        assert_eq!(dgram.service_name, "udp");
+        dgram.validate().unwrap();
+    }
+
+    #[test]
+    fn with_fd_inheritance_falls_back_to_current_bind_addr() {
+        let mut config = UdpConfig::default().with_fd_inheritance("svc");
+        // Changing bind_addr after enabling inheritance must take effect.
+        config.bind_addr = "127.0.0.1:4321".parse().unwrap();
+        let converted: DatagramConfig = config.into();
+        match converted.effective_bind_strategy() {
+            BindStrategy::InheritOrBind {
+                fd: None,
+                fallback_target: Some(BindTarget::Network(addr)),
+            } => assert_eq!(addr, "127.0.0.1:4321".parse().unwrap()),
+            other => panic!("unexpected strategy {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_fd_inheritance() {
+        let config = UdpConfig {
+            bind_addr: "0.0.0.0:9090".parse().unwrap(),
+            ..Default::default()
+        }
+        .with_fd_inheritance("echo-udp");
+        assert_eq!(config.service_name, "echo-udp");
+        match &config.bind_strategy {
+            Some(BindStrategy::InheritOrBind {
+                fd: None,
+                fallback_target: None,
+            }) => {}
+            other => panic!("unexpected strategy {other:?}"),
         }
     }
 }

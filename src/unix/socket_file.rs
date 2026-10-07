@@ -168,4 +168,77 @@ mod tests {
         drop(file);
         assert!(path.exists());
     }
+
+    #[test]
+    fn missing_parent_directories_are_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/b/c.sock");
+        let _listener = bind_with_stale_recovery(&path, SocketKind::Stream, |p| {
+            std::os::unix::net::UnixListener::bind(p)
+        })
+        .unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn stale_datagram_socket_is_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale-dgram.sock");
+        drop(std::os::unix::net::UnixDatagram::bind(&path).unwrap());
+        assert!(path.exists());
+
+        let socket = bind_with_stale_recovery(&path, SocketKind::Datagram, |p| {
+            std::os::unix::net::UnixDatagram::bind(p)
+        })
+        .unwrap();
+        let sender = std::os::unix::net::UnixDatagram::unbound().unwrap();
+        sender.send_to(b"hi", &path).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(socket.recv(&mut buf).unwrap(), 2);
+    }
+
+    #[test]
+    fn live_datagram_socket_is_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live-dgram.sock");
+        let _live = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        let err = bind_with_stale_recovery(&path, SocketKind::Datagram, |p| {
+            std::os::unix::net::UnixDatagram::bind(p)
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn other_bind_errors_are_returned_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.sock");
+        let calls = std::cell::Cell::new(0);
+        let err = bind_with_stale_recovery(&path, SocketKind::Stream, |_| {
+            calls.set(calls.get() + 1);
+            Err::<(), _>(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(err.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            calls.get(),
+            1,
+            "non-AddrInUse errors must not trigger a retry"
+        );
+    }
+
+    #[test]
+    fn record_missing_path_fails_and_drop_tolerates_removed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.sock");
+        assert!(SocketFile::record(&path).is_err());
+
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let file = SocketFile::record(&path).unwrap();
+        assert_eq!(file.path(), path.as_path());
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        drop(file); // must not panic
+        assert!(!path.exists());
+    }
 }

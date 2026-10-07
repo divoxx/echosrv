@@ -101,12 +101,58 @@ mod tests {
     fn guard_enforces_limit_and_releases() {
         let counter = Arc::new(AtomicUsize::new(0));
         let a = ConnectionGuard::try_acquire(&counter, 2).unwrap();
+        assert_eq!(a.active(), 1);
         let b = ConnectionGuard::try_acquire(&counter, 2).unwrap();
+        assert_eq!(b.active(), 2);
+        // A failed acquire rolls its increment back.
+        assert!(ConnectionGuard::try_acquire(&counter, 2).is_none());
         assert!(ConnectionGuard::try_acquire(&counter, 2).is_none());
         assert_eq!(counter.load(Ordering::SeqCst), 2);
         drop(a);
+        assert_eq!(b.active(), 1);
         let c = ConnectionGuard::try_acquire(&counter, 2).unwrap();
         drop((b, c));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn guard_with_zero_limit_never_acquires() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        for _ in 0..3 {
+            assert!(ConnectionGuard::try_acquire(&counter, 0).is_none());
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn guard_holders_never_exceed_limit() {
+        const MAX: usize = 3;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let holders = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                let holders = Arc::clone(&holders);
+                let violations = Arc::clone(&violations);
+                std::thread::spawn(move || {
+                    for _ in 0..2_000 {
+                        if let Some(guard) = ConnectionGuard::try_acquire(&counter, MAX) {
+                            if holders.fetch_add(1, Ordering::SeqCst) >= MAX {
+                                violations.fetch_add(1, Ordering::SeqCst);
+                            }
+                            std::hint::spin_loop();
+                            holders.fetch_sub(1, Ordering::SeqCst);
+                            drop(guard);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(violations.load(Ordering::SeqCst), 0);
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
@@ -120,6 +166,20 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert!(ConnectionGuard::try_acquire(&counter, 1).is_some());
+    }
+
+    #[tokio::test]
+    async fn guard_released_when_task_panics() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let guard = ConnectionGuard::try_acquire(&counter, 1).unwrap();
+        let joined = tokio::spawn(async move {
+            let _guard = guard;
+            panic!("connection task failed");
+        })
+        .await;
+        assert!(joined.unwrap_err().is_panic());
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -130,5 +190,47 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), wait_for_shutdown(&mut rx))
             .await
             .expect("early shutdown signal was lost");
+    }
+
+    #[tokio::test]
+    async fn later_receivers_subscribe_afresh() {
+        let signal = ShutdownSignal::new();
+        let mut first = signal.receiver();
+        signal.sender().send(()).unwrap();
+        wait_for_shutdown(&mut first).await;
+
+        // A second run gets a new subscription: the old message is not replayed.
+        let mut second = signal.receiver();
+        assert!(matches!(
+            second.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        signal.sender().send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), wait_for_shutdown(&mut second))
+            .await
+            .expect("second receiver missed shutdown");
+    }
+
+    #[tokio::test]
+    async fn lagged_receiver_counts_as_shutdown() {
+        let signal = ShutdownSignal::new();
+        let mut rx = signal.receiver();
+        let tx = signal.sender();
+        // Capacity is 1: the second send makes the receiver lag.
+        tx.send(()).unwrap();
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), wait_for_shutdown(&mut rx))
+            .await
+            .expect("lagged receiver did not observe shutdown");
+    }
+
+    #[tokio::test]
+    async fn closed_channel_never_resolves() {
+        let (tx, mut rx) = broadcast::channel::<()>(1);
+        drop(tx);
+        tokio::time::pause();
+        let waited =
+            tokio::time::timeout(Duration::from_secs(3600), wait_for_shutdown(&mut rx)).await;
+        assert!(waited.is_err(), "closed channel must not trigger shutdown");
     }
 }

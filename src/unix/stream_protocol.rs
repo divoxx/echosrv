@@ -127,7 +127,12 @@ impl StreamProtocol for UnixStreamProtocol {
         fd_config: &FdInheritanceConfig,
     ) -> std::result::Result<Self::Listener, Self::Error> {
         UnixStreamSocketBuilder::build(
-            &config.effective_bind_strategy(),
+            // A Unix socket has no use for the network `bind_addr`, so an
+            // unset `InheritOrBind` fallback is not filled in from it.
+            &config
+                .bind_strategy
+                .clone()
+                .unwrap_or_else(|| config.effective_bind_strategy()),
             &config.service_name,
             fd_config,
         )

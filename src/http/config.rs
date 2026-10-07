@@ -1,7 +1,7 @@
 //! Configuration for the HTTP echo server.
 
 use super::protocol::DEFAULT_MAX_BODY_SIZE;
-use crate::network::{BindStrategy, BindTarget};
+use crate::network::BindStrategy;
 use crate::stream::StreamConfig;
 use std::time::Duration;
 
@@ -90,11 +90,14 @@ impl Default for HttpConfig {
 impl HttpConfig {
     /// Prefer an inherited descriptor named `service_name` (e.g. systemd
     /// `FileDescriptorName=`), falling back to binding `bind_addr`.
+    ///
+    /// The fallback address is read when the server binds, so `bind_addr`
+    /// may still be changed afterwards.
     pub fn with_fd_inheritance(mut self, service_name: impl Into<String>) -> Self {
         self.service_name = service_name.into();
         self.bind_strategy = Some(BindStrategy::InheritOrBind {
             fd: None,
-            fallback_target: BindTarget::Network(self.bind_addr),
+            fallback_target: None,
         });
         self
     }
@@ -115,6 +118,92 @@ impl From<HttpConfig> for StreamConfig {
             write_timeout: config.write_timeout,
             bind_strategy: config.bind_strategy,
             service_name: config.service_name,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::BindTarget;
+
+    #[test]
+    fn defaults() {
+        let config = HttpConfig::default();
+        assert_eq!(config.bind_addr, "127.0.0.1:0".parse().unwrap());
+        assert_eq!(config.max_connections, 100);
+        assert_eq!(config.buffer_size, 8192);
+        assert_eq!(config.read_timeout, Duration::from_secs(30));
+        assert_eq!(config.write_timeout, Duration::from_secs(30));
+        assert_eq!(config.server_name.as_deref(), Some("EchoServer/1.0"));
+        assert_eq!(config.default_content_type.as_deref(), Some("text/plain"));
+        assert_eq!(config.max_body_size, DEFAULT_MAX_BODY_SIZE);
+        assert!(config.bind_strategy.is_none());
+        assert_eq!(config.service_name, "http");
+    }
+
+    #[test]
+    fn from_preserves_connection_fields() {
+        let config = HttpConfig {
+            bind_addr: "0.0.0.0:8000".parse().unwrap(),
+            max_connections: 4,
+            buffer_size: 55,
+            read_timeout: Duration::from_millis(9),
+            write_timeout: Duration::from_millis(10),
+            server_name: None,
+            default_content_type: None,
+            max_body_size: 1,
+            bind_strategy: Some(BindStrategy::Bind(BindTarget::Network(
+                "127.0.0.1:8001".parse().unwrap(),
+            ))),
+            service_name: "api".into(),
+        };
+        let stream: StreamConfig = config.into();
+        assert_eq!(stream.bind_addr, "0.0.0.0:8000".parse().unwrap());
+        assert_eq!(stream.max_connections, 4);
+        assert_eq!(stream.buffer_size, 55);
+        assert_eq!(stream.read_timeout, Duration::from_millis(9));
+        assert_eq!(stream.write_timeout, Duration::from_millis(10));
+        assert_eq!(stream.service_name, "api");
+        match stream.bind_strategy {
+            Some(BindStrategy::Bind(BindTarget::Network(addr))) => {
+                assert_eq!(addr, "127.0.0.1:8001".parse().unwrap())
+            }
+            other => panic!("strategy not preserved: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_fd_inheritance_falls_back_to_current_bind_addr() {
+        let mut config = HttpConfig::default().with_fd_inheritance("svc");
+        // Changing bind_addr after enabling inheritance must take effect.
+        config.bind_addr = "127.0.0.1:4321".parse().unwrap();
+        let converted: StreamConfig = config.into();
+        match converted.effective_bind_strategy() {
+            BindStrategy::InheritOrBind {
+                fd: None,
+                fallback_target: Some(BindTarget::Network(addr)),
+            } => assert_eq!(addr, "127.0.0.1:4321".parse().unwrap()),
+            other => panic!("unexpected strategy {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_fd_inheritance() {
+        let config = HttpConfig {
+            bind_addr: "0.0.0.0:8080".parse().unwrap(),
+            ..Default::default()
+        }
+        .with_fd_inheritance("web");
+        assert_eq!(config.service_name, "web");
+        // HTTP-specific fields are untouched.
+        assert_eq!(config.max_body_size, DEFAULT_MAX_BODY_SIZE);
+        match &config.bind_strategy {
+            Some(BindStrategy::InheritOrBind {
+                fd: None,
+                fallback_target: None,
+            }) => {}
+            other => panic!("unexpected strategy {other:?}"),
         }
     }
 }

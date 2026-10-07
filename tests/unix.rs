@@ -66,6 +66,31 @@ async fn stream_echoes_text_and_binary() {
     server.stop().await;
 }
 
+/// Payloads larger than the socket buffers must not deadlock: the client
+/// reads the echo while it is still writing.
+#[tokio::test]
+async fn stream_client_echoes_eight_mebibyte_payload() {
+    let dir = socket_dir();
+    let server = start_unix_stream(UnixStreamConfig {
+        buffer_size: 64 * 1024,
+        ..UnixStreamConfig::default().with_socket_path(dir.path().join("big.sock"))
+    })
+    .await;
+    let config = echosrv::stream::ClientConfig {
+        read_timeout: WAIT,
+        write_timeout: WAIT,
+        ..Default::default()
+    };
+    let mut client = UnixStreamEchoClient::connect_with_config(server.addr.clone(), config)
+        .await
+        .unwrap();
+    let data = payload(8 * 1024 * 1024);
+    let echoed = client.echo(&data).await.unwrap();
+    assert!(echoed == data, "8 MiB payload was not echoed intact");
+    drop(client);
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn stream_concurrent_clients_get_their_own_payload() {
     let dir = socket_dir();
