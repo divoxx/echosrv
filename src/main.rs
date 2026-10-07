@@ -46,10 +46,10 @@ async fn main() -> Result<()> {
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),
                 server_name: Some("EchoServer/1.0".to_string()),
-                echo_headers: true,
+                max_body_size: echosrv::http::DEFAULT_MAX_BODY_SIZE,
                 default_content_type: Some("text/plain".to_string()),
             };
-            let server = HttpEchoServer::new(config.clone().into());
+            let server = HttpEchoServer::new(config.clone());
             info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting HTTP echo server");
             server
                 .run()
