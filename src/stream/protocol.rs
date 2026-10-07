@@ -1,23 +1,30 @@
+//! The [`StreamProtocol`] trait implemented by stream transports.
+
 use super::config::StreamConfig;
 use crate::network::fd_inheritance::FdInheritanceConfig;
 use crate::network::{Address, LocalAddress};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 
-/// Trait for stream-based protocols (TCP, Unix streams, etc.)
+/// A connection-oriented transport usable by [`StreamEchoServer`] and
+/// [`Client`].
 ///
-/// This trait defines the interface that stream protocol implementations
-/// must provide to work with the generic stream echo server and client.
+/// Implemented by [`TcpProtocol`](crate::tcp::TcpProtocol),
+/// [`HttpProtocol`](crate::http::HttpProtocol) and
+/// [`UnixStreamProtocol`](crate::unix::UnixStreamProtocol). The server calls
+/// [`bind_with_inheritance`](Self::bind_with_inheritance), then repeatedly
+/// [`accept`](Self::accept), and echoes each connection with
+/// [`read`](Self::read), [`write`](Self::write) and [`flush`](Self::flush).
 ///
-/// File descriptor inheritance support is provided through optional methods
-/// that protocols can implement for zero-downtime server reloads.
+/// [`StreamEchoServer`]: crate::stream::StreamEchoServer
+/// [`Client`]: crate::stream::Client
 #[async_trait]
 pub trait StreamProtocol: Send + Sync + 'static {
-    /// Error type for this protocol
+    /// Error type for this protocol.
     type Error: Send + Into<crate::EchoError>;
-    /// Listener type for this protocol
+    /// Listening socket type.
     type Listener: Send + LocalAddress;
-    /// Stream type for this protocol
+    /// Connected stream type.
     type Stream: Send;
 
     /// Binds a listener to the given configuration (server-side)
@@ -43,7 +50,10 @@ pub trait StreamProtocol: Send + Sync + 'static {
         Self::bind(config).await
     }
 
-    /// Accepts a new connection from the listener (server-side)
+    /// Accepts a new connection from the listener (server side).
+    ///
+    /// The returned address is only used for logging; protocols without IP
+    /// peers (Unix sockets) return a placeholder.
     async fn accept(
         listener: &mut Self::Listener,
     ) -> std::result::Result<(Self::Stream, SocketAddr), Self::Error>;

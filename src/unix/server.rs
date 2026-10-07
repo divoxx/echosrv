@@ -1,3 +1,5 @@
+//! Unix domain stream and datagram echo servers.
+
 use crate::Result;
 use crate::common::EchoServerTrait;
 use crate::datagram::{BoundDatagramServer, DatagramEchoServer};
@@ -13,7 +15,7 @@ use async_trait::async_trait;
 /// accepts a [`UnixStreamConfig`]. It shares the generic server's behavior:
 /// `max_connections` enforcement, timeouts and graceful shutdown.
 ///
-/// Socket file handling:
+/// Socket file handling (see the [module docs](crate::unix)):
 /// * at bind, a stale socket file (nothing listening) is removed and re-bound;
 ///   a live socket or non-socket file is an error,
 /// * on shutdown, the socket file is removed only if this server created it
@@ -21,25 +23,28 @@ use async_trait::async_trait;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
-/// use echosrv::common::EchoServerTrait;
+/// use echosrv::EchoServerTrait;
 /// use std::time::Duration;
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let config = UnixStreamConfig {
-///         max_connections: 100,
-///         buffer_size: 1024,
-///         read_timeout: Duration::from_secs(30),
-///         write_timeout: Duration::from_secs(30),
-///         ..UnixStreamConfig::default().with_socket_path("/tmp/echo.sock".into())
-///     };
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let dir = tempfile::tempdir()?;
+/// let config = UnixStreamConfig {
+///     max_connections: 10,
+///     read_timeout: Duration::from_secs(5),
+///     ..UnixStreamConfig::default().with_socket_path(dir.path().join("echo.sock"))
+/// };
 ///
-///     let server = UnixStreamEchoServer::new(config);
-///     server.run().await?;
-///     Ok(())
-/// }
+/// let server = UnixStreamEchoServer::new(config);
+/// let shutdown = server.shutdown_signal();
+/// let running = tokio::spawn(async move { server.run().await });
+/// // ... connect with a UnixStreamEchoClient ...
+/// shutdown.send(())?;
+/// running.await??;
+/// # Ok(())
+/// # }
 /// ```
 pub struct UnixStreamEchoServer {
     inner: StreamEchoServer<UnixStreamProtocol>,
@@ -79,24 +84,26 @@ impl EchoServerTrait for UnixStreamEchoServer {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
-/// use echosrv::common::EchoServerTrait;
-/// use std::time::Duration;
+/// use echosrv::EchoServerTrait;
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let config = UnixDatagramConfig {
-///         buffer_size: 1024,
-///         read_timeout: Duration::from_secs(30),
-///         write_timeout: Duration::from_secs(30),
-///         ..UnixDatagramConfig::default().with_socket_path("/tmp/echo_dgram.sock".into())
-///     };
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let dir = tempfile::tempdir()?;
+/// let config = UnixDatagramConfig {
+///     buffer_size: 1024,
+///     ..UnixDatagramConfig::default().with_socket_path(dir.path().join("echo.sock"))
+/// };
 ///
-///     let server = UnixDatagramEchoServer::new(config);
-///     server.run().await?;
-///     Ok(())
-/// }
+/// let server = UnixDatagramEchoServer::new(config);
+/// let shutdown = server.shutdown_signal();
+/// let running = tokio::spawn(async move { server.run().await });
+/// // ... send datagrams with a UnixDatagramEchoClient ...
+/// shutdown.send(())?;
+/// running.await??;
+/// # Ok(())
+/// # }
 /// ```
 pub struct UnixDatagramEchoServer {
     inner: DatagramEchoServer<UnixDatagramProtocol>,

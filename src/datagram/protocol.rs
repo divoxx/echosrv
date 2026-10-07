@@ -1,12 +1,19 @@
+//! The [`DatagramProtocol`] trait implemented by datagram transports.
+
 use super::config::DatagramConfig;
 use crate::network::LocalAddress;
 use crate::network::fd_inheritance::FdInheritanceConfig;
 use async_trait::async_trait;
 
-/// Trait for datagram-based protocols (UDP, Unix datagrams, etc.)
+/// A datagram transport usable by [`DatagramEchoServer`].
 ///
-/// This trait defines the interface that datagram protocol implementations
-/// must provide to work with the generic datagram echo server.
+/// Implemented by [`UdpProtocol`](crate::udp::UdpProtocol) and
+/// [`UnixDatagramProtocol`](crate::unix::UnixDatagramProtocol). Protocols
+/// whose [`PeerAddr`](Self::PeerAddr) is [`SocketAddr`](std::net::SocketAddr)
+/// also work with [`DatagramEchoClient`].
+///
+/// [`DatagramEchoServer`]: crate::datagram::DatagramEchoServer
+/// [`DatagramEchoClient`]: crate::datagram::DatagramEchoClient
 #[async_trait]
 pub trait DatagramProtocol: Send + Sync + 'static {
     /// Error type for this protocol

@@ -26,17 +26,22 @@ const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::http::HttpEchoClient;
 /// use echosrv::EchoClient;
+/// # use echosrv::http::{HttpConfig, HttpEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> echosrv::Result<()> {
-///     let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
-///     let mut client = HttpEchoClient::connect(addr).await?;
-///     assert_eq!(client.echo_string("hello").await?, "hello");
-///     Ok(())
-/// }
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> echosrv::Result<()> {
+/// # let server = HttpEchoServer::new(HttpConfig::default());
+/// # let bound = server.bind().await?;
+/// # let addr = *bound.local_addr().as_network().unwrap();
+/// # tokio::spawn(bound.serve());
+/// let mut client = HttpEchoClient::connect(addr).await?;
+/// assert_eq!(client.echo_string("hello").await?, "hello");
+/// assert_eq!(client.echo_string("again").await?, "again"); // new connection
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct HttpEchoClient {

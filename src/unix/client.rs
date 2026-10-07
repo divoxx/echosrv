@@ -1,3 +1,5 @@
+//! Unix domain stream and datagram echo clients.
+
 use crate::Result;
 use crate::common::EchoClient;
 use crate::datagram::DatagramClientConfig;
@@ -8,7 +10,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::time::timeout;
 
-/// Unix domain stream echo client
+/// Unix domain stream echo client.
 ///
 /// An alias for the generic stream [`Client`], so it shares its connect/read/
 /// write timeouts and response size limit
@@ -16,44 +18,51 @@ use tokio::time::timeout;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::unix::UnixStreamEchoClient;
-/// use echosrv::common::EchoClient;
-/// use std::path::PathBuf;
+/// use echosrv::EchoClient;
+/// # use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let socket_path = PathBuf::from("/tmp/echo.sock");
-///     let mut client = UnixStreamEchoClient::connect(socket_path).await?;
-///
-///     let response = client.echo_string("Hello, Unix Stream Server!").await?;
-///     println!("Server echoed: {}", response);
-///     Ok(())
-/// }
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let dir = tempfile::tempdir()?;
+/// # let socket_path = dir.path().join("echo.sock");
+/// # let config = UnixStreamConfig::default().with_socket_path(socket_path.clone());
+/// # let server = UnixStreamEchoServer::new(config);
+/// # tokio::spawn(server.bind().await?.serve());
+/// let mut client = UnixStreamEchoClient::connect(socket_path).await?;
+/// assert_eq!(client.echo_string("Hello").await?, "Hello");
+/// # Ok(())
+/// # }
 /// ```
 pub type UnixStreamEchoClient = Client<UnixStreamProtocol>;
 
-/// Unix domain datagram echo client
+/// Unix domain datagram echo client.
 ///
-/// Binds a temporary socket path (so the server can reply), which is removed
-/// when the client is dropped.
+/// Binds a temporary socket path in [`std::env::temp_dir`] (so the server can
+/// reply), which is removed when the client is dropped. Each
+/// [`echo`](EchoClient::echo) sends one datagram and returns the next datagram
+/// received (default timeouts 5 s, 64 KiB receive buffer; see
+/// [`DatagramClientConfig`]).
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::unix::UnixDatagramEchoClient;
-/// use echosrv::common::EchoClient;
-/// use std::path::PathBuf;
+/// use echosrv::EchoClient;
+/// # use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let socket_path = PathBuf::from("/tmp/echo_dgram.sock");
-///     let mut client = UnixDatagramEchoClient::connect(socket_path).await?;
-///
-///     let response = client.echo_string("Hello, Unix Datagram Server!").await?;
-///     println!("Server echoed: {}", response);
-///     Ok(())
-/// }
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let dir = tempfile::tempdir()?;
+/// # let socket_path = dir.path().join("echo.sock");
+/// # let config = UnixDatagramConfig::default().with_socket_path(socket_path.clone());
+/// # let server = UnixDatagramEchoServer::new(config);
+/// # tokio::spawn(server.bind().await?.serve());
+/// let mut client = UnixDatagramEchoClient::connect(socket_path).await?;
+/// assert_eq!(client.echo_string("Hello").await?, "Hello");
+/// # Ok(())
+/// # }
 /// ```
 pub struct UnixDatagramEchoClient {
     socket: ManagedUnixDatagram,

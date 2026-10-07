@@ -1,3 +1,5 @@
+//! [`Address`]: a network socket address or a Unix socket path.
+
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;

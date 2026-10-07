@@ -1,9 +1,15 @@
+//! TCP server configuration.
+
 use crate::network::BindStrategy;
 use crate::stream::StreamConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// TCP-specific configuration that extends the common config
+/// Configuration for [`TcpEchoServer`](crate::TcpEchoServer).
+///
+/// Converts into [`StreamConfig`] (field for field), which is what
+/// `TcpEchoServer::new` takes. Defaults: `127.0.0.1:0`, 100 connections,
+/// 1 KiB buffer, 30 s timeouts, service name `"tcp"`.
 ///
 /// # Examples
 ///
@@ -25,15 +31,16 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone)]
 pub struct TcpConfig {
-    /// Address to bind the server to (when not inheriting)
+    /// Address to bind the server to (when not inheriting).
     pub bind_addr: SocketAddr,
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent connections; further connections are
+    /// accepted and closed immediately.
     pub max_connections: usize,
-    /// Buffer size for reading/writing data
+    /// Per-connection read/echo buffer size (must be non-zero).
     pub buffer_size: usize,
-    /// Read timeout for connections
+    /// How long a connection may be idle (no data) before it is closed.
     pub read_timeout: Duration,
-    /// Write timeout for connections
+    /// Timeout for echoing each chunk back; the connection is closed on expiry.
     pub write_timeout: Duration,
     /// Socket acquisition strategy; `None` binds `bind_addr`.
     /// See [`StreamConfig::bind_strategy`].
@@ -58,7 +65,14 @@ impl Default for TcpConfig {
 
 impl TcpConfig {
     /// Prefer an inherited descriptor named `service_name` (e.g. systemd
-    /// `FileDescriptorName=`), falling back to binding `bind_addr`.
+    /// `FileDescriptorName=`), or the only descriptor if exactly one was
+    /// passed, falling back to binding `bind_addr`.
+    ///
+    /// Sets [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::InheritOrBind`]; see [`take_named_or_sole`] for the
+    /// lookup rule.
+    ///
+    /// [`take_named_or_sole`]: crate::network::FdInheritanceConfig::take_named_or_sole
     ///
     /// The fallback address is read when the server binds, so `bind_addr`
     /// may still be changed afterwards.

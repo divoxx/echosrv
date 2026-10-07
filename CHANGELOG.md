@@ -5,7 +5,166 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+This release makes the servers behave as documented. HTTP now speaks real
+HTTP/1.1, socket inheritance works for every protocol, shutdown is reliable,
+and the tests run against real servers. It contains many breaking changes; see
+below.
+
+### Breaking
+
+- **Config structs gained fields.** `StreamConfig`, `DatagramConfig`,
+  `TcpConfig`, `UdpConfig` and `HttpConfig` now have `bind_strategy:
+  Option<BindStrategy>` and `service_name: String`. Struct literals must add
+  `..Default::default()`.
+- **Unix configs:** `UnixStreamConfig::socket_path` and
+  `UnixDatagramConfig::socket_path` are replaced by `bind_strategy:
+  BindStrategy` and `service_name`. Use `with_socket_path(path)` or
+  `with_fd_inheritance(name, fallback_path)`.
+- **`EchoError` has new variants** `FdInheritance(String)` and `Http(String)`.
+  Exhaustive matches must handle them.
+- **`Address`:** the panicking `From<&str>` is replaced by `TryFrom<&str>`
+  (and `FromStr`). An empty `"unix:"` path is rejected.
+- **HTTP:**
+  - `HttpEchoServer` is now a struct (it was an alias of
+    `StreamEchoServer<HttpProtocol>`). It is built from `HttpConfig` and has
+    its own `bind()`.
+  - `HttpEchoClient` is now a real HTTP client struct (it was
+    `Client<HttpProtocol>`). It returns the response body and fails on
+    non-2xx responses.
+  - `HttpConfig::echo_headers` was removed (it was never implemented).
+    `HttpConfig::max_body_size` was added (default 1 MiB).
+  - `HttpConfig::default()` now binds `127.0.0.1:0` instead of
+    `127.0.0.1:8080`.
+  - Responses are now full HTTP/1.1 responses instead of the raw body (see
+    Fixed).
+- **`UnixStreamEchoClient`** is now an alias of `Client<UnixStreamProtocol>`.
+  It shares `ClientConfig` timeouts and the response size limit with the
+  other stream clients.
+- **Unix protocol socket types:** `UnixStreamProtocol::Listener` is
+  `ManagedUnixListener` and `UnixDatagramProtocol::Socket` is
+  `ManagedUnixDatagram`. These wrappers own (and remove) the socket file.
+- **`StreamProtocol` trait:**
+  - `Listener` must implement `network::LocalAddress`.
+  - New methods: `bind_with_inheritance` (default calls `bind`) and
+    `connect_address` (default handles network addresses).
+- **`DatagramProtocol` trait:**
+  - New associated type `PeerAddr`. `recv_from` and `send_to` use it instead
+    of `SocketAddr`.
+  - `Socket` must be `Sync + LocalAddress`.
+  - New method `bind_with_inheritance`.
+- **`stream::Client<P>`** now requires `P::Stream: AsyncRead + AsyncWrite +
+  Unpin`, so it can read while it writes.
+- **Datagram buffers:** the default `buffer_size` for UDP/Unix datagram
+  servers and clients is now 64 KiB (`DEFAULT_DATAGRAM_BUFFER_SIZE`) instead
+  of 1024 bytes. The client buffer is configurable through
+  `DatagramClientConfig`.
+- **Signals:** the library no longer installs a Ctrl-C handler. `run()` only
+  returns after `shutdown_signal().send(())`. The `echosrv` binary handles
+  `SIGINT` and `SIGTERM` itself.
+- **Platforms:** the crate now fails to compile on non-Unix targets
+  (`compile_error!`).
+- **CLI:** an invalid port, an unknown protocol or extra arguments are now
+  errors. Previously a bad port silently fell back to 8080.
+
+### Added
+
+- **Socket inheritance and systemd socket activation** for TCP, UDP, HTTP,
+  Unix stream and Unix datagram (`network::fd_inheritance`):
+  - `BindStrategy::{Bind(BindTarget), Inherit(InheritedFd), InheritOrBind {
+    fd: Option<InheritedFd>, fallback_target: Option<BindTarget> }}`.
+  - `InheritedFd`, a take-once handle around an `OwnedFd`.
+  - `FdInheritanceConfig`, a shared pool of named descriptors.
+    `from_systemd_env()` parses `LISTEN_PID`/`LISTEN_FDS`/`LISTEN_FDNAMES`
+    once per process. `from_fds()` builds a pool for custom process managers.
+    `take_named_or_sole()` picks a descriptor.
+  - `with_fd_inheritance(service_name)` on every config.
+  - Inherited descriptors are validated: socket type, address family, and
+    listening state for stream sockets.
+- **`bind()`** on every server returns a `'static` bound server (for example
+  `BoundStreamServer`, `BoundDatagramServer` or `BoundHttpServer`) with
+  `local_addr()` and `serve()`. Use it to bind port 0 and learn the real
+  address.
+- **HTTP/1.1 framing:** `Content-Length` bodies, `Expect: 100-continue`,
+  `Connection: close`, and status codes 400, 405 (with `Allow: POST`), 413,
+  431 and 501. `MAX_HEADER_BYTES` (8 KiB), `MAX_HEADERS` (32) and
+  `DEFAULT_MAX_BODY_SIZE` (1 MiB) are public.
+- **CLI:**
+  - `--host <ADDR>` (IPv4 or IPv6), `-h/--help` and `-V/--version`.
+  - `unix-datagram` as an alias of `unix-dgram`.
+  - `RUST_LOG` filtering (default `echosrv=info`).
+  - Graceful shutdown on `SIGTERM` as well as `SIGINT`.
+  - systemd socket activation (the socket named after the protocol, or the
+    only socket passed).
+- **Stale Unix socket recovery:** a leftover socket file that nobody listens
+  on is replaced at bind time, and missing parent directories are created.
+- `EchoError::into_io_error()`.
+- `ClientConfigBuilder` and `DatagramClientConfig`.
+- Tests: per-protocol integration suites (`tests/{tcp,udp,unix,http,fd_inheritance,cli}.rs`),
+  shared helpers in `tests/common/`, and README examples compiled as
+  doctests.
+
+### Fixed
+
+- **HTTP:**
+  - The server now sends a real `200 OK` response with headers. Before, it
+    wrote the raw body with no status line.
+  - Requests whose head arrives in several segments are now handled.
+  - Request bodies are framed correctly.
+  - An empty `POST` gets a response.
+  - Error responses are no longer lost to a TCP reset.
+- **Unix sockets:**
+  - Servers no longer unconditionally delete whatever is at the socket
+    path. Before, they could remove a running server's socket or a regular
+    file. Only stale socket files are replaced now.
+  - The socket file is removed on shutdown only if this server created it.
+    Inherited sockets are never removed.
+  - The datagram client works on macOS (no `EISCONN`).
+  - The datagram client removes its temporary socket on drop.
+  - The Unix stream server now honors `max_connections`. Both Unix servers
+    now share the generic accept loop, timeouts and shutdown handling.
+- **Shutdown:**
+  - A shutdown sent before `run()` is no longer lost.
+  - In-flight connections are cancelled and awaited instead of outliving the
+    server.
+- **Connection limit:** fixed a race (load-then-increment) that allowed more
+  than `max_connections`. The connection slot is now released even if a
+  connection task panics.
+- **Accept errors:** a failed `accept()` (for example `EMFILE`) now backs off
+  instead of spinning.
+- **Large payloads:** stream and HTTP clients no longer deadlock on payloads
+  larger than the socket buffers.
+- **UDP:**
+  - Datagrams larger than 1024 bytes are no longer truncated by default.
+  - IPv6 clients are supported.
+- `Address::from("garbage")` no longer panics (see `TryFrom`).
+- Benchmarks compile and run against a real server address.
+
+### Removed
+
+- The `security` module (`RateLimiter`, `ConnectionTracker`, `SizeValidator`,
+  `ResourceLimits`) and the `performance` module (`BufferPool`,
+  `PooledBuffer`). Neither was used by any server.
+- `network::Config` (the unused builder-style config) and
+  `common::test_utils` (`create_controlled_test_server_with_limit`, which was
+  racy; a test-only replacement is in `tests/common/`).
+- The `bytes` dependency.
+- The `tests/integration_tests.rs` and `tests/comprehensive_integration.rs`
+  suites, which were replaced by the per-protocol suites.
+
 ## [0.3.0] - 2024-12-19
+
+> **Note (corrected in 0.4.0):** Parts of this entry were inaccurate:
+> - 0.3.0 *did* contain breaking changes, for example `StreamEchoClient` was
+>   renamed to `Client`.
+> - The `security` and `performance` modules were never used by any server.
+>   They were removed in 0.4.0.
+> - The "~60% reduction in memory allocations" was never measured.
+> - UDP has no connection limits, and the TCP limit had a race.
+> - There was no cross-platform CI.
+>
+> The original text is kept below for reference.
 
 ### Added
 

@@ -1,12 +1,15 @@
+//! Configuration for stream echo servers.
+
 use crate::network::{BindStrategy, BindTarget};
 use crate::{EchoError, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// Configuration for stream-based echo servers
+/// Configuration for [`StreamEchoServer`](crate::stream::StreamEchoServer).
 ///
-/// This struct contains all the configuration options needed for
-/// stream-based echo servers (TCP, HTTP, Unix streams).
+/// The protocol configs ([`TcpConfig`](crate::TcpConfig),
+/// [`HttpConfig`](crate::HttpConfig),
+/// [`UnixStreamConfig`](crate::UnixStreamConfig)) convert into this type.
 ///
 /// # Examples
 ///
@@ -33,13 +36,14 @@ pub struct StreamConfig {
     /// without its own fallback target (see
     /// [`with_fd_inheritance`](Self::with_fd_inheritance)).
     pub bind_addr: SocketAddr,
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent connections (must be non-zero); further
+    /// connections are accepted and closed immediately.
     pub max_connections: usize,
-    /// Buffer size for reading/writing data (must be non-zero)
+    /// Per-connection read/echo buffer size (must be non-zero).
     pub buffer_size: usize,
-    /// Read timeout for connections
+    /// How long a connection may be idle (no data) before it is closed.
     pub read_timeout: Duration,
-    /// Write timeout for connections
+    /// Timeout for echoing each chunk back; the connection is closed on expiry.
     pub write_timeout: Duration,
     /// How to obtain the listening socket.
     ///

@@ -1,3 +1,5 @@
+//! The generic datagram echo server, [`DatagramEchoServer`].
+
 use super::{DatagramConfig, DatagramProtocol};
 use crate::common::EchoServerTrait;
 use crate::common::lifecycle::{ShutdownSignal, wait_for_shutdown};

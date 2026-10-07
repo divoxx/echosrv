@@ -1,45 +1,205 @@
+//! Async echo servers and clients built on Tokio, intended for testing and
+//! development.
+//!
+//! Every server sends back exactly what it receives: bytes on a stream
+//! connection, each datagram to its sender, or the body of each HTTP `POST`
+//! request. Matching clients send a payload and return the echo.
+//!
+//! The crate also builds an `echosrv` command-line binary that runs one of
+//! these servers.
+//!
+//! # Protocols
+//!
+//! | Protocol      | Server                     | Client                     | Config                 |
+//! |---------------|----------------------------|----------------------------|------------------------|
+//! | TCP           | [`TcpEchoServer`]          | [`TcpEchoClient`]          | [`TcpConfig`]          |
+//! | UDP           | [`UdpEchoServer`]          | [`UdpEchoClient`]          | [`UdpConfig`]          |
+//! | HTTP/1.1      | [`HttpEchoServer`]         | [`HttpEchoClient`]         | [`HttpConfig`]         |
+//! | Unix stream   | [`UnixStreamEchoServer`]   | [`UnixStreamEchoClient`]   | [`UnixStreamConfig`]   |
+//! | Unix datagram | [`UnixDatagramEchoServer`] | [`UnixDatagramEchoClient`] | [`UnixDatagramConfig`] |
+//!
+//! TCP and UDP are type aliases over the generic [`StreamEchoServer`] and
+//! [`DatagramEchoServer`]. Their constructors take a [`StreamConfig`] /
+//! [`DatagramConfig`], so convert the protocol config with `.into()`. The
+//! HTTP and Unix servers are thin wrappers that take their own config
+//! directly. All servers implement [`EchoServerTrait`] and all clients
+//! implement [`EchoClient`]. New protocols plug into the generic servers by
+//! implementing [`stream::StreamProtocol`] or [`datagram::DatagramProtocol`].
+//!
+//! **Platform support:** Unix-like systems only (Linux, macOS, BSD). The crate
+//! fails to compile on other targets.
+//!
+//! # Quickstart
+//!
+//! Bind to port 0, read the actual address, echo once and shut down:
+//!
+//! ```
+//! use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
+//!
+//! #[tokio::main]
+//! async fn main() -> echosrv::Result<()> {
+//!     // The default config binds 127.0.0.1:0 (an ephemeral port).
+//!     let server = TcpEchoServer::new(TcpConfig::default().into());
+//!     let shutdown = server.shutdown_signal();
+//!
+//!     let bound = server.bind().await?;
+//!     let addr = *bound.local_addr().as_network().expect("TCP address");
+//!     let serving = tokio::spawn(bound.serve());
+//!
+//!     let mut client = TcpEchoClient::connect(addr).await?;
+//!     assert_eq!(client.echo_string("hello").await?, "hello");
+//!
+//!     // Graceful shutdown: stop accepting, cancel and await connections.
+//!     shutdown.send(()).expect("server is running");
+//!     serving.await.expect("server task panicked")?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! [`EchoServerTrait::run`] combines `bind` and `serve` when the address is
+//! known in advance. Signal handling (Ctrl-C, `SIGTERM`) is left to the
+//! caller; forward it through [`EchoServerTrait::shutdown_signal`].
+//!
+//! # HTTP
+//!
+//! [`HttpEchoServer`] implements a small subset of HTTP/1.1: it answers each
+//! `POST` with `200 OK` and the request body, byte for byte. Other methods
+//! get `405 Method Not Allowed`. Bodies are framed by `Content-Length` only
+//! (`Transfer-Encoding` gets `501`), limited by [`HttpConfig::max_body_size`]
+//! (`413` above it), and every connection serves one request and then closes.
+//! See the [`http`] module for the exact semantics and limits.
+//!
+//! # Socket inheritance and systemd socket activation
+//!
+//! Instead of binding, a server can use a socket created by a parent process
+//! (systemd, a process manager, a launcher doing blue/green restarts). This is
+//! opt-in through the config's `bind_strategy`, a
+//! [`BindStrategy`](network::BindStrategy):
+//!
+//! * [`Bind`](network::BindStrategy::Bind): bind a new socket. This is what
+//!   the default configs do; nothing is inherited unless you ask for it.
+//! * [`Inherit`](network::BindStrategy::Inherit): use the given
+//!   [`InheritedFd`](network::InheritedFd), and fail if it cannot be used.
+//! * [`InheritOrBind`](network::BindStrategy::InheritOrBind): use an inherited
+//!   descriptor if one is available, otherwise bind a fallback target.
+//!   `with_fd_inheritance` on every config sets this up (for example
+//!   [`TcpConfig::with_fd_inheritance`] and
+//!   [`UnixStreamConfig::with_fd_inheritance`], which also takes the fallback
+//!   path).
+//!
+//! With `InheritOrBind` and no explicit descriptor, the server looks in the
+//! process-wide systemd pool
+//! ([`FdInheritanceConfig::from_systemd_env`](network::FdInheritanceConfig::from_systemd_env)).
+//! The pool contains the descriptors passed via `LISTEN_FDS` /
+//! `LISTEN_FDNAMES`, and is empty unless `LISTEN_PID` equals the current
+//! process ID. A server takes the descriptor whose name equals its
+//! `service_name` (systemd's `FileDescriptorName=`); if there is none and
+//! exactly one descriptor was passed in total, it takes that one whatever its
+//! name. Otherwise it binds the fallback. Each descriptor is owned by at most
+//! one server, and inherited descriptors are checked for the right socket
+//! type, address family and (for stream servers) listening state. See
+//! [`network::fd_inheritance`] for details.
+//!
+//! Inheriting a descriptor explicitly:
+//!
+//! ```
+//! use echosrv::network::{BindStrategy, InheritedFd};
+//! use echosrv::{EchoServerTrait, TcpConfig, TcpEchoServer};
+//! use std::os::fd::OwnedFd;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> echosrv::Result<()> {
+//! // Stands in for a listening socket passed by a parent process.
+//! let parent = std::net::TcpListener::bind("127.0.0.1:0")?;
+//! let parent_addr = parent.local_addr()?;
+//!
+//! let config = TcpConfig {
+//!     bind_strategy: Some(BindStrategy::Inherit(InheritedFd::new(OwnedFd::from(parent)))),
+//!     ..TcpConfig::default()
+//! };
+//! let server = TcpEchoServer::new(config.into());
+//! let bound = server.bind().await?;
+//! assert_eq!(bound.local_addr().as_network(), Some(&parent_addr));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Errors
+//!
+//! Fallible library functions return [`Result<T>`](Result), an alias for
+//! `std::result::Result<T, EchoError>`. [`EchoError`] has one variant per
+//! failure domain: socket I/O ([`Tcp`](EchoError::Tcp),
+//! [`Udp`](EchoError::Udp), [`Unix`](EchoError::Unix)), invalid configuration
+//! ([`Config`](EchoError::Config)), socket inheritance
+//! ([`FdInheritance`](EchoError::FdInheritance)), client timeouts
+//! ([`Timeout`](EchoError::Timeout)), invalid UTF-8 in
+//! [`EchoClient::echo_string`] ([`Utf8`](EchoError::Utf8)), unsupported
+//! operations ([`Unsupported`](EchoError::Unsupported)) and HTTP errors such
+//! as a non-2xx status seen by [`HttpEchoClient`] ([`Http`](EchoError::Http)).
+//! [`EchoError::into_io_error`] converts any of them into a
+//! [`std::io::Error`].
+
+#![warn(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links)]
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 #[cfg(not(unix))]
 compile_error!("echosrv currently supports Unix-like platforms only (Linux, macOS, BSD)");
 
 use crate::http::protocol::HttpProtocolError;
 use thiserror::Error;
 
-/// Error types for the echosrv library
+/// Error type for the echosrv library.
+///
+/// See the [crate-level overview](crate#errors).
 #[derive(Error, Debug)]
 pub enum EchoError {
-    /// TCP-related errors (bind, connect, read, write)
+    /// I/O error on a TCP (or HTTP) socket: bind, accept, connect, read, write.
+    ///
+    /// This is also the variant produced by the blanket
+    /// `From<std::io::Error>` conversion (and therefore by `?` on an
+    /// [`std::io::Error`]).
     #[error("TCP error: {0}")]
     Tcp(#[from] std::io::Error),
 
-    /// UDP-related errors (bind, send, receive)
+    /// I/O error on a UDP socket: bind, send, receive.
     #[error("UDP error: {0}")]
     Udp(std::io::Error),
 
-    /// Unix domain socket-related errors (bind, connect, read, write)
+    /// I/O error on a Unix domain socket: bind, accept, connect, read, write.
     #[error("Unix domain socket error: {0}")]
     Unix(std::io::Error),
 
-    /// Configuration errors
+    /// Invalid configuration or argument, e.g. a zero `buffer_size`, a bind
+    /// target of the wrong kind, an unparsable [`Address`], or a payload or
+    /// response larger than a client's limit.
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// File descriptor inheritance errors
+    /// An inherited file descriptor could not be used: already consumed, not a
+    /// socket, or the wrong socket type, address family or listening state.
     #[error("FD inheritance error: {0}")]
     FdInheritance(String),
 
-    /// Timeout errors
+    /// A client connect, read or write did not complete in time.
     #[error("Timeout error: {0}")]
     Timeout(String),
 
-    /// UTF-8 encoding errors
+    /// An echoed response was not valid UTF-8 (from [`EchoClient::echo_string`]).
     #[error("UTF-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
 
-    /// Unsupported operation errors
+    /// The operation is not supported, e.g. connecting a Unix client to a
+    /// network address or the HTTP client to a Unix socket.
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
 
-    /// HTTP protocol errors (malformed or unsupported requests)
+    /// HTTP error: a non-2xx status or malformed response seen by
+    /// [`HttpEchoClient`], or a converted
+    /// [`HttpProtocolError`].
     #[error("HTTP error: {0}")]
     Http(String),
 }
@@ -77,7 +237,7 @@ impl From<HttpProtocolError> for EchoError {
     }
 }
 
-/// Result type for the echosrv library
+/// Result type for the echosrv library, using [`EchoError`].
 pub type Result<T> = std::result::Result<T, EchoError>;
 
 pub mod common;
@@ -90,7 +250,7 @@ pub mod udp;
 #[cfg(unix)]
 pub mod unix;
 
-// Re-export main types for convenience
+// Re-exports of the main types.
 pub use common::{EchoClient, EchoServerTrait};
 pub use datagram::{DatagramConfig, DatagramEchoClient, DatagramEchoServer};
 pub use http::{HttpConfig, HttpEchoClient, HttpEchoServer, HttpProtocol};

@@ -1,9 +1,15 @@
+//! UDP server configuration.
+
 use crate::datagram::{DEFAULT_DATAGRAM_BUFFER_SIZE, DatagramConfig};
 use crate::network::BindStrategy;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// UDP-specific configuration that extends the common config
+/// Configuration for [`UdpEchoServer`](crate::UdpEchoServer).
+///
+/// Converts into [`DatagramConfig`] (field for field), which is what
+/// `UdpEchoServer::new` takes. Defaults: `127.0.0.1:0`, 64 KiB buffer, 30 s
+/// timeouts, service name `"udp"`.
 ///
 /// # Examples
 ///
@@ -21,13 +27,13 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone)]
 pub struct UdpConfig {
-    /// Address to bind the server to (when not inheriting)
+    /// Address to bind the server to (when not inheriting).
     pub bind_addr: SocketAddr,
     /// Receive buffer size (default 64 KiB); larger datagrams are truncated
     pub buffer_size: usize,
-    /// Idle receive timeout
+    /// Idle receive timeout. Expiry is not an error; the server keeps waiting.
     pub read_timeout: Duration,
-    /// Timeout for sending each reply
+    /// Timeout for sending each reply.
     pub write_timeout: Duration,
     /// Socket acquisition strategy; `None` binds `bind_addr`.
     /// See [`DatagramConfig::bind_strategy`].
@@ -50,8 +56,15 @@ impl Default for UdpConfig {
 }
 
 impl UdpConfig {
-    /// Prefer an inherited descriptor named `service_name`, falling back to
-    /// binding `bind_addr`.
+    /// Prefer an inherited descriptor named `service_name` (e.g. systemd
+    /// `FileDescriptorName=`), or the only descriptor if exactly one was
+    /// passed, falling back to binding `bind_addr`.
+    ///
+    /// Sets [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::InheritOrBind`]; see [`take_named_or_sole`] for the
+    /// lookup rule.
+    ///
+    /// [`take_named_or_sole`]: crate::network::FdInheritanceConfig::take_named_or_sole
     ///
     /// The fallback address is read when the server binds, so `bind_addr`
     /// may still be changed afterwards.

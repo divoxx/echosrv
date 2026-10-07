@@ -1,3 +1,5 @@
+//! The generic stream echo client, [`Client`], and its configuration.
+
 use super::StreamProtocol;
 use crate::common::EchoClient;
 use crate::network::Address;
@@ -7,18 +9,23 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{Instant, timeout};
 
-/// Configuration for stream clients
+/// Configuration for stream clients ([`Client`] and
+/// [`HttpEchoClient`](crate::http::HttpEchoClient)).
+///
+/// Defaults: 30 s read and write timeouts, 10 s connect timeout, 1 KiB read
+/// buffer, 10 MiB maximum response size.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
-    /// Read timeout for operations
+    /// Timeout for each individual read.
     pub read_timeout: Duration,
-    /// Write timeout for operations
+    /// Timeout for writing (and flushing) the whole request.
     pub write_timeout: Duration,
-    /// Connection timeout
+    /// Timeout for establishing the connection.
     pub connect_timeout: Duration,
-    /// Buffer size for reading data
+    /// Size of the read buffer. A value of `0` is treated as `1`.
     pub buffer_size: usize,
-    /// Maximum response size to prevent memory exhaustion
+    /// Largest payload/response accepted, in bytes. Larger requests and
+    /// responses fail with [`EchoError::Config`].
     pub max_response_size: usize,
 }
 
@@ -34,10 +41,43 @@ impl Default for ClientConfig {
     }
 }
 
-/// Stream-based echo client with configurable timeouts and error handling
+/// Generic stream echo client.
 ///
-/// This client provides configurable timeouts, better error handling,
-/// and protection against memory exhaustion.
+/// [`TcpEchoClient`](crate::TcpEchoClient) and
+/// [`UnixStreamEchoClient`](crate::UnixStreamEchoClient) are aliases of this
+/// type. One connection is opened by `connect` and reused for every
+/// [`echo`](EchoClient::echo) call.
+///
+/// `echo` writes the payload and, concurrently, reads until the same number
+/// of bytes has come back (or the server closes the connection, in which case
+/// the bytes received so far are returned). An empty payload returns an empty
+/// response without touching the socket. Payloads larger than
+/// [`ClientConfig::max_response_size`] are rejected with [`EchoError::Config`].
+///
+/// # Examples
+///
+/// ```
+/// use echosrv::stream::ClientConfig;
+/// use echosrv::tcp::{TcpConfig, TcpEchoClient};
+/// use echosrv::{EchoClient, EchoServerTrait, TcpEchoServer};
+/// use std::time::Duration;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> echosrv::Result<()> {
+/// # let server = TcpEchoServer::new(TcpConfig::default().into());
+/// # let bound = server.bind().await?;
+/// # let addr = *bound.local_addr().as_network().unwrap();
+/// # tokio::spawn(bound.serve());
+/// let config = ClientConfig {
+///     read_timeout: Duration::from_secs(1),
+///     ..ClientConfig::default()
+/// };
+/// let mut client = TcpEchoClient::connect_with_config(addr, config).await?;
+/// assert_eq!(client.echo(b"ping").await?, b"ping");
+/// assert_eq!(client.echo(b"pong").await?, b"pong"); // same connection
+/// # Ok(())
+/// # }
+/// ```
 pub struct Client<P: StreamProtocol> {
     stream: P::Stream,
     config: ClientConfig,
@@ -49,7 +89,10 @@ where
     P::Error: Into<EchoError> + std::fmt::Display,
     P::Stream: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Connect to a server with custom configuration
+    /// Connects to a server with a custom configuration.
+    ///
+    /// Fails with [`EchoError::Timeout`] if the connection is not established
+    /// within [`ClientConfig::connect_timeout`].
     ///
     /// `address` may be a [`SocketAddr`](std::net::SocketAddr), a
     /// [`PathBuf`](std::path::PathBuf) (Unix socket) or an [`Address`]; whether
@@ -72,12 +115,14 @@ where
         })
     }
 
-    /// Connect with default configuration
+    /// Connects with [`ClientConfig::default`]; see
+    /// [`connect_with_config`](Self::connect_with_config).
     pub async fn connect<A: Into<Address>>(address: A) -> Result<Self> {
         Self::connect_with_config(address, ClientConfig::default()).await
     }
 
-    /// Check if the client has been idle for too long
+    /// Returns `true` if more than `max_idle` has passed since the client
+    /// connected or last finished an `echo`.
     pub fn is_idle(&self, max_idle: Duration) -> bool {
         self.last_activity.elapsed() > max_idle
     }
@@ -164,12 +209,13 @@ where
         Ok(response)
     }
 
-    /// Get client configuration
+    /// The client configuration.
     pub fn config(&self) -> &ClientConfig {
         &self.config
     }
 
-    /// Update client configuration
+    /// Replaces the client configuration (affects later `echo` calls;
+    /// `connect_timeout` has no further effect).
     pub fn set_config(&mut self, config: ClientConfig) {
         self.config = config;
     }
@@ -199,51 +245,67 @@ where
     }
 }
 
-/// Builder for client configuration
+/// Builder for [`ClientConfig`], starting from its defaults.
+///
+/// # Examples
+///
+/// ```
+/// use echosrv::stream::ClientConfigBuilder;
+/// use std::time::Duration;
+///
+/// let config = ClientConfigBuilder::new()
+///     .read_timeout(Duration::from_secs(1))
+///     .max_response_size(64 * 1024)
+///     .build();
+/// assert_eq!(config.read_timeout, Duration::from_secs(1));
+/// assert_eq!(config.max_response_size, 64 * 1024);
+/// ```
+#[derive(Debug, Clone, Default)]
 pub struct ClientConfigBuilder {
     config: ClientConfig,
 }
 
 impl ClientConfigBuilder {
+    /// Starts from [`ClientConfig::default`].
     pub fn new() -> Self {
         Self {
             config: ClientConfig::default(),
         }
     }
 
+    /// Sets [`ClientConfig::read_timeout`].
     pub fn read_timeout(mut self, timeout: Duration) -> Self {
         self.config.read_timeout = timeout;
         self
     }
 
+    /// Sets [`ClientConfig::write_timeout`].
     pub fn write_timeout(mut self, timeout: Duration) -> Self {
         self.config.write_timeout = timeout;
         self
     }
 
+    /// Sets [`ClientConfig::connect_timeout`].
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.config.connect_timeout = timeout;
         self
     }
 
+    /// Sets [`ClientConfig::buffer_size`].
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.config.buffer_size = size;
         self
     }
 
+    /// Sets [`ClientConfig::max_response_size`].
     pub fn max_response_size(mut self, size: usize) -> Self {
         self.config.max_response_size = size;
         self
     }
 
+    /// Returns the configured [`ClientConfig`].
     pub fn build(self) -> ClientConfig {
         self.config
-    }
-}
-
-impl Default for ClientConfigBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

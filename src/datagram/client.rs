@@ -1,3 +1,5 @@
+//! The generic datagram echo client, [`DatagramEchoClient`].
+
 use super::{DatagramClientConfig, DatagramConfig, DatagramProtocol};
 use crate::common::EchoClient;
 use crate::network::BindStrategy;
@@ -16,20 +18,22 @@ use tokio::time::timeout;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use echosrv::datagram::DatagramEchoClient;
 /// use echosrv::common::EchoClient;
 /// use echosrv::udp::UdpProtocol;
+/// # use echosrv::udp::{UdpConfig, UdpEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let addr = "127.0.0.1:8080".parse()?;
-///     let mut client: DatagramEchoClient<UdpProtocol> = DatagramEchoClient::connect(addr).await?;
-///
-///     let response = client.echo_string("Hello, World!").await?;
-///     println!("Echo response: {}", response);
-///     Ok(())
-/// }
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> echosrv::Result<()> {
+/// # let server = UdpEchoServer::new(UdpConfig::default().into());
+/// # let bound = server.bind().await?;
+/// # let addr = *bound.local_addr().as_network().unwrap();
+/// # tokio::spawn(bound.serve());
+/// let mut client: DatagramEchoClient<UdpProtocol> = DatagramEchoClient::connect(addr).await?;
+/// assert_eq!(client.echo_string("Hello, World!").await?, "Hello, World!");
+/// # Ok(())
+/// # }
 /// ```
 pub struct DatagramEchoClient<P: DatagramProtocol> {
     socket: P::Socket,

@@ -89,7 +89,14 @@ impl Default for HttpConfig {
 
 impl HttpConfig {
     /// Prefer an inherited descriptor named `service_name` (e.g. systemd
-    /// `FileDescriptorName=`), falling back to binding `bind_addr`.
+    /// `FileDescriptorName=`), or the only descriptor if exactly one was
+    /// passed, falling back to binding `bind_addr`.
+    ///
+    /// Sets [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::InheritOrBind`]; see [`take_named_or_sole`] for the
+    /// lookup rule.
+    ///
+    /// [`take_named_or_sole`]: crate::network::FdInheritanceConfig::take_named_or_sole
     ///
     /// The fallback address is read when the server binds, so `bind_addr`
     /// may still be changed afterwards.

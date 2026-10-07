@@ -1,3 +1,5 @@
+//! The generic stream echo server, [`StreamEchoServer`].
+
 use super::{StreamConfig, StreamProtocol};
 use crate::common::EchoServerTrait;
 use crate::common::lifecycle::{

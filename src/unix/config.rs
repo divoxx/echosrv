@@ -1,10 +1,17 @@
+//! Unix domain stream and datagram server configuration.
+
 use crate::datagram::DatagramConfig;
 use crate::network::fd_inheritance::{BindStrategy, BindTarget};
 use crate::stream::StreamConfig;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Unix domain stream socket configuration
+/// Configuration for [`UnixStreamEchoServer`](crate::UnixStreamEchoServer).
+///
+/// Unlike the network configs there is no `bind_addr`: the socket path is part
+/// of [`bind_strategy`](Self::bind_strategy). Defaults: binds
+/// `/tmp/echosrv_stream.sock`, 100 connections, 1 KiB buffer, 30 s timeouts,
+/// service name `"unix-stream"`.
 ///
 /// # Examples
 ///
@@ -22,17 +29,21 @@ use std::time::Duration;
 /// ```
 #[derive(Debug, Clone)]
 pub struct UnixStreamConfig {
-    /// Binding strategy for socket creation (supports FD inheritance)
+    /// How to obtain the listening socket: bind a path, inherit a
+    /// descriptor, or both (see [`BindStrategy`]). Network targets are
+    /// rejected with [`EchoError::Config`](crate::EchoError::Config).
     pub bind_strategy: BindStrategy,
-    /// Service name for FD inheritance lookup
+    /// Service name used to look up an inherited descriptor with
+    /// [`BindStrategy::InheritOrBind`].
     pub service_name: String,
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent connections (must be non-zero); further
+    /// connections are accepted and closed immediately.
     pub max_connections: usize,
-    /// Buffer size for reading/writing data
+    /// Per-connection read/echo buffer size (must be non-zero).
     pub buffer_size: usize,
-    /// Read timeout for connections
+    /// How long a connection may be idle (no data) before it is closed.
     pub read_timeout: Duration,
-    /// Write timeout for connections
+    /// Timeout for echoing each chunk back; the connection is closed on expiry.
     pub write_timeout: Duration,
 }
 
@@ -50,13 +61,21 @@ impl Default for UnixStreamConfig {
 }
 
 impl UnixStreamConfig {
-    /// Create configuration with specific socket path
+    /// Binds `path` (no inheritance): sets
+    /// [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::Bind`]`(`[`BindTarget::Unix`]`(path))`.
     pub fn with_socket_path(mut self, path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::Bind(BindTarget::Unix(path));
         self
     }
 
-    /// Enable FD inheritance with fallback to socket path
+    /// Prefer an inherited descriptor named `service_name` (or the only
+    /// descriptor if exactly one was passed), falling back to binding
+    /// `fallback_path`.
+    ///
+    /// Sets [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::InheritOrBind`] and
+    /// [`service_name`](Self::service_name) to `service_name`.
     pub fn with_fd_inheritance(mut self, service_name: String, fallback_path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::InheritOrBind {
             fd: None,
@@ -84,7 +103,10 @@ impl From<UnixStreamConfig> for StreamConfig {
     }
 }
 
-/// Unix domain datagram socket configuration
+/// Configuration for [`UnixDatagramEchoServer`](crate::UnixDatagramEchoServer).
+///
+/// Defaults: binds `/tmp/echosrv_datagram.sock`, 64 KiB buffer, 30 s
+/// timeouts, service name `"unix-datagram"`.
 ///
 /// # Examples
 ///
@@ -101,15 +123,18 @@ impl From<UnixStreamConfig> for StreamConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct UnixDatagramConfig {
-    /// Binding strategy for socket creation (supports FD inheritance)
+    /// How to obtain the socket: bind a path, inherit a descriptor, or both
+    /// (see [`BindStrategy`]). Network targets are rejected with
+    /// [`EchoError::Config`](crate::EchoError::Config).
     pub bind_strategy: BindStrategy,
-    /// Service name for FD inheritance lookup
+    /// Service name used to look up an inherited descriptor with
+    /// [`BindStrategy::InheritOrBind`].
     pub service_name: String,
-    /// Receive buffer size (default 64 KiB); larger datagrams are truncated
+    /// Receive buffer size (must be non-zero); larger datagrams are truncated.
     pub buffer_size: usize,
-    /// Idle receive timeout
+    /// Idle receive timeout. Expiry is not an error; the server keeps waiting.
     pub read_timeout: Duration,
-    /// Timeout for sending each reply
+    /// Timeout for sending each reply.
     pub write_timeout: Duration,
 }
 
@@ -128,13 +153,21 @@ impl Default for UnixDatagramConfig {
 }
 
 impl UnixDatagramConfig {
-    /// Create configuration with specific socket path
+    /// Binds `path` (no inheritance): sets
+    /// [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::Bind`]`(`[`BindTarget::Unix`]`(path))`.
     pub fn with_socket_path(mut self, path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::Bind(BindTarget::Unix(path));
         self
     }
 
-    /// Enable FD inheritance with fallback to socket path
+    /// Prefer an inherited descriptor named `service_name` (or the only
+    /// descriptor if exactly one was passed), falling back to binding
+    /// `fallback_path`.
+    ///
+    /// Sets [`bind_strategy`](Self::bind_strategy) to
+    /// [`BindStrategy::InheritOrBind`] and
+    /// [`service_name`](Self::service_name) to `service_name`.
     pub fn with_fd_inheritance(mut self, service_name: String, fallback_path: PathBuf) -> Self {
         self.bind_strategy = BindStrategy::InheritOrBind {
             fd: None,

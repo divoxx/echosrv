@@ -1,3 +1,5 @@
+//! Configuration for datagram echo servers and clients.
+
 use crate::network::{BindStrategy, BindTarget};
 use crate::{EchoError, Result};
 use std::net::SocketAddr;

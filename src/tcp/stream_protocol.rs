@@ -1,3 +1,5 @@
+//! [`StreamProtocol`] implementation for TCP.
+
 use super::socket_builder::TcpSocketBuilder;
 use crate::EchoError;
 use crate::network::{BuildSocket, FdInheritanceConfig};

@@ -1,7 +1,10 @@
-//! Datagram-based echo server and client functionality
+//! Generic datagram echo server and client.
 //!
-//! This module provides generic datagram-based echo servers and clients
-//! that can work with any datagram protocol (UDP, Unix datagrams, etc.).
+//! [`DatagramEchoServer`] is generic over a [`DatagramProtocol`]; UDP
+//! ([`crate::udp`]) and Unix datagram sockets ([`crate::unix`]) are the
+//! implementations shipped with the crate. Each received datagram is sent back
+//! to its sender. [`DatagramEchoClient`] works with protocols addressed by
+//! [`SocketAddr`](std::net::SocketAddr) (i.e. UDP).
 
 pub mod client;
 pub mod config;

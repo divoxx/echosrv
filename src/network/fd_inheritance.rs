@@ -1,13 +1,44 @@
-//! File descriptor inheritance support for zero-downtime reloads and socket activation.
+//! Using sockets inherited from a parent process (systemd socket activation, a
+//! process manager, a launcher that hands sockets over between restarts)
+//! instead of binding them.
 //!
-//! This module enables echo servers to inherit listening sockets from a parent
-//! process (systemd socket activation, a process manager, a blue/green launcher)
-//! instead of binding them themselves.
+//! 1. The parent creates and binds the sockets (and calls `listen` for stream
+//!    sockets).
+//! 2. It starts the server, passing the descriptors.
+//! 3. The server turns each descriptor into a Tokio socket, after checking its
+//!    socket type, address family and, for stream servers, listening state
+//!    ([`validation`]).
 //!
-//! The inheritance mechanism works by:
-//! 1. The parent process creates and binds the listening sockets.
-//! 2. The parent spawns the server, passing the socket file descriptors.
-//! 3. The server converts the inherited FDs into Tokio listeners/sockets.
+//! Inheritance is opt-in: a config's `bind_strategy` must be a
+//! [`BindStrategy::Inherit`] or [`BindStrategy::InheritOrBind`] (e.g. via a
+//! config's `with_fd_inheritance`). The default strategy binds.
+//!
+//! # systemd socket activation
+//!
+//! Servers look up descriptors in the process-wide pool returned by
+//! [`FdInheritanceConfig::from_systemd_env`], which reads `LISTEN_PID`,
+//! `LISTEN_FDS` and `LISTEN_FDNAMES` (see `sd_listen_fds(3)`). With
+//! [`BindStrategy::InheritOrBind`] and no explicit descriptor, a server takes
+//! the descriptor named after its `service_name` (`FileDescriptorName=` in the
+//! `.socket` unit). If none matches and exactly one descriptor was passed in
+//! total, it takes that one whatever its name; otherwise it binds its fallback
+//! target ([`FdInheritanceConfig::take_named_or_sole`]).
+//!
+//! ```no_run
+//! use echosrv::{EchoServerTrait, TcpConfig, TcpEchoServer};
+//!
+//! # #[tokio::main]
+//! # async fn main() -> echosrv::Result<()> {
+//! // Use the socket systemd passed as `FileDescriptorName=web`
+//! // (or the only socket passed); bind 0.0.0.0:8080 when not socket-activated.
+//! let config = TcpConfig {
+//!     bind_addr: "0.0.0.0:8080".parse().unwrap(),
+//!     ..TcpConfig::default()
+//! }
+//! .with_fd_inheritance("web");
+//! TcpEchoServer::new(config.into()).run().await
+//! # }
+//! ```
 //!
 //! # Ownership model
 //!
@@ -28,7 +59,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Represents different socket binding targets that can be inherited or created
+/// What to bind when a socket is not inherited.
 #[derive(Debug, Clone)]
 pub enum BindTarget {
     /// Network socket (TCP/UDP) bound to IP address and port
@@ -129,10 +160,13 @@ impl fmt::Debug for InheritedFd {
     }
 }
 
-/// Strategy for socket creation: inherit from parent or bind new socket
+/// How a server obtains its socket: bind a new one, use an inherited
+/// descriptor, or try inheriting and fall back to binding.
+///
+/// See the [module docs](self) for the lookup rules.
 #[derive(Debug, Clone)]
 pub enum BindStrategy {
-    /// Always bind a new socket to the specified target (default behavior)
+    /// Always bind a new socket to the target (what the default configs do).
     Bind(BindTarget),
 
     /// Always use the given inherited file descriptor.
@@ -150,7 +184,8 @@ pub enum BindStrategy {
     /// one named after the server's service name, else the only descriptor
     /// passed. If nothing is found, the fallback target is bound.
     InheritOrBind {
-        /// Explicit FD to inherit (if None, will look up by service name)
+        /// Explicit descriptor to use first. With `None` (or once it has been
+        /// consumed), the descriptor pool is consulted by service name.
         fd: Option<InheritedFd>,
         /// Target to bind to if inheritance fails.
         ///
@@ -207,12 +242,18 @@ struct NamedFd {
 #[derive(Clone, Default)]
 pub struct FdInheritanceConfig {
     pool: Arc<Mutex<Vec<NamedFd>>>,
+    /// Number of descriptors the pool was created with (before any `take`).
+    /// Used by [`take_named_or_sole`](Self::take_named_or_sole) so that the
+    /// "sole descriptor" fallback only applies when exactly one descriptor
+    /// was ever passed, not when one happens to be left over.
+    initial_count: usize,
 }
 
 /// systemd passes FDs starting from 3 (after stdin=0, stdout=1, stderr=2)
 const SD_LISTEN_FDS_START: RawFd = 3;
 
-/// Name systemd uses for descriptors without an explicit name.
+/// Name systemd uses for descriptors without an explicit
+/// `FileDescriptorName=`.
 pub const SYSTEMD_UNNAMED_FD: &str = "unknown";
 
 static SYSTEMD_POOL: OnceLock<FdInheritanceConfig> = OnceLock::new();
@@ -231,11 +272,12 @@ impl FdInheritanceConfig {
     where
         I: IntoIterator<Item = (String, OwnedFd)>,
     {
-        let pool = fds
+        let pool: Vec<NamedFd> = fds
             .into_iter()
             .map(|(name, fd)| NamedFd { name, fd })
             .collect();
         Self {
+            initial_count: pool.len(),
             pool: Arc::new(Mutex::new(pool)),
         }
     }
@@ -298,7 +340,12 @@ impl FdInheritanceConfig {
     ///
     /// Every *open* descriptor in `fds` must not be owned by anything else in
     /// the process: ownership is transferred to the pool.
+    ///
+    /// The pool's initial count is the number of descriptors *passed*, including
+    /// skipped ones, so a parent that passed two descriptors (one of them
+    /// invalid) never triggers the sole-descriptor fallback.
     unsafe fn from_raw_named_fds(fds: Vec<(String, RawFd)>) -> Self {
+        let initial_count = fds.len();
         let mut pool = Vec::with_capacity(fds.len());
         for (name, raw) in fds {
             // Mark close-on-exec; this also checks that the descriptor is open.
@@ -314,6 +361,7 @@ impl FdInheritanceConfig {
 
         Self {
             pool: Arc::new(Mutex::new(pool)),
+            initial_count,
         }
     }
 
@@ -331,16 +379,42 @@ impl FdInheritanceConfig {
     }
 
     /// Takes the descriptor named `service_name`; if there is none and the pool
-    /// holds exactly one descriptor, takes that one regardless of its name.
+    /// was *created* with exactly one descriptor that is still available, takes
+    /// that one regardless of its name.
     ///
     /// This mirrors the common systemd setup where a single `.socket` unit
-    /// passes one descriptor named after the unit (or `"unknown"`).
+    /// passes one descriptor named after the unit (or `"unknown"`). The
+    /// fallback is based on the initial descriptor count rather than on what is
+    /// left, so in a process that was passed several descriptors a server can
+    /// never pick up a leftover descriptor meant for a different service.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use echosrv::network::FdInheritanceConfig;
+    /// use std::os::fd::OwnedFd;
+    ///
+    /// let fd = |_| OwnedFd::from(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+    ///
+    /// // A single descriptor is used whatever its name.
+    /// let single = FdInheritanceConfig::from_fds([("unknown".to_string(), fd(()))]);
+    /// assert!(single.take_named_or_sole("web").is_some());
+    ///
+    /// // With several descriptors only exact names match, even once only one is left.
+    /// let multi = FdInheritanceConfig::from_fds([
+    ///     ("web".to_string(), fd(())),
+    ///     ("api".to_string(), fd(())),
+    /// ]);
+    /// assert!(multi.take_named_or_sole("web").is_some());
+    /// assert!(multi.take_named_or_sole("other").is_none());
+    /// assert!(multi.take_named_or_sole("api").is_some());
+    /// ```
     pub fn take_named_or_sole(&self, service_name: &str) -> Option<OwnedFd> {
         let mut pool = self.lock();
         if let Some(index) = pool.iter().position(|entry| entry.name == service_name) {
             return Some(pool.remove(index).fd);
         }
-        if pool.len() == 1 {
+        if self.initial_count == 1 && pool.len() == 1 {
             return pool.pop().map(|entry| entry.fd);
         }
         None
@@ -805,17 +879,55 @@ mod tests {
     }
 
     #[test]
-    fn take_named_or_sole_prefers_name_then_sole() {
+    fn take_named_or_sole_prefers_name() {
         // Named match among several.
         let pool = FdInheritanceConfig::from_fds([("a".into(), tcp_fd()), ("b".into(), tcp_fd())]);
         let raw_b = pool.get_fd("b").unwrap();
         assert_eq!(pool.take_named_or_sole("b").unwrap().as_raw_fd(), raw_b);
-
-        // Exactly one left: taken regardless of name.
         let raw_a = pool.get_fd("a").unwrap();
-        assert_eq!(pool.take_named_or_sole("zzz").unwrap().as_raw_fd(), raw_a);
+        assert_eq!(pool.take_named_or_sole("a").unwrap().as_raw_fd(), raw_a);
+        assert!(!pool.has_inherited_fds());
+    }
+
+    #[test]
+    fn take_named_or_sole_uses_sole_fd_of_single_fd_pool() {
+        let fd = tcp_fd();
+        let raw = fd.as_raw_fd();
+        let pool = FdInheritanceConfig::from_fds([(SYSTEMD_UNNAMED_FD.to_string(), fd)]);
+        assert_eq!(pool.take_named_or_sole("zzz").unwrap().as_raw_fd(), raw);
         assert!(!pool.has_inherited_fds());
         assert!(pool.take_named_or_sole("zzz").is_none());
+    }
+
+    /// In a multi-server process the sole-fd fallback must not hand a
+    /// leftover descriptor (meant for another service) to a later server.
+    #[test]
+    fn take_named_or_sole_ignores_leftover_of_multi_fd_pool() {
+        let pool = FdInheritanceConfig::from_fds([("a".into(), tcp_fd()), ("b".into(), tcp_fd())]);
+        let raw_b = pool.get_fd("b").unwrap();
+        assert!(pool.take_named_or_sole("a").is_some());
+        // Only "b" is left, but the pool started with two descriptors.
+        assert!(pool.take_named_or_sole("zzz").is_none());
+        assert_eq!(pool.get_fd("b"), Some(raw_b));
+        // Clones share the initial count.
+        assert!(pool.clone().take_named_or_sole("zzz").is_none());
+        assert_eq!(pool.take_named_or_sole("b").unwrap().as_raw_fd(), raw_b);
+    }
+
+    #[test]
+    fn raw_pool_counts_skipped_fds_for_sole_rule() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let raw = listener.into_raw_fd();
+        // SAFETY: `raw` is open and released by its previous owner; 1_000_000
+        // is not open and is skipped without being adopted.
+        let pool = unsafe {
+            FdInheritanceConfig::from_raw_named_fds(vec![
+                ("bad".to_string(), 1_000_000),
+                ("tcp".to_string(), raw),
+            ])
+        };
+        assert!(pool.take_named_or_sole("other").is_none());
+        assert_eq!(pool.take_named_or_sole("tcp").unwrap().as_raw_fd(), raw);
     }
 
     #[test]

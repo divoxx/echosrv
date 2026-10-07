@@ -1,3 +1,5 @@
+//! The `echosrv` command-line echo server. Run `echosrv --help` for usage.
+
 use color_eyre::eyre::{Result, WrapErr};
 use echosrv::http::{DEFAULT_MAX_BODY_SIZE, HttpConfig, HttpEchoServer};
 use echosrv::network::FdInheritanceConfig;
@@ -225,6 +227,7 @@ fn run(cli: Cli) -> Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("echosrv=info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     // Take ownership of socket-activation descriptors (if any) and clear the

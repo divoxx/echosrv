@@ -56,22 +56,27 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```
 //! use echosrv::http::{HttpConfig, HttpEchoClient, HttpEchoServer};
 //! use echosrv::{EchoClient, EchoServerTrait};
 //!
 //! #[tokio::main]
 //! async fn main() -> echosrv::Result<()> {
 //!     let config = HttpConfig {
-//!         bind_addr: "127.0.0.1:8080".parse().unwrap(),
-//!         ..HttpConfig::default()
+//!         max_body_size: 64 * 1024,
+//!         ..HttpConfig::default() // binds 127.0.0.1:0
 //!     };
-//!     let server = HttpEchoServer::new(config.clone());
-//!     tokio::spawn(async move { server.run().await });
+//!     let server = HttpEchoServer::new(config);
+//!     let shutdown = server.shutdown_signal();
+//!     let bound = server.bind().await?;
+//!     let addr = *bound.local_addr().as_network().unwrap();
+//!     let serving = tokio::spawn(bound.serve());
 //!
-//!     let mut client = HttpEchoClient::connect(config.bind_addr).await?;
+//!     let mut client = HttpEchoClient::connect(addr).await?;
 //!     assert_eq!(client.echo(b"hello").await?, b"hello");
-//!     Ok(())
+//!
+//!     shutdown.send(()).unwrap();
+//!     serving.await.unwrap()
 //! }
 //! ```
 

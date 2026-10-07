@@ -32,7 +32,8 @@ impl<T> SocketBuilder<T> {
     /// * [`BindStrategy::InheritOrBind`] → take the explicit descriptor if still
     ///   available, else take one from `fd_config` with
     ///   [`FdInheritanceConfig::take_named_or_sole`] (the descriptor named
-    ///   `service_name`, else the only descriptor in the pool), else bind the
+    ///   `service_name`, else the pool's descriptor if it was created with
+    ///   exactly one), else bind the
     ///   fallback target. An unset fallback target (not resolved by the server
     ///   config) is an [`EchoError::Config`] error.
     ///
@@ -344,6 +345,27 @@ mod tests {
 
         let empty = FdInheritanceConfig::empty();
         expect_bind(Resolver::resolve_fd(&strategy, "svc", &empty).unwrap());
+    }
+
+    /// Multi-server process: after one server took its named descriptor, the
+    /// leftover descriptor (meant for another service) must not be grabbed by
+    /// a server whose name does not match.
+    #[test]
+    fn resolve_inherit_or_bind_does_not_take_leftover_of_multi_fd_pool() {
+        let (a, _) = tcp_listener_fd();
+        let (b, _) = tcp_listener_fd();
+        let raw_b = b.as_raw_fd();
+        let pool = FdInheritanceConfig::from_fds([("a".to_string(), a), ("b".to_string(), b)]);
+        let strategy = BindStrategy::InheritOrBind {
+            fd: None,
+            fallback_target: Some(BindTarget::Unix("/fallback.sock".into())),
+        };
+
+        expect_inherit(Resolver::resolve_fd(&strategy, "a", &pool).unwrap());
+        expect_bind(Resolver::resolve_fd(&strategy, "svc", &pool).unwrap());
+        assert_eq!(pool.get_fd("b"), Some(raw_b));
+        let owned = expect_inherit(Resolver::resolve_fd(&strategy, "b", &pool).unwrap());
+        assert_eq!(owned.as_raw_fd(), raw_b);
     }
 
     #[test]

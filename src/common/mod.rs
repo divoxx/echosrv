@@ -1,7 +1,7 @@
-//! Common traits and types used across the echosrv library
+//! Traits shared by every echo server and client.
 //!
-//! This module contains the core traits that define the interface
-//! for echo servers and clients.
+//! [`EchoServerTrait`] is implemented by all servers and [`EchoClient`] by all
+//! clients, so code can be written once against either protocol family.
 
 pub(crate) mod lifecycle;
 pub mod traits;

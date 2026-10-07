@@ -1,3 +1,5 @@
+//! [`DatagramProtocol`] implementation for UDP.
+
 use super::socket_builder::UdpSocketBuilder;
 use crate::EchoError;
 use crate::datagram::{DatagramConfig, DatagramProtocol};
