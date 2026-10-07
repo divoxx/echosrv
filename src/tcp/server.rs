@@ -22,6 +22,7 @@ use crate::stream::StreamEchoServer;
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..Default::default()
 ///     };
 ///
 ///     let server = TcpEchoServer::new(config.into());

@@ -13,38 +13,31 @@ struct BenchServer {
 }
 
 impl BenchServer {
-    /// Starts a server on a free loopback port and waits until it accepts connections.
-    ///
-    /// The server API does not yet expose the bound address, so a free port is reserved
-    /// by binding a throwaway listener on port 0 and releasing it before the server binds.
+    /// Starts a server on a free loopback port (port 0) and returns once it is listening.
     async fn start() -> Self {
-        let addr = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|l| l.local_addr())
-            .expect("failed to reserve a local port");
-
         let config = TcpConfig {
-            bind_addr: addr,
             max_connections: 1000,
             buffer_size: 64 * 1024,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
+            ..Default::default()
         };
         let server = TcpEchoServer::new(config.into());
         let shutdown = server.shutdown_signal();
-        let handle = tokio::spawn(async move { server.run().await });
-
-        // Wait until the server is accepting connections.
-        for _ in 0..200 {
-            if tokio::net::TcpStream::connect(addr).await.is_ok() {
-                return Self {
-                    addr,
-                    shutdown,
-                    handle,
-                };
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        let bound = server
+            .bind()
+            .await
+            .expect("failed to bind benchmark server");
+        let addr = *bound
+            .local_addr()
+            .as_network()
+            .expect("TCP server has a network address");
+        let handle = tokio::spawn(bound.serve());
+        Self {
+            addr,
+            shutdown,
+            handle,
         }
-        panic!("benchmark server did not start listening on {addr}");
     }
 
     async fn stop(self) {

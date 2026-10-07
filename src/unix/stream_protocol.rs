@@ -1,198 +1,169 @@
-// Unix domain stream socket protocol with file descriptor inheritance support
-//
-// Unix domain sockets provide local IPC (inter-process communication) on the same machine.
-// They offer better performance than TCP for local communication and provide filesystem-based
-// access control through socket file permissions.
-//
-// For zero-downtime reloads, Unix sockets can be inherited from parent processes just like
-// network sockets. The parent process creates and binds the socket file, then passes the
-// file descriptor to the child process. This enables seamless service restarts.
-//
-// Unlike network sockets, Unix socket inheritance has additional considerations:
-// - Socket files have filesystem permissions that may affect inheritance
-// - Abstract Unix sockets (starting with \0) don't use filesystem paths
-// - Client connections don't create separate socket files
+//! Unix domain stream socket protocol with file descriptor inheritance support.
+//!
+//! Unix domain sockets provide local IPC with filesystem-based access control.
+//! Like network sockets they can be inherited from a parent process (e.g.
+//! systemd `ListenStream=/run/echo.sock`). Inherited socket files belong to the
+//! parent and are never removed by this crate; socket files the server binds
+//! itself are removed when the listener is dropped.
 
+use super::socket_file::{SocketFile, SocketKind, bind_with_stale_recovery};
 use crate::network::fd_inheritance::BindTarget;
 use crate::network::fd_inheritance::FdInheritanceConfig;
+use crate::network::local_address::unix_address;
 use crate::network::socket_builder::BuildSocket;
+use crate::network::{Address, LocalAddress};
+use crate::stream::StreamConfig;
 use crate::stream::protocol::StreamProtocol;
 use crate::{EchoError, Result};
 use async_trait::async_trait;
-use std::os::unix::io::{FromRawFd, RawFd};
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use tokio::net::{UnixListener, UnixStream};
 
+/// A Unix stream listener that removes its socket file on drop if (and only
+/// if) this process created it.
+///
+/// Inherited listeners never remove the socket file, since it belongs to the
+/// parent process (e.g. systemd).
+#[derive(Debug)]
+pub struct ManagedUnixListener {
+    // Field order matters: the socket is closed before the file is removed.
+    listener: UnixListener,
+    file: Option<SocketFile>,
+}
+
+impl ManagedUnixListener {
+    /// The underlying Tokio listener.
+    pub fn get_ref(&self) -> &UnixListener {
+        &self.listener
+    }
+
+    /// The socket file that will be removed on drop, if this process bound it.
+    pub fn owned_socket_path(&self) -> Option<&Path> {
+        self.file.as_ref().map(SocketFile::path)
+    }
+
+    /// Accepts a new connection.
+    pub async fn accept(&self) -> std::io::Result<(UnixStream, tokio::net::unix::SocketAddr)> {
+        self.listener.accept().await
+    }
+}
+
+impl LocalAddress for ManagedUnixListener {
+    fn local_address(&self) -> std::io::Result<Address> {
+        unix_address(&self.listener.local_addr()?)
+    }
+}
+
 /// Unix domain stream socket builder
 ///
-/// This builder handles creation of Unix domain stream listeners with support for
-/// file descriptor inheritance from parent processes. It validates that inherited
-/// FDs are Unix domain stream sockets.
+/// Inherited descriptors must be `AF_UNIX`, `SOCK_STREAM` and listening.
 pub struct UnixStreamSocketBuilder;
 
-impl BuildSocket<UnixListener> for UnixStreamSocketBuilder {
-    /// Unix domain sockets use stream sockets for reliable, ordered data delivery
-    /// This is analogous to TCP but operates through filesystem/kernel IPC
+impl BuildSocket<ManagedUnixListener> for UnixStreamSocketBuilder {
     const SOCKET_TYPE: libc::c_int = libc::SOCK_STREAM;
-
-    /// Unix domain sockets use the AF_UNIX address family
-    /// Unlike network sockets, they only support one address family
     const VALID_FAMILIES: &'static [libc::c_int] = &[libc::AF_UNIX];
+    const REQUIRE_LISTENING: bool = true;
 
-    /// Convert inherited file descriptor to Tokio UnixListener
-    ///
-    /// This method assumes the FD has been validated as a Unix domain stream socket.
-    /// Unlike network sockets, Unix socket inheritance often comes from init systems
-    /// that create the socket file with specific permissions and ownership.
-    ///
-    /// # Safety
-    /// The file descriptor must be:
-    /// - A valid socket file descriptor
-    /// - A Unix domain stream socket (AF_UNIX + SOCK_STREAM)
-    /// - In listening state (listen() already called by parent)
-    ///
-    /// # Arguments
-    /// * `fd` - Raw file descriptor inherited from parent process
-    fn from_fd(fd: RawFd) -> Result<UnixListener> {
-        // Safety: FD has been validated by validate_inherited_fd()
-        // Convert raw FD to std library UnixListener
-        let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) };
-
-        // Configure for async operation with Tokio
-        // Tokio requires non-blocking sockets for proper async behavior
+    /// Convert an inherited, validated descriptor into a listener that does
+    /// not own its socket file.
+    fn from_fd(fd: OwnedFd) -> Result<ManagedUnixListener> {
+        let std_listener = std::os::unix::net::UnixListener::from(fd);
         std_listener
             .set_nonblocking(true)
             .map_err(EchoError::Unix)?;
-
-        // Convert std UnixListener to Tokio UnixListener
-        // This registers the socket with Tokio's async runtime
-        UnixListener::from_std(std_listener).map_err(EchoError::Unix)
+        Ok(ManagedUnixListener {
+            listener: UnixListener::from_std(std_listener).map_err(EchoError::Unix)?,
+            file: None,
+        })
     }
 
-    /// Create Unix listener by binding to socket path
-    ///
-    /// This method handles normal socket creation when inheritance is not
-    /// available or not desired. It validates that the target is a Unix
-    /// domain socket path (not a network address).
-    ///
-    /// Key design decision: We do NOT automatically remove existing socket files.
-    /// This prevents race conditions and permission issues. The bind() syscall
-    /// will fail cleanly if the path is already in use, which is the correct
-    /// behavior for robust service management.
-    ///
-    /// # Arguments
-    /// * `target` - Where to bind the socket (must be Unix path)
-    fn bind_to(target: &BindTarget) -> Result<UnixListener> {
+    /// Bind a socket path, recovering a stale socket file left behind by a
+    /// crashed server (only if nothing is listening on it).
+    fn bind_to(target: &BindTarget) -> Result<ManagedUnixListener> {
         match target {
-            // Bind to Unix domain socket path
             BindTarget::Unix(path) => {
-                // Create parent directory if it doesn't exist
-                // This is safe because we only create the directory, not the socket file
-                if let Some(parent) = path.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(EchoError::Unix)?;
-                    }
-                }
-
-                // Bind to socket path - let OS handle "already exists" errors
-                // This is atomic and avoids race conditions from manual file removal
-                let std_listener = std::os::unix::net::UnixListener::bind(path)
+                let std_listener = bind_with_stale_recovery(path, SocketKind::Stream, |p| {
+                    std::os::unix::net::UnixListener::bind(p)
+                })
+                .map_err(EchoError::Unix)?;
+                let file = SocketFile::record(path).map_err(EchoError::Unix)?;
+                std_listener
+                    .set_nonblocking(true)
                     .map_err(EchoError::Unix)?;
-
-                // Configure for async operation
-                std_listener.set_nonblocking(true)
-                    .map_err(EchoError::Unix)?;
-
-                // Convert to Tokio async UnixListener
-                UnixListener::from_std(std_listener)
-                    .map_err(EchoError::Unix)
+                Ok(ManagedUnixListener {
+                    listener: UnixListener::from_std(std_listener).map_err(EchoError::Unix)?,
+                    file: Some(file),
+                })
             }
-
-            // Unix domain sockets cannot bind to network addresses
-            BindTarget::Network(_addr) => {
-                Err(EchoError::Config(
-                    "Unix domain sockets cannot bind to network addresses. Use TcpSocketBuilder for network sockets.".into()
-                ))
-            }
+            BindTarget::Network(addr) => Err(EchoError::Config(format!(
+                "Unix domain sockets cannot bind to network address {addr}"
+            ))),
         }
     }
 }
 
 /// Unix domain stream protocol implementation
 ///
-/// This protocol provides reliable, ordered communication between processes
-/// on the same machine using Unix domain sockets. It supports both filesystem
-/// socket paths and abstract socket names.
+/// Binding honors [`StreamConfig::bind_strategy`] (a Unix path or inherited
+/// descriptor; see [`UnixStreamConfig`](super::UnixStreamConfig)).
 #[derive(Debug, Clone)]
 pub struct UnixStreamProtocol;
 
 #[async_trait]
 impl StreamProtocol for UnixStreamProtocol {
     type Error = crate::EchoError;
-    type Listener = UnixListener;
+    type Listener = ManagedUnixListener;
     type Stream = UnixStream;
 
-    /// Bind Unix stream listener with automatic FD inheritance detection
-    ///
-    /// For Unix domain sockets, we adapt the StreamConfig to work with our
-    /// UnixStreamConfig. This provides compatibility with the existing trait.
-    // TODO(phase2): honor config
-    async fn bind(
-        _config: &crate::stream::StreamConfig,
-    ) -> std::result::Result<Self::Listener, Self::Error> {
-        // Convert generic config to Unix-specific config
-        // For now, use default Unix config since StreamConfig doesn't have path info
-        let unix_config = super::config::UnixStreamConfig::default();
-
-        // Detect FD inheritance from environment (systemd, etc.)
-        let fd_config = FdInheritanceConfig::from_systemd_env()
-            .map_err(|e| EchoError::Unix(std::io::Error::other(e)))?;
-        Self::bind_unix_with_inheritance(&unix_config, &fd_config).await
+    /// Binds using the process-wide systemd descriptor pool for name lookups.
+    async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error> {
+        let fd_config = FdInheritanceConfig::from_systemd_env()?;
+        Self::bind_with_inheritance(config, &fd_config).await
     }
 
-    /// Bind Unix stream listener with explicit FD inheritance configuration
-    ///
-    /// This method provides compatibility with the StreamProtocol trait while
-    /// enabling Unix-specific FD inheritance functionality.
     async fn bind_with_inheritance(
-        _config: &crate::stream::StreamConfig,
+        config: &StreamConfig,
         fd_config: &FdInheritanceConfig,
     ) -> std::result::Result<Self::Listener, Self::Error> {
-        // Use default Unix config since generic StreamConfig doesn't have path info
-        let unix_config = super::config::UnixStreamConfig::default();
-        Self::bind_unix_with_inheritance(&unix_config, fd_config).await
+        UnixStreamSocketBuilder::build(
+            &config.effective_bind_strategy(),
+            &config.service_name,
+            fd_config,
+        )
     }
 
-    /// Accept incoming connection from Unix stream listener
-    ///
-    /// Unix domain socket connections don't have meaningful addresses like
-    /// network sockets. We return a dummy SocketAddr for trait compatibility.
+    /// Accepts a connection. Unix peers have no IP address, so an unspecified
+    /// `0.0.0.0:0` placeholder is returned for trait compatibility.
     async fn accept(
         listener: &mut Self::Listener,
     ) -> std::result::Result<(Self::Stream, std::net::SocketAddr), Self::Error> {
         let (stream, _addr) = listener.accept().await.map_err(EchoError::Unix)?;
-
-        // Create dummy SocketAddr for trait compatibility
-        let dummy_addr =
+        let placeholder =
             std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
-
-        Ok((stream, dummy_addr))
+        Ok((stream, placeholder))
     }
 
-    /// Connect to a server at the given address (client-side)
-    ///
-    /// For Unix domain sockets, SocketAddr doesn't make sense. This method
-    /// will return an error. Use UnixStreamExt::connect_unix instead.
+    /// Always fails: Unix sockets are addressed by path. Use
+    /// [`connect_address`](StreamProtocol::connect_address) with
+    /// [`Address::Unix`] or [`UnixStreamExt::connect_unix`].
     async fn connect(
         _addr: std::net::SocketAddr,
     ) -> std::result::Result<Self::Stream, Self::Error> {
         Err(EchoError::Unsupported(
-            "Use UnixStreamExt::connect_unix for Unix domain socket connections".to_string(),
+            "Unix domain sockets are addressed by path, not SocketAddr".to_string(),
         ))
     }
 
-    /// Reads data from a stream
+    async fn connect_address(addr: &Address) -> std::result::Result<Self::Stream, Self::Error> {
+        match addr {
+            Address::Unix(path) => UnixStream::connect(path).await.map_err(EchoError::Unix),
+            Address::Network(addr) => Err(EchoError::Unsupported(format!(
+                "Unix domain stream protocol cannot connect to network address {addr}"
+            ))),
+        }
+    }
+
     async fn read(
         stream: &mut Self::Stream,
         buffer: &mut [u8],
@@ -201,57 +172,39 @@ impl StreamProtocol for UnixStreamProtocol {
         stream.read(buffer).await.map_err(EchoError::Unix)
     }
 
-    /// Writes data to a stream
     async fn write(stream: &mut Self::Stream, data: &[u8]) -> std::result::Result<(), Self::Error> {
         use tokio::io::AsyncWriteExt;
         stream.write_all(data).await.map_err(EchoError::Unix)
     }
 
-    /// Flushes a stream
     async fn flush(stream: &mut Self::Stream) -> std::result::Result<(), Self::Error> {
         use tokio::io::AsyncWriteExt;
         stream.flush().await.map_err(EchoError::Unix)
     }
 
-    /// Maps a standard IO error to this protocol's error type
     fn map_io_error(err: std::io::Error) -> Self::Error {
         EchoError::Unix(err)
     }
 }
 
 /// Extension trait for Unix domain socket specific operations
-///
-/// This trait provides Unix-specific functionality that doesn't fit in the
-/// generic StreamProtocol interface, such as connecting to socket paths
-/// instead of network addresses.
 #[allow(async_fn_in_trait)]
 pub trait UnixStreamExt {
     /// Connect to Unix domain socket using filesystem path
-    ///
-    /// # Arguments
-    /// * `path` - Filesystem path to Unix domain socket
     async fn connect_unix(path: &Path) -> Result<UnixStream>;
 
-    /// Connect to abstract Unix domain socket
-    ///
-    /// Abstract sockets use names starting with null byte (\0) and don't
-    /// create filesystem entries. They're useful for avoiding filesystem
-    /// permission and cleanup issues.
-    ///
-    /// # Arguments
-    /// * `name` - Abstract socket name (without leading \0)
+    /// Connect to a Linux abstract-namespace socket (`name` without the leading NUL).
+    #[cfg(target_os = "linux")]
     async fn connect_abstract(name: &str) -> Result<UnixStream>;
 }
 
 impl UnixStreamProtocol {
-    /// Bind Unix stream listener with explicit Unix configuration and FD inheritance
-    ///
-    /// This method enables direct use of UnixStreamConfig for better control over
-    /// Unix domain socket specific features like socket paths and FD inheritance.
+    /// Bind a Unix stream listener from a [`UnixStreamConfig`](super::UnixStreamConfig)
+    /// with an explicit descriptor pool.
     pub async fn bind_unix_with_inheritance(
         config: &super::config::UnixStreamConfig,
         fd_config: &FdInheritanceConfig,
-    ) -> Result<UnixListener> {
+    ) -> Result<ManagedUnixListener> {
         UnixStreamSocketBuilder::build(&config.bind_strategy, &config.service_name, fd_config)
     }
 }
@@ -261,11 +214,14 @@ impl UnixStreamExt for UnixStreamProtocol {
         UnixStream::connect(path).await.map_err(EchoError::Unix)
     }
 
+    #[cfg(target_os = "linux")]
     async fn connect_abstract(name: &str) -> Result<UnixStream> {
-        // Abstract socket names start with null byte
-        let abstract_name = format!("\0{}", name);
-        UnixStream::connect(abstract_name)
-            .await
-            .map_err(EchoError::Unix)
+        use std::os::linux::net::SocketAddrExt;
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
+            .map_err(EchoError::Unix)?;
+        let stream =
+            std::os::unix::net::UnixStream::connect_addr(&addr).map_err(EchoError::Unix)?;
+        stream.set_nonblocking(true).map_err(EchoError::Unix)?;
+        UnixStream::from_std(stream).map_err(EchoError::Unix)
     }
 }

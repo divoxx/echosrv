@@ -12,6 +12,7 @@ async fn test_http_protocol_bind_and_accept() {
         buffer_size: 8192,
         read_timeout: std::time::Duration::from_secs(5),
         write_timeout: std::time::Duration::from_secs(5),
+        ..Default::default()
     };
 
     let listener = HttpProtocol::bind(&config).await.unwrap();
@@ -53,6 +54,7 @@ async fn test_http_protocol_simple_post() {
         buffer_size: 8192,
         read_timeout: std::time::Duration::from_secs(5),
         write_timeout: std::time::Duration::from_secs(5),
+        ..Default::default()
     };
 
     let listener = HttpProtocol::bind(&config).await.unwrap();
@@ -97,6 +99,7 @@ async fn test_http_protocol_method_not_allowed() {
         buffer_size: 8192,
         read_timeout: std::time::Duration::from_secs(5),
         write_timeout: std::time::Duration::from_secs(5),
+        ..Default::default()
     };
 
     let listener = HttpProtocol::bind(&config).await.unwrap();
@@ -144,6 +147,7 @@ async fn test_http_protocol_incomplete_request() {
         buffer_size: 8192,
         read_timeout: std::time::Duration::from_secs(5),
         write_timeout: std::time::Duration::from_secs(5),
+        ..Default::default()
     };
 
     let listener = HttpProtocol::bind(&config).await.unwrap();

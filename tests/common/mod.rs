@@ -1,39 +1,44 @@
+use echosrv::Result;
 use echosrv::common::EchoServerTrait;
-use echosrv::{EchoError, Result};
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
 
-/// Creates a controlled test server with connection limit for integration tests
+/// Starts a TCP echo server on `127.0.0.1:0` with the given connection limit.
 ///
-/// This function creates a TCP server with a specific connection limit
-/// and returns both the server handle and the address it's bound to.
+/// The server is bound before this function returns, so the returned address
+/// is the real one and is already accepting connections (no sleeps, no
+/// bind/drop/rebind race).
+#[allow(dead_code)]
 pub async fn create_controlled_test_server_with_limit(
     max_connections: usize,
 ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
-    use echosrv::{TcpConfig, TcpEchoServer};
-    use std::time::Duration;
-    use tokio::net::TcpListener;
+    let (handle, addr, _shutdown) = start_tcp_server(max_connections).await?;
+    Ok((handle, addr))
+}
 
-    // First bind to get the actual address
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| EchoError::Config(format!("Failed to bind listener: {e}")))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| EchoError::Config(format!("Failed to get local address: {e}")))?;
-    drop(listener); // Close the listener so the server can bind to the same address
+/// Like [`create_controlled_test_server_with_limit`] but also returns the
+/// shutdown sender for graceful termination.
+#[allow(dead_code)]
+pub async fn start_tcp_server(
+    max_connections: usize,
+) -> Result<(
+    JoinHandle<Result<()>>,
+    SocketAddr,
+    tokio::sync::broadcast::Sender<()>,
+)> {
+    use echosrv::{TcpConfig, TcpEchoServer};
 
     let config = TcpConfig {
-        bind_addr: addr,
         max_connections,
-        buffer_size: 1024,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
-
     let server = TcpEchoServer::new(config.into());
-
-    let server_handle = tokio::spawn(async move { server.run().await });
-
-    Ok((server_handle, addr))
+    let shutdown = server.shutdown_signal();
+    let bound = server.bind().await?;
+    let addr = *bound
+        .local_addr()
+        .as_network()
+        .expect("TCP server has a network address");
+    let handle = tokio::spawn(bound.serve());
+    Ok((handle, addr, shutdown))
 }

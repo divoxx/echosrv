@@ -78,6 +78,8 @@ impl From<UnixStreamConfig> for StreamConfig {
             buffer_size: config.buffer_size,
             read_timeout: config.read_timeout,
             write_timeout: config.write_timeout,
+            bind_strategy: Some(config.bind_strategy),
+            service_name: config.service_name,
         }
     }
 }
@@ -103,11 +105,11 @@ pub struct UnixDatagramConfig {
     pub bind_strategy: BindStrategy,
     /// Service name for FD inheritance lookup
     pub service_name: String,
-    /// Buffer size for reading/writing data
+    /// Receive buffer size (default 64 KiB); larger datagrams are truncated
     pub buffer_size: usize,
-    /// Read timeout for connections
+    /// Idle receive timeout
     pub read_timeout: Duration,
-    /// Write timeout for connections
+    /// Timeout for sending each reply
     pub write_timeout: Duration,
 }
 
@@ -118,7 +120,7 @@ impl Default for UnixDatagramConfig {
                 "/tmp/echosrv_datagram.sock".into(),
             )),
             service_name: "unix-datagram".to_string(),
-            buffer_size: 1024,
+            buffer_size: crate::datagram::DEFAULT_DATAGRAM_BUFFER_SIZE,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
         }
@@ -153,6 +155,8 @@ impl From<UnixDatagramConfig> for DatagramConfig {
             buffer_size: config.buffer_size,
             read_timeout: config.read_timeout,
             write_timeout: config.write_timeout,
+            bind_strategy: Some(config.bind_strategy),
+            service_name: config.service_name,
         }
     }
 }

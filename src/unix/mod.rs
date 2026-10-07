@@ -55,6 +55,7 @@ pub mod client;
 pub mod config;
 pub mod datagram_protocol;
 pub mod server;
+mod socket_file;
 pub mod stream_protocol;
 
 #[cfg(test)]
@@ -68,5 +69,5 @@ pub use client::{UnixDatagramEchoClient, UnixStreamEchoClient};
 pub use server::{UnixDatagramEchoServer, UnixStreamEchoServer};
 
 // Re-export protocol implementations
-pub use datagram_protocol::{UnixDatagramExt, UnixDatagramProtocol};
-pub use stream_protocol::{UnixStreamExt, UnixStreamProtocol};
+pub use datagram_protocol::{ManagedUnixDatagram, UnixDatagramExt, UnixDatagramProtocol};
+pub use stream_protocol::{ManagedUnixListener, UnixStreamExt, UnixStreamProtocol};

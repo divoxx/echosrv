@@ -1,3 +1,6 @@
+#[cfg(not(unix))]
+compile_error!("echosrv currently supports Unix-like platforms only (Linux, macOS, BSD)");
+
 use crate::http::protocol::HttpProtocolError;
 use thiserror::Error;
 
@@ -35,17 +38,41 @@ pub enum EchoError {
     /// Unsupported operation errors
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
+
+    /// HTTP protocol errors (malformed or unsupported requests)
+    #[error("HTTP error: {0}")]
+    Http(String),
+}
+
+impl EchoError {
+    /// Converts this error into a [`std::io::Error`].
+    ///
+    /// I/O-backed variants (`Tcp`, `Udp`, `Unix`) return the underlying error
+    /// unchanged; every other variant is wrapped with [`std::io::Error::other`].
+    /// This is useful when an `EchoError` must cross an API that only speaks
+    /// `std::io::Error` (for example a protocol-specific error type).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use echosrv::EchoError;
+    ///
+    /// let err = EchoError::Config("bad".into()).into_io_error();
+    /// assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    /// ```
+    pub fn into_io_error(self) -> std::io::Error {
+        match self {
+            EchoError::Tcp(e) | EchoError::Udp(e) | EchoError::Unix(e) => e,
+            other => std::io::Error::other(other.to_string()),
+        }
+    }
 }
 
 impl From<HttpProtocolError> for EchoError {
     fn from(err: HttpProtocolError) -> Self {
         match err {
             HttpProtocolError::Io(e) => EchoError::Tcp(e),
-            HttpProtocolError::HttpParse(msg) => EchoError::Config(msg),
-            HttpProtocolError::InvalidRequest(msg) => EchoError::Config(msg),
-            HttpProtocolError::IncompleteRequest => {
-                EchoError::Config("Incomplete HTTP request".to_string())
-            }
+            other => EchoError::Http(other.to_string()),
         }
     }
 }
@@ -60,6 +87,7 @@ pub mod network;
 pub mod stream;
 pub mod tcp;
 pub mod udp;
+#[cfg(unix)]
 pub mod unix;
 
 // Re-export main types for convenience
@@ -70,6 +98,7 @@ pub use network::Address;
 pub use stream::{Client as StreamClient, StreamConfig, StreamEchoServer};
 pub use tcp::{TcpConfig, TcpEchoClient, TcpEchoServer};
 pub use udp::{UdpConfig, UdpEchoClient, UdpEchoServer};
+#[cfg(unix)]
 pub use unix::{
     UnixDatagramConfig, UnixDatagramEchoClient, UnixDatagramEchoServer, UnixStreamConfig,
     UnixStreamEchoClient, UnixStreamEchoServer,

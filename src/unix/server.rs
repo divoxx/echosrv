@@ -1,18 +1,23 @@
 use crate::Result;
 use crate::common::EchoServerTrait;
+use crate::datagram::{BoundDatagramServer, DatagramEchoServer};
+use crate::stream::{BoundStreamServer, StreamEchoServer};
 use crate::unix::config::{UnixDatagramConfig, UnixStreamConfig};
 use crate::unix::datagram_protocol::UnixDatagramProtocol;
 use crate::unix::stream_protocol::UnixStreamProtocol;
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::timeout;
-use tracing::{error, info};
 
 /// Unix domain stream echo server
 ///
-/// This server handles Unix domain stream connections and echoes back
-/// all received data. It's optimized for inter-process communication
-/// on Unix-like systems.
+/// A thin wrapper around [`StreamEchoServer`]`<`[`UnixStreamProtocol`]`>` that
+/// accepts a [`UnixStreamConfig`]. It shares the generic server's behavior:
+/// `max_connections` enforcement, timeouts and graceful shutdown.
+///
+/// Socket file handling:
+/// * at bind, a stale socket file (nothing listening) is removed and re-bound;
+///   a live socket or non-socket file is an error,
+/// * on shutdown, the socket file is removed only if this server created it
+///   (never for inherited sockets).
 ///
 /// # Examples
 ///
@@ -37,129 +42,40 @@ use tracing::{error, info};
 /// }
 /// ```
 pub struct UnixStreamEchoServer {
-    config: UnixStreamConfig,
-    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    inner: StreamEchoServer<UnixStreamProtocol>,
 }
 
 impl UnixStreamEchoServer {
     /// Creates a new Unix domain stream echo server with the given configuration
     pub fn new(config: UnixStreamConfig) -> Self {
-        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         Self {
-            config,
-            shutdown_tx,
+            inner: StreamEchoServer::new(config.into()),
         }
+    }
+
+    /// Creates the listening socket; see [`StreamEchoServer::bind`].
+    pub async fn bind(&self) -> Result<BoundStreamServer<UnixStreamProtocol>> {
+        self.inner.bind().await
     }
 }
 
 #[async_trait]
 impl EchoServerTrait for UnixStreamEchoServer {
     async fn run(&self) -> Result<()> {
-        // Extract socket path from bind strategy for logging
-        let socket_path = match &self.config.bind_strategy {
-            crate::network::fd_inheritance::BindStrategy::Bind(
-                crate::network::fd_inheritance::BindTarget::Unix(path),
-            ) => path.clone(),
-            crate::network::fd_inheritance::BindStrategy::InheritOrBind {
-                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path),
-                ..
-            } => path.clone(),
-            _ => std::path::PathBuf::from("/tmp/unknown.sock"), // fallback
-        };
-
-        info!(
-            "Starting Unix domain stream echo server on {}",
-            socket_path.display()
-        );
-
-        // Use the new protocol implementation with FD inheritance
-        let listener = UnixStreamProtocol::bind_unix_with_inheritance(
-            &self.config,
-            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?,
-        )
-        .await?;
-        info!(
-            "Unix domain stream server bound to {}",
-            socket_path.display()
-        );
-
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-        loop {
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok((mut stream, _addr)) => {
-                            let buffer_size = self.config.buffer_size;
-                            let read_timeout = self.config.read_timeout;
-                            let write_timeout = self.config.write_timeout;
-
-                            // Spawn a task to handle this connection
-                            tokio::spawn(async move {
-                                let mut buffer = vec![0u8; buffer_size];
-
-                                loop {
-                                    // Read with timeout
-                                    let read_result = timeout(read_timeout, stream.read(&mut buffer)).await;
-                                    match read_result {
-                                        Ok(Ok(0)) => {
-                                            // Connection closed by client
-                                            break;
-                                        }
-                                        Ok(Ok(n)) => {
-                                            let data = &buffer[..n];
-
-                                            // Echo back with timeout
-                                            if let Err(e) = timeout(write_timeout, stream.write_all(data)).await {
-                                                error!("Write timeout or error: {}", e);
-                                                break;
-                                            }
-
-                                            if let Err(e) = timeout(write_timeout, stream.flush()).await {
-                                                error!("Flush timeout or error: {}", e);
-                                                break;
-                                            }
-                                        }
-                                        Ok(Err(e)) => {
-                                            error!("Read error: {}", e);
-                                            break;
-                                        }
-                                        Err(_) => {
-                                            error!("Read timeout");
-                                            break;
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            error!("Accept error: {}", e);
-                        }
-                    }
-                }
-                _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received, stopping Unix domain stream server");
-                    break;
-                }
-            }
-        }
-
-        // Clean up socket file
-        let _ = std::fs::remove_file(socket_path);
-        info!("Unix domain stream server stopped");
-        Ok(())
+        self.inner.run().await
     }
 
     fn shutdown_signal(&self) -> tokio::sync::broadcast::Sender<()> {
-        self.shutdown_tx.clone()
+        self.inner.shutdown_signal()
     }
 }
 
 /// Unix domain datagram echo server
 ///
-/// This server handles Unix domain datagram messages and echoes back
-/// all received data. It's optimized for connectionless inter-process
-/// communication on Unix-like systems.
+/// A thin wrapper around [`DatagramEchoServer`]`<`[`UnixDatagramProtocol`]`>`
+/// that accepts a [`UnixDatagramConfig`]. Each datagram is echoed to the
+/// sender's socket path (senders must be bound to a path to get replies).
+/// Socket file handling matches [`UnixStreamEchoServer`].
 ///
 /// # Examples
 ///
@@ -183,97 +99,30 @@ impl EchoServerTrait for UnixStreamEchoServer {
 /// }
 /// ```
 pub struct UnixDatagramEchoServer {
-    config: UnixDatagramConfig,
-    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    inner: DatagramEchoServer<UnixDatagramProtocol>,
 }
 
 impl UnixDatagramEchoServer {
     /// Creates a new Unix domain datagram echo server with the given configuration
     pub fn new(config: UnixDatagramConfig) -> Self {
-        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         Self {
-            config,
-            shutdown_tx,
+            inner: DatagramEchoServer::new(config.into()),
         }
+    }
+
+    /// Creates the socket; see [`DatagramEchoServer::bind`].
+    pub async fn bind(&self) -> Result<BoundDatagramServer<UnixDatagramProtocol>> {
+        self.inner.bind().await
     }
 }
 
 #[async_trait]
 impl EchoServerTrait for UnixDatagramEchoServer {
     async fn run(&self) -> Result<()> {
-        // Extract socket path from bind strategy for logging
-        let socket_path = match &self.config.bind_strategy {
-            crate::network::fd_inheritance::BindStrategy::Bind(
-                crate::network::fd_inheritance::BindTarget::Unix(path),
-            ) => path.clone(),
-            crate::network::fd_inheritance::BindStrategy::InheritOrBind {
-                fallback_target: crate::network::fd_inheritance::BindTarget::Unix(path),
-                ..
-            } => path.clone(),
-            _ => std::path::PathBuf::from("/tmp/unknown.sock"), // fallback
-        };
-
-        info!(
-            "Starting Unix domain datagram echo server on {}",
-            socket_path.display()
-        );
-
-        // Use the new protocol implementation with FD inheritance
-        let socket = UnixDatagramProtocol::bind_unix_with_inheritance(
-            &self.config,
-            &crate::network::fd_inheritance::FdInheritanceConfig::from_systemd_env()?,
-        )
-        .await?;
-        info!(
-            "Unix domain datagram server bound to {}",
-            socket_path.display()
-        );
-        info!("Server socket created successfully");
-
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-        let mut buffer = vec![0u8; self.config.buffer_size];
-
-        loop {
-            tokio::select! {
-                recv_result = socket.recv_from(&mut buffer) => {
-                    match recv_result {
-                        Ok((len, peer_addr)) => {
-                            let data = &buffer[..len];
-                            info!("Received {} bytes from peer", len);
-
-                            // Echo back to the same peer
-                            // For Unix datagrams, we need to convert the address to a path
-                            if let Some(path) = peer_addr.as_pathname() {
-                                if let Err(e) = socket.send_to(data, path).await {
-                                    error!("Failed to send response: {}", e);
-                                } else {
-                                    info!("Sent {} bytes back to peer", len);
-                                }
-                            } else {
-                                // For anonymous sockets, we can't reply because we don't have a path
-                                // The client should use a named socket if it wants to receive responses
-                                error!("Received message from unnamed socket, cannot reply. Client should use a named socket.");
-                            }
-                        }
-                        Err(e) => {
-                            error!("Receive error: {}", e);
-                        }
-                    }
-                }
-                _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received, stopping Unix domain datagram server");
-                    break;
-                }
-            }
-        }
-
-        // Clean up socket file
-        let _ = std::fs::remove_file(socket_path);
-        info!("Unix domain datagram server stopped");
-        Ok(())
+        self.inner.run().await
     }
 
     fn shutdown_signal(&self) -> tokio::sync::broadcast::Sender<()> {
-        self.shutdown_tx.clone()
+        self.inner.shutdown_signal()
     }
 }

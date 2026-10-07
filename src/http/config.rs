@@ -65,6 +65,8 @@ impl From<HttpConfig> for StreamConfig {
             buffer_size: config.buffer_size,
             read_timeout: config.read_timeout,
             write_timeout: config.write_timeout,
+            bind_strategy: None,
+            service_name: "http".to_string(),
         }
     }
 }

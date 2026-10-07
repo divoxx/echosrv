@@ -135,6 +135,7 @@ proptest! {
                 buffer_size,
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),
+                ..Default::default()
             };
 
             let server = TcpEchoServer::new(config.clone().into());

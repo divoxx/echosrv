@@ -7,12 +7,12 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn test_address_system() {
     // Test network address creation
-    let net_addr: Address = "127.0.0.1:8080".into();
+    let net_addr: Address = "127.0.0.1:8080".parse().unwrap();
     assert!(net_addr.is_network());
     assert!(!net_addr.is_unix());
 
     // Test Unix address creation
-    let unix_addr: Address = "unix:/tmp/test.sock".into();
+    let unix_addr: Address = "unix:/tmp/test.sock".parse().unwrap();
     assert!(!unix_addr.is_network());
     assert!(unix_addr.is_unix());
 
@@ -25,10 +25,10 @@ async fn test_address_system() {
 #[tokio::test]
 async fn test_unified_config() {
     // Test address system
-    let net_addr: Address = "127.0.0.1:8080".into();
+    let net_addr: Address = "127.0.0.1:8080".parse().unwrap();
     assert!(net_addr.is_network());
 
-    let unix_addr: Address = "unix:/tmp/test.sock".into();
+    let unix_addr: Address = "unix:/tmp/test.sock".parse().unwrap();
     assert!(unix_addr.is_unix());
 
     // For now, just test that the address system works
@@ -74,6 +74,7 @@ async fn test_end_to_end_improvements() -> Result<(), Box<dyn std::error::Error>
         buffer_size: 2048,
         read_timeout: Duration::from_secs(30),
         write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
 
     let server = TcpEchoServer::new(config.clone().into());
@@ -182,6 +183,7 @@ async fn test_performance_characteristics() -> Result<(), Box<dyn std::error::Er
         buffer_size: 8192,
         read_timeout: Duration::from_secs(30),
         write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
 
     let server = TcpEchoServer::new(config.clone().into());

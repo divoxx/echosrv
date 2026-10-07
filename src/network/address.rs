@@ -33,16 +33,36 @@ impl From<PathBuf> for Address {
     }
 }
 
-impl From<&str> for Address {
-    fn from(s: &str) -> Self {
-        if let Some(stripped) = s.strip_prefix("unix:") {
-            Address::Unix(PathBuf::from(stripped))
-        } else {
-            Address::Network(s.parse().expect("Invalid socket address"))
-        }
+impl From<&std::path::Path> for Address {
+    fn from(path: &std::path::Path) -> Self {
+        Address::Unix(path.to_path_buf())
     }
 }
 
+/// Fallible conversion from a string.
+///
+/// Equivalent to [`str::parse`]: strings prefixed with `unix:` become
+/// [`Address::Unix`], everything else must be a valid [`SocketAddr`].
+///
+/// # Examples
+///
+/// ```
+/// use echosrv::Address;
+///
+/// let addr = Address::try_from("127.0.0.1:8080").unwrap();
+/// assert!(addr.is_network());
+/// assert!(Address::try_from("not an address").is_err());
+/// ```
+impl TryFrom<&str> for Address {
+    type Error = crate::EchoError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+/// Parses `unix:<path>` as [`Address::Unix`] and anything else as a
+/// [`SocketAddr`] (e.g. `127.0.0.1:8080`, `[::1]:8080`).
 impl FromStr for Address {
     type Err = crate::EchoError;
 
@@ -91,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_network_address() {
-        let addr: Address = "127.0.0.1:8080".into();
+        let addr: Address = "127.0.0.1:8080".parse().unwrap();
         assert!(addr.is_network());
         assert!(!addr.is_unix());
         assert!(addr.as_network().is_some());
@@ -100,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_unix_address() {
-        let addr: Address = "unix:/tmp/test.sock".into();
+        let addr: Address = "unix:/tmp/test.sock".parse().unwrap();
         assert!(!addr.is_network());
         assert!(addr.is_unix());
         assert!(addr.as_network().is_none());
@@ -109,10 +129,18 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let net_addr: Address = "127.0.0.1:8080".into();
-        let unix_addr: Address = "unix:/tmp/test.sock".into();
+        let net_addr: Address = "127.0.0.1:8080".parse().unwrap();
+        let unix_addr: Address = "unix:/tmp/test.sock".parse().unwrap();
 
         assert_eq!(net_addr.to_string(), "127.0.0.1:8080");
         assert_eq!(unix_addr.to_string(), "unix:/tmp/test.sock");
+    }
+
+    #[test]
+    fn test_invalid_address_is_error_not_panic() {
+        assert!("not-an-address".parse::<Address>().is_err());
+        assert!(Address::try_from("127.0.0.1").is_err());
+        let v6 = Address::try_from("[::1]:9000").unwrap();
+        assert!(v6.as_network().unwrap().is_ipv6());
     }
 }

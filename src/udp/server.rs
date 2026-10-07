@@ -21,6 +21,7 @@ use crate::datagram::DatagramEchoServer;
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..Default::default()
 ///     };
 ///
 ///     let server = UdpEchoServer::new(config.into());

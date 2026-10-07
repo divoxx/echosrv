@@ -52,9 +52,19 @@ impl StreamProtocol for HttpProtocol {
     type Stream = HttpStream;
 
     async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error> {
-        TcpListener::bind(config.bind_addr)
+        // Delegate to TCP so HTTP gets the same bind strategy / FD inheritance.
+        <crate::tcp::TcpProtocol as StreamProtocol>::bind(config)
             .await
-            .map_err(HttpProtocolError::Io)
+            .map_err(|e| HttpProtocolError::Io(e.into_io_error()))
+    }
+
+    async fn bind_with_inheritance(
+        config: &StreamConfig,
+        fd_config: &crate::network::FdInheritanceConfig,
+    ) -> std::result::Result<Self::Listener, Self::Error> {
+        <crate::tcp::TcpProtocol as StreamProtocol>::bind_with_inheritance(config, fd_config)
+            .await
+            .map_err(|e| HttpProtocolError::Io(e.into_io_error()))
     }
 
     async fn accept(

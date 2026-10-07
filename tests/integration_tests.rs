@@ -115,6 +115,7 @@ async fn test_tcp_connection_limit() -> Result<()> {
         buffer_size: 1024,
         read_timeout: Duration::from_secs(30),
         write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
 
     let listener = TcpListener::bind(config.bind_addr)
@@ -129,6 +130,7 @@ async fn test_tcp_connection_limit() -> Result<()> {
         buffer_size: 1024,
         read_timeout: Duration::from_secs(30),
         write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
 
     let server = TcpEchoServer::new(config.into());
@@ -304,6 +306,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
         buffer_size: 1024,
         read_timeout: Duration::from_millis(100), // Very short timeout
         write_timeout: Duration::from_millis(100),
+        ..Default::default()
     };
 
     let listener = TcpListener::bind(config.bind_addr).await?;
@@ -316,6 +319,7 @@ async fn test_tcp_timeout_configuration() -> Result<()> {
         buffer_size: 1024,
         read_timeout: Duration::from_millis(100),
         write_timeout: Duration::from_millis(100),
+        ..Default::default()
     };
 
     let server = TcpEchoServer::new(config.into());
@@ -344,6 +348,7 @@ async fn test_udp_timeout_configuration() -> Result<()> {
         buffer_size: 1024,
         read_timeout: Duration::from_millis(100), // Very short timeout
         write_timeout: Duration::from_millis(100),
+        ..Default::default()
     };
 
     let server = UdpEchoServer::new(config.into());

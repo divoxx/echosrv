@@ -49,22 +49,20 @@ where
     P::Error: Into<EchoError> + std::fmt::Display,
 {
     /// Connect to a server with custom configuration
+    ///
+    /// `address` may be a [`SocketAddr`](std::net::SocketAddr), a
+    /// [`PathBuf`](std::path::PathBuf) (Unix socket) or an [`Address`]; whether
+    /// a given kind is supported depends on the protocol
+    /// ([`StreamProtocol::connect_address`]).
     pub async fn connect_with_config<A: Into<Address>>(
         address: A,
         config: ClientConfig,
     ) -> Result<Self> {
         let address = address.into();
-        let stream = match &address {
-            Address::Network(addr) => timeout(config.connect_timeout, P::connect(*addr))
-                .await
-                .map_err(|_| EchoError::Timeout("Connection timeout".to_string()))?
-                .map_err(|e| e.into())?,
-            Address::Unix(_) => {
-                return Err(EchoError::Unsupported(
-                    "Use Unix-specific client for Unix domain sockets".to_string(),
-                ));
-            }
-        };
+        let stream = timeout(config.connect_timeout, P::connect_address(&address))
+            .await
+            .map_err(|_| EchoError::Timeout(format!("Connection to {address} timed out")))?
+            .map_err(Into::into)?;
 
         Ok(Self {
             stream,

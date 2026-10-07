@@ -9,6 +9,6 @@ pub mod protocol;
 pub mod server;
 
 pub use client::DatagramEchoClient;
-pub use config::DatagramConfig;
+pub use config::{DEFAULT_DATAGRAM_BUFFER_SIZE, DatagramClientConfig, DatagramConfig};
 pub use protocol::DatagramProtocol;
-pub use server::DatagramEchoServer;
+pub use server::{BoundDatagramServer, DatagramEchoServer};
