@@ -1,7 +1,6 @@
 use color_eyre::eyre::{Result, WrapErr};
-use echosrv::http::{HttpConfig, HttpEchoServer};
+use echosrv::http::{DEFAULT_MAX_BODY_SIZE, HttpConfig, HttpEchoServer};
 use echosrv::network::{BindStrategy, FdInheritanceConfig, InheritedFd};
-use echosrv::stream::StreamConfig;
 use echosrv::tcp::TcpConfig;
 use echosrv::udp::UdpConfig;
 use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
@@ -311,13 +310,13 @@ async fn start(cli: Cli, fds: FdInheritanceConfig) -> Result<()> {
                 buffer_size: 8192,
                 read_timeout: Duration::from_secs(30),
                 write_timeout: Duration::from_secs(30),
+                max_body_size: DEFAULT_MAX_BODY_SIZE,
+                bind_strategy: inherit,
+                service_name,
                 ..Default::default()
             };
             info!(address = %config.bind_addr, max_connections = config.max_connections, "Starting HTTP echo server");
-            let mut stream_config: StreamConfig = config.into();
-            stream_config.bind_strategy = inherit;
-            stream_config.service_name = service_name;
-            serve(HttpEchoServer::new(stream_config))
+            serve(HttpEchoServer::new(config))
                 .await
                 .wrap_err("Failed to run HTTP echo server")
         }
