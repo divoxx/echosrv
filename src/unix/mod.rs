@@ -1,72 +1,71 @@
-//! Unix Domain Socket implementations for the echo server
+//! Unix domain socket echo servers and clients (stream and datagram).
 //!
-//! This module provides both stream-based and datagram-based Unix domain socket
-//! echo servers and clients. Unix domain sockets provide efficient inter-process
-//! communication on Unix-like systems.
+//! * [`UnixStreamEchoServer`] / [`UnixStreamEchoClient`] / [`UnixStreamConfig`]
+//!   behave like their TCP counterparts, addressed by a socket path.
+//! * [`UnixDatagramEchoServer`] / [`UnixDatagramEchoClient`] /
+//!   [`UnixDatagramConfig`] echo each datagram to the sender's socket path.
+//!   Senders must be bound to a path to receive a reply;
+//!   [`UnixDatagramEchoClient`] binds a temporary one for that.
+//!
+//! Socket files: when binding, a stale socket file (nothing listening on it)
+//! is removed and the path re-bound, while a live socket or a non-socket file
+//! is an error; missing parent directories are created. A socket file the
+//! server created is removed when the server stops. Socket files of inherited
+//! descriptors are never removed.
 //!
 //! # Examples
 //!
-//! ## Unix Stream Server
-//!
-//! ```no_run
-//! use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
-//! use echosrv::common::EchoServerTrait;
-//! use std::time::Duration;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = UnixStreamConfig {
-//!         socket_path: "/tmp/echo.sock".into(),
-//!         max_connections: 100,
-//!         buffer_size: 1024,
-//!         read_timeout: Duration::from_secs(30),
-//!         write_timeout: Duration::from_secs(30),
-//!     };
-//!
-//!     let server = UnixStreamEchoServer::new(config.into());
-//!     server.run().await?;
-//!     Ok(())
-//! }
 //! ```
+//! use echosrv::unix::{
+//!     UnixDatagramConfig, UnixDatagramEchoClient, UnixDatagramEchoServer, UnixStreamConfig,
+//!     UnixStreamEchoClient, UnixStreamEchoServer,
+//! };
+//! use echosrv::{EchoClient, EchoServerTrait};
 //!
-//! ## Unix Datagram Server
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let dir = tempfile::tempdir()?;
 //!
-//! ```no_run
-//! use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
-//! use echosrv::common::EchoServerTrait;
-//! use std::time::Duration;
+//! // Stream
+//! let path = dir.path().join("stream.sock");
+//! let config = UnixStreamConfig::default().with_socket_path(path.clone());
+//! let server = UnixStreamEchoServer::new(config);
+//! let shutdown = server.shutdown_signal();
+//! let handle = tokio::spawn(server.bind().await?.serve());
+//! let mut client = UnixStreamEchoClient::connect(path.clone()).await?;
+//! assert_eq!(client.echo_string("hello").await?, "hello");
+//! shutdown.send(())?;
+//! handle.await??;
+//! assert!(!path.exists()); // the server removed its socket file
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = UnixDatagramConfig {
-//!         socket_path: "/tmp/echo_dgram.sock".into(),
-//!         buffer_size: 1024,
-//!         read_timeout: Duration::from_secs(30),
-//!         write_timeout: Duration::from_secs(30),
-//!     };
-//!
-//!     let server = UnixDatagramEchoServer::new(config.into());
-//!     server.run().await?;
-//!     Ok(())
-//! }
+//! // Datagram
+//! let path = dir.path().join("dgram.sock");
+//! let config = UnixDatagramConfig::default().with_socket_path(path.clone());
+//! let server = UnixDatagramEchoServer::new(config);
+//! let shutdown = server.shutdown_signal();
+//! let handle = tokio::spawn(server.bind().await?.serve());
+//! let mut client = UnixDatagramEchoClient::connect(path).await?;
+//! assert_eq!(client.echo(b"hello").await?, b"hello");
+//! shutdown.send(())?;
+//! handle.await??;
+//! # Ok(())
+//! # }
 //! ```
 
 pub mod client;
 pub mod config;
 pub mod datagram_protocol;
 pub mod server;
+mod socket_file;
 pub mod stream_protocol;
 
 #[cfg(test)]
 mod tests;
 
-// Re-export configuration types
 pub use config::{UnixDatagramConfig, UnixStreamConfig};
 
-// Re-export server and client types
 pub use client::{UnixDatagramEchoClient, UnixStreamEchoClient};
 pub use server::{UnixDatagramEchoServer, UnixStreamEchoServer};
 
-// Re-export protocol implementations
-pub use datagram_protocol::{UnixDatagramProtocol, UnixDatagramExt};
-pub use stream_protocol::{UnixStreamProtocol, UnixStreamExt};
+pub use datagram_protocol::{ManagedUnixDatagram, UnixDatagramExt, UnixDatagramProtocol};
+pub use stream_protocol::{ManagedUnixListener, UnixStreamExt, UnixStreamProtocol};

@@ -1,14 +1,15 @@
 [package]
 name = "echosrv"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-description = "A high-performance set of async echo server library built with Tokio for testing and development environments"
+rust-version = "1.85"
+description = "Async echo servers and clients for TCP, UDP, HTTP and Unix domain sockets, built on Tokio"
 license = "MIT"
 repository = "https://github.com/divoxx/echosrv"
 homepage = "https://github.com/divoxx/echosrv"
 documentation = "https://docs.rs/echosrv"
 readme = "README.md"
-keywords = ["echo", "server", "async"]
+keywords = ["echo", "server", "tokio", "tcp", "udp"]
 categories = ["network-programming", "asynchronous", "command-line-utilities"]
 authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 
@@ -21,7 +22,6 @@ color-eyre = "0.6.2"
 async-trait = "0.1.88"
 http = "1.0"
 httparse = "1.8"
-bytes = "1.4"
 tokio-util = { version = "0.7", features = ["codec"] }
 libc = "0.2"
 
@@ -33,5 +33,12 @@ path = "src/main.rs"
 tokio-test = "0.4"
 tempfile = "3.8"
 proptest = "1.0"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+futures = "0.3"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+
+[[bench]]
+name = "echo_performance"
+harness = false
 

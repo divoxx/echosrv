@@ -1,56 +1,57 @@
+//! The [`DatagramProtocol`] trait implemented by datagram transports.
+
 use super::config::DatagramConfig;
+use crate::network::LocalAddress;
 use crate::network::fd_inheritance::FdInheritanceConfig;
 use async_trait::async_trait;
-use std::net::SocketAddr;
 
-/// Trait for datagram-based protocols (UDP, Unix datagrams, etc.)
+/// A datagram transport usable by [`DatagramEchoServer`].
 ///
-/// This trait defines the interface that datagram protocol implementations
-/// must provide to work with the generic datagram echo server.
-/// 
-/// File descriptor inheritance support is provided through optional methods
-/// that protocols can implement for zero-downtime server reloads.
+/// Implemented by [`UdpProtocol`](crate::udp::UdpProtocol) and
+/// [`UnixDatagramProtocol`](crate::unix::UnixDatagramProtocol). Protocols
+/// whose [`PeerAddr`](Self::PeerAddr) is [`SocketAddr`](std::net::SocketAddr)
+/// also work with [`DatagramEchoClient`].
+///
+/// [`DatagramEchoServer`]: crate::datagram::DatagramEchoServer
+/// [`DatagramEchoClient`]: crate::datagram::DatagramEchoClient
 #[async_trait]
-pub trait DatagramProtocol {
+pub trait DatagramProtocol: Send + Sync + 'static {
     /// Error type for this protocol
     type Error: Send + Into<crate::EchoError>;
     /// Socket type for this protocol
-    type Socket: Send;
+    type Socket: Send + Sync + LocalAddress;
+    /// Peer address type (e.g. `SocketAddr` for UDP, a socket path for Unix
+    /// datagrams). Replies are sent to the address returned by `recv_from`.
+    type PeerAddr: Send + Sync + std::fmt::Debug + 'static;
 
     /// Binds a socket to the given configuration
-    /// 
-    /// This method provides backward compatibility and automatically detects
-    /// file descriptor inheritance from the environment (e.g., systemd).
+    ///
+    /// Implementations should honor [`DatagramConfig::bind_strategy`] and use
+    /// the process-wide systemd descriptor pool for service-name lookups.
     async fn bind(config: &DatagramConfig) -> std::result::Result<Self::Socket, Self::Error>;
 
     /// Binds a socket with explicit file descriptor inheritance configuration
-    /// 
-    /// This method enables advanced control over FD inheritance for custom
-    /// deployment scenarios or process managers that don't use standard
-    /// environment variables.
-    /// 
-    /// Default implementation falls back to the standard bind() method for
-    /// backward compatibility with existing protocol implementations.
+    ///
+    /// Generic servers call this method. The default implementation ignores
+    /// `fd_config` and calls [`bind`](Self::bind).
     async fn bind_with_inheritance(
         config: &DatagramConfig,
         _fd_config: &FdInheritanceConfig,
     ) -> std::result::Result<Self::Socket, Self::Error> {
-        // Default implementation ignores FD inheritance and uses standard binding
-        // Protocols that support inheritance should override this method
         Self::bind(config).await
     }
 
-    /// Receives data from a socket
+    /// Receives one datagram, returning its length and the sender's address
     async fn recv_from(
         socket: &Self::Socket,
         buffer: &mut [u8],
-    ) -> std::result::Result<(usize, SocketAddr), Self::Error>;
+    ) -> std::result::Result<(usize, Self::PeerAddr), Self::Error>;
 
-    /// Sends data to a specific address
+    /// Sends one datagram to `addr`
     async fn send_to(
         socket: &Self::Socket,
         data: &[u8],
-        addr: SocketAddr,
+        addr: &Self::PeerAddr,
     ) -> std::result::Result<usize, Self::Error>;
 
     /// Maps a standard IO error to this protocol's error type

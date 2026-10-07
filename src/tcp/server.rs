@@ -1,9 +1,13 @@
+//! The TCP echo server type.
+
 use super::stream_protocol::TcpProtocol;
 use crate::stream::StreamEchoServer;
 
-/// TCP echo server that handles TCP connections
+/// TCP echo server: echoes every byte received on each connection.
 ///
-/// This is a type alias for `StreamEchoServer<TcpProtocol>`.
+/// A type alias for [`StreamEchoServer`]`<`[`TcpProtocol`]`>`; see there for
+/// the full behavior. `new` takes a [`StreamConfig`](crate::stream::StreamConfig), so
+/// convert a [`TcpConfig`](super::TcpConfig) with `.into()`.
 ///
 /// # Examples
 ///
@@ -22,6 +26,7 @@ use crate::stream::StreamEchoServer;
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..Default::default()
 ///     };
 ///
 ///     let server = TcpEchoServer::new(config.into());
@@ -30,30 +35,26 @@ use crate::stream::StreamEchoServer;
 /// }
 /// ```
 ///
-/// Server with graceful shutdown:
+/// Running on an ephemeral port and shutting down gracefully:
 ///
-/// ```no_run
-/// use echosrv::tcp::{TcpConfig, TcpEchoServer};
-/// use echosrv::common::EchoServerTrait;
-/// use std::time::Duration;
+/// ```
+/// use echosrv::{EchoClient, EchoServerTrait};
+/// use echosrv::tcp::{TcpConfig, TcpEchoClient, TcpEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let config = TcpConfig::default();
-///     let server = TcpEchoServer::new(config.into());
-///     let shutdown_signal = server.shutdown_signal();
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> echosrv::Result<()> {
+/// let server = TcpEchoServer::new(TcpConfig::default().into()); // 127.0.0.1:0
+/// let shutdown = server.shutdown_signal();
+/// let bound = server.bind().await?;
+/// let addr = *bound.local_addr().as_network().unwrap();
+/// let handle = tokio::spawn(bound.serve());
 ///
-///     // Run server in background
-///     let server_handle = tokio::spawn(async move {
-///         server.run().await
-///     });
+/// let mut client = TcpEchoClient::connect(addr).await?;
+/// assert_eq!(client.echo(b"hello").await?, b"hello");
 ///
-///     // Do other work...
-///     
-///     // Gracefully shutdown
-///     let _ = shutdown_signal.send(());
-///     server_handle.await??;
-///     Ok(())
-/// }
+/// shutdown.send(()).unwrap();
+/// handle.await.unwrap()?;
+/// # Ok(())
+/// # }
 /// ```
 pub type TcpEchoServer = StreamEchoServer<TcpProtocol>;

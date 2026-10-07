@@ -1,9 +1,13 @@
+//! The UDP echo server type.
+
 use super::datagram_protocol::UdpProtocol;
 use crate::datagram::DatagramEchoServer;
 
-/// UDP echo server that handles UDP datagrams
+/// UDP echo server: sends every datagram back to its sender.
 ///
-/// This is a type alias for `DatagramEchoServer<UdpProtocol>`.
+/// A type alias for [`DatagramEchoServer`]`<`[`UdpProtocol`]`>`; see there for
+/// the full behavior. `new` takes a [`DatagramConfig`](crate::datagram::DatagramConfig), so
+/// convert a [`UdpConfig`](super::UdpConfig) with `.into()`.
 ///
 /// # Examples
 ///
@@ -21,6 +25,7 @@ use crate::datagram::DatagramEchoServer;
 ///         buffer_size: 1024,
 ///         read_timeout: Duration::from_secs(30),
 ///         write_timeout: Duration::from_secs(30),
+///         ..Default::default()
 ///     };
 ///
 ///     let server = UdpEchoServer::new(config.into());
@@ -29,30 +34,26 @@ use crate::datagram::DatagramEchoServer;
 /// }
 /// ```
 ///
-/// Server with graceful shutdown:
+/// Running on an ephemeral port and shutting down gracefully:
 ///
-/// ```no_run
-/// use echosrv::udp::{UdpConfig, UdpEchoServer};
-/// use echosrv::common::EchoServerTrait;
-/// use std::time::Duration;
+/// ```
+/// use echosrv::{EchoClient, EchoServerTrait};
+/// use echosrv::udp::{UdpConfig, UdpEchoClient, UdpEchoServer};
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let config = UdpConfig::default();
-///     let server = UdpEchoServer::new(config.into());
-///     let shutdown_signal = server.shutdown_signal();
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> echosrv::Result<()> {
+/// let server = UdpEchoServer::new(UdpConfig::default().into()); // 127.0.0.1:0
+/// let shutdown = server.shutdown_signal();
+/// let bound = server.bind().await?;
+/// let addr = *bound.local_addr().as_network().unwrap();
+/// let handle = tokio::spawn(bound.serve());
 ///
-///     // Run server in background
-///     let server_handle = tokio::spawn(async move {
-///         server.run().await
-///     });
+/// let mut client = UdpEchoClient::connect(addr).await?;
+/// assert_eq!(client.echo(b"hello").await?, b"hello");
 ///
-///     // Do other work...
-///     
-///     // Gracefully shutdown
-///     let _ = shutdown_signal.send(());
-///     server_handle.await??;
-///     Ok(())
-/// }
+/// shutdown.send(()).unwrap();
+/// handle.await.unwrap()?;
+/// # Ok(())
+/// # }
 /// ```
 pub type UdpEchoServer = DatagramEchoServer<UdpProtocol>;

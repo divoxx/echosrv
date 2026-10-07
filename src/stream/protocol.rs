@@ -1,38 +1,46 @@
+//! The [`StreamProtocol`] trait implemented by stream transports.
+
 use super::config::StreamConfig;
 use crate::network::fd_inheritance::FdInheritanceConfig;
+use crate::network::{Address, LocalAddress};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 
-/// Trait for stream-based protocols (TCP, Unix streams, etc.)
+/// A connection-oriented transport usable by [`StreamEchoServer`] and
+/// [`Client`].
 ///
-/// This trait defines the interface that stream protocol implementations
-/// must provide to work with the generic stream echo server and client.
-/// 
-/// File descriptor inheritance support is provided through optional methods
-/// that protocols can implement for zero-downtime server reloads.
+/// Implemented by [`TcpProtocol`](crate::tcp::TcpProtocol),
+/// [`HttpProtocol`](crate::http::HttpProtocol) and
+/// [`UnixStreamProtocol`](crate::unix::UnixStreamProtocol). The server calls
+/// [`bind_with_inheritance`](Self::bind_with_inheritance), then repeatedly
+/// [`accept`](Self::accept), and echoes each connection with
+/// [`read`](Self::read), [`write`](Self::write) and [`flush`](Self::flush).
+///
+/// [`StreamEchoServer`]: crate::stream::StreamEchoServer
+/// [`Client`]: crate::stream::Client
 #[async_trait]
-pub trait StreamProtocol {
-    /// Error type for this protocol
+pub trait StreamProtocol: Send + Sync + 'static {
+    /// Error type for this protocol.
     type Error: Send + Into<crate::EchoError>;
-    /// Listener type for this protocol
-    type Listener: Send;
-    /// Stream type for this protocol
+    /// Listening socket type.
+    type Listener: Send + LocalAddress;
+    /// Connected stream type.
     type Stream: Send;
 
     /// Binds a listener to the given configuration (server-side)
-    /// 
-    /// This method provides backward compatibility and automatically detects
-    /// file descriptor inheritance from the environment (e.g., systemd).
+    ///
+    /// Implementations should honor [`StreamConfig::bind_strategy`] and use the
+    /// process-wide systemd descriptor pool
+    /// ([`FdInheritanceConfig::from_systemd_env`]) for service-name lookups.
     async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error>;
 
     /// Binds a listener with explicit file descriptor inheritance configuration
-    /// 
-    /// This method enables advanced control over FD inheritance for custom
-    /// deployment scenarios or process managers that don't use standard
-    /// environment variables.
-    /// 
-    /// Default implementation falls back to the standard bind() method for
-    /// backward compatibility with existing protocol implementations.
+    ///
+    /// Generic servers call this method. `fd_config` is the pool used for
+    /// service-name lookups when the strategy is
+    /// [`InheritOrBind`](crate::network::BindStrategy::InheritOrBind).
+    ///
+    /// The default implementation ignores `fd_config` and calls [`bind`](Self::bind).
     async fn bind_with_inheritance(
         config: &StreamConfig,
         _fd_config: &FdInheritanceConfig,
@@ -42,13 +50,35 @@ pub trait StreamProtocol {
         Self::bind(config).await
     }
 
-    /// Accepts a new connection from the listener (server-side)
+    /// Accepts a new connection from the listener (server side).
+    ///
+    /// The returned address is only used for logging; protocols without IP
+    /// peers (Unix sockets) return a placeholder.
     async fn accept(
         listener: &mut Self::Listener,
     ) -> std::result::Result<(Self::Stream, SocketAddr), Self::Error>;
 
     /// Connects to a server at the given address (client-side)
     async fn connect(addr: SocketAddr) -> std::result::Result<Self::Stream, Self::Error>;
+
+    /// Connects to a server at a unified [`Address`] (client-side).
+    ///
+    /// The default implementation handles [`Address::Network`] via
+    /// [`connect`](Self::connect) and rejects [`Address::Unix`] with an
+    /// [`Unsupported`](std::io::ErrorKind::Unsupported) I/O error. Unix
+    /// protocols override it.
+    async fn connect_address(addr: &Address) -> std::result::Result<Self::Stream, Self::Error> {
+        match addr {
+            Address::Network(addr) => Self::connect(*addr).await,
+            Address::Unix(path) => Err(Self::map_io_error(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "protocol does not support Unix socket address {}",
+                    path.display()
+                ),
+            ))),
+        }
+    }
 
     /// Reads data from a stream
     async fn read(

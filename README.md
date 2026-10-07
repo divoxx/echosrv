@@ -1,542 +1,496 @@
-# Echo Server
-
-A high-performance async echo server library built with Tokio, supporting TCP, UDP, HTTP, and Unix domain socket protocols. Perfect for development, testing, and when you need a network service with predictable, verifiable behavior.
-
-## Why Echo Server?
-
-- **Multi-Protocol**: Supports TCP, UDP, HTTP, and Unix domain sockets (stream and datagram)
-- **Predictable**: Always echoes back exactly what you send - no surprises
-- **Simple**: Minimal configuration, just start it and it works
-- **Verifiable**: Easy to test - send data, get the same data back
-- **Flexible**: Use as a library in your Rust projects or standalone executable
-- **Reliable**: Built with proper error handling and connection management
-- **High Performance**: Async I/O with Tokio runtime
-- **Extensible**: Generic architecture supports future protocols
-
-## Quick Start
-
-### As a Standalone Server
-
-```bash
-# Run TCP server on default port 8080
-cargo run tcp
-
-# Run UDP server on default port 8080
-cargo run udp
-
-# Run TCP server on specific port
-cargo run tcp 9000
-
-# Run UDP server on specific port
-cargo run udp 9090
-
-# Run Unix domain stream server
-cargo run unix-stream /tmp/echo.sock
-
-# Run Unix domain datagram server
-cargo run unix-dgram /tmp/echo_dgram.sock
-
-# Run HTTP server on default port 8080
-cargo run http
-
-# Run HTTP server on specific port
-cargo run http 9000
-
-# Test TCP with netcat
-echo "Hello!" | nc localhost 8080
-
-# Test UDP with netcat
-echo "Hello!" | nc -u localhost 8080
-
-# Test Unix domain socket with socat
-echo "Hello!" | socat - UNIX-CONNECT:/tmp/echo.sock
-
-# Test HTTP with curl
-curl -X POST -d "Hello, HTTP!" http://localhost:8080/
-```
-
-### As a Library
-
-#### TCP Server
-
-```rust
-use echosrv::tcp::{TcpConfig, TcpEchoServer};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = TcpConfig {
-        bind_addr: "127.0.0.1:8080".parse()?,
-        max_connections: 100,
-        buffer_size: 1024,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
-    };
-
-    let server = TcpEchoServer::new(config);
-    server.run().await?;
-    Ok(())
-}
-```
-
-#### UDP Server
-
-```rust
-use echosrv::udp::{UdpConfig, UdpEchoServer};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = UdpConfig {
-        bind_addr: "127.0.0.1:8080".parse()?,
-        buffer_size: 1024,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
-    };
-
-    let server = UdpEchoServer::new(config);
-    server.run().await?;
-    Ok(())
-}
-```
-
-#### HTTP Server
-
-```rust
-use echosrv::http::{HttpConfig, HttpEchoServer};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = HttpConfig {
-        bind_addr: "127.0.0.1:8080".parse()?,
-        max_connections: 100,
-        buffer_size: 8192,
-        read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
-        server_name: Some("EchoServer/1.0".to_string()),
-        echo_headers: true,
-        default_content_type: Some("text/plain".to_string()),
-    };
-
-    let server = HttpEchoServer::new(config.into());
-    server.run().await?;
-    Ok(())
-}
-```
-
-**Note**: The HTTP echo server only accepts POST requests and echoes back only the request body content (no HTTP headers). Non-POST requests receive a 405 Method Not Allowed response.
-
-#### Unix Domain Stream Server
-
-```rust
-use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = UnixStreamConfig::default()
-        .with_socket_path("/tmp/echo.sock".into());
-
-    let server = UnixStreamEchoServer::new(config);
-    server.run().await?;
-    Ok(())
-}
-```
-
-#### Unix Domain Datagram Server
-
-```rust
-use echosrv::unix::{UnixDatagramConfig, UnixDatagramEchoServer};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = UnixDatagramConfig::default()
-        .with_socket_path("/tmp/echo_dgram.sock".into());
-
-    let server = UnixDatagramEchoServer::new(config);
-    server.run().await?;
-    Ok(())
-}
-```
-
-## Features
-
-- **Multi-Protocol Support**: TCP, UDP, HTTP, and Unix domain sockets (stream and datagram)
-- **High Performance**: Async I/O with Tokio runtime
-- **Zero-Downtime Reloads**: File descriptor inheritance for seamless service restarts
-- **Connection Limits**: Configurable maximum concurrent connections (TCP/Unix stream)
-- **Timeouts**: Configurable read/write timeouts for all protocols
-- **Graceful Shutdown**: Responds to SIGINT/SIGTERM
-- **Binary Data Support**: Handles any data type, not just text
-- **Unicode Support**: Full UTF-8 support
-- **Structured Logging**: Built-in observability with tracing
-- **Common Interface**: Shared traits for consistent API across protocols
-- **Generic Architecture**: Extensible for future protocols (WebSockets, TLS, etc.)
-- **Unix Domain Sockets**: Efficient inter-process communication on Unix systems
-- **Systemd Integration**: Native support for systemd socket activation
-
-## Use Cases
-
-- **Integration Testing**: When your application requires a network service to be running
-- **Network Validation**: Verify network connectivity and port availability
-- **Client Testing**: Test network clients that need a server to connect to
-- **Development**: Quick setup when you need a service listening on a port
-- **Learning**: Understand how TCP/UDP/Unix domain servers work with predictable behavior
-- **Protocol Comparison**: Test and compare different transport protocols
-- **Inter-Process Communication**: Unix domain sockets for efficient local communication
-- **Container Communication**: Unix domain sockets for container-to-container communication
-- **Zero-Downtime Deployments**: File descriptor inheritance for production service updates
-- **Systemd Services**: Native integration with systemd socket activation and service management
-
-## Configuration
-
-### TCP Configuration
-
-```rust
-let config = TcpConfig {
-    bind_addr: "127.0.0.1:8080".parse().unwrap(),
-    max_connections: 1000,        // Max concurrent connections
-    buffer_size: 1024,            // Read/write buffer size
-    read_timeout: Duration::from_secs(30),   // Read timeout
-    write_timeout: Duration::from_secs(30),  // Write timeout
-};
-```
-
-### UDP Configuration
-
-```rust
-let config = UdpConfig {
-    bind_addr: "127.0.0.1:8080".parse().unwrap(),
-    buffer_size: 1024,            // Read/write buffer size
-    read_timeout: Duration::from_secs(30),   // Read timeout
-    write_timeout: Duration::from_secs(30),  // Write timeout
-};
-```
-
-### Unix Domain Stream Configuration
-
-```rust
-let config = UnixStreamConfig::default()
-    .with_socket_path("/tmp/echo.sock".into())
-    .with_max_connections(100)
-    .with_buffer_size(1024)
-    .with_read_timeout(Duration::from_secs(30))
-    .with_write_timeout(Duration::from_secs(30));
-```
-
-### Unix Domain Datagram Configuration
-
-```rust
-let config = UnixDatagramConfig::default()
-    .with_socket_path("/tmp/echo_dgram.sock".into())
-    .with_buffer_size(1024)
-    .with_read_timeout(Duration::from_secs(30))
-    .with_write_timeout(Duration::from_secs(30));
-```
-
-## Testing
-
-The library includes test clients for both protocols:
-
-### TCP Client
-
-```rust
-use echosrv::tcp::TcpEchoClient;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:8080".parse()?;
-    let mut client = TcpEchoClient::connect(addr).await?;
-    
-    let response = client.echo_string("Hello, TCP Server!").await?;
-    println!("Server echoed: {}", response);
-    Ok(())
-}
-```
-
-### UDP Client
-
-```rust
-use echosrv::udp::UdpEchoClient;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:8080".parse()?;
-    let mut client = UdpEchoClient::connect(addr).await?;
-    
-    let response = client.echo_string("Hello, UDP Server!").await?;
-    println!("Server echoed: {}", response);
-    Ok(())
-}
-```
-
-### Unix Domain Stream Client
-
-```rust
-use echosrv::unix::UnixStreamEchoClient;
-use std::path::PathBuf;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let socket_path = PathBuf::from("/tmp/echo.sock");
-    let mut client = UnixStreamEchoClient::connect(socket_path).await?;
-    
-    let response = client.echo_string("Hello, Unix Stream Server!").await?;
-    println!("Server echoed: {}", response);
-    Ok(())
-}
-```
-
-### HTTP Client
-
-```rust
-use echosrv::http::HttpEchoClient;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:8080".parse()?;
-    let mut client = HttpEchoClient::connect(addr).await?;
-    
-    let response = client.echo_string("Hello, HTTP Server!").await?;
-    println!("Server echoed: {}", response);
-    Ok(())
-}
-```
-
-**Note**: The HTTP client sends POST requests and receives only the body content in response.
-
-### Unix Domain Datagram Client
-
-```rust
-use echosrv::unix::UnixDatagramEchoClient;
-use std::path::PathBuf;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let socket_path = PathBuf::from("/tmp/echo_dgram.sock");
-    let mut client = UnixDatagramEchoClient::connect(socket_path).await?;
-    
-    let response = client.echo_string("Hello, Unix Datagram Server!").await?;
-    println!("Server echoed: {}", response);
-    Ok(())
-}
-```
-
-### Generic Clients
-
-For extensibility, you can also use the generic client implementations:
-
-```rust
-use echosrv::stream::StreamEchoClient;
-use echosrv::datagram::DatagramEchoClient;
-use echosrv::tcp::TcpProtocol;
-use echosrv::udp::UdpProtocol;
-
-// Generic stream client with TCP protocol
-let mut tcp_client: StreamEchoClient<TcpProtocol> = StreamEchoClient::connect(addr).await?;
-
-// Generic datagram client with UDP protocol
-let mut udp_client: DatagramEchoClient<UdpProtocol> = DatagramEchoClient::connect(addr).await?;
-
-// Both work identically to the concrete clients
-let response = client.echo_string("Hello!").await?;
-```
-
-## Architecture
-
-The library uses a clean, generic architecture for maximum extensibility:
-
-### Module Structure
-
-```
-src/
-├── common/             # Shared components
-│   ├── traits.rs       # Core traits (EchoServerTrait, EchoClient)
-│   └── test_utils.rs   # Test utilities
-├── stream/             # Generic stream implementation
-│   ├── client.rs       # Generic stream client
-│   ├── server.rs       # Generic stream server
-│   ├── protocol.rs     # StreamProtocol trait
-│   └── config.rs       # StreamConfig
-├── datagram/           # Generic datagram implementation
-│   ├── client.rs       # Generic datagram client
-│   ├── server.rs       # Generic datagram server
-│   ├── protocol.rs     # DatagramProtocol trait
-│   └── config.rs       # DatagramConfig
-├── tcp/                # TCP-specific implementation
-│   ├── mod.rs          # Type aliases for TCP
-│   ├── server.rs       # Type alias: TcpEchoServer = StreamEchoServer<TcpProtocol>
-│   ├── config.rs       # TcpConfig
-│   └── stream_protocol.rs # TcpProtocol implementation
-├── udp/                # UDP-specific implementation
-│   ├── mod.rs          # Type aliases for UDP
-│   ├── server.rs       # Type alias: UdpEchoServer = DatagramEchoServer<UdpProtocol>
-│   ├── config.rs       # UdpConfig
-│   └── datagram_protocol.rs # UdpProtocol implementation
-├── unix/               # Unix domain socket implementation
-│   ├── mod.rs          # Module exports and type aliases
-│   ├── config.rs       # UnixStreamConfig, UnixDatagramConfig
-│   ├── server.rs       # UnixStreamEchoServer, UnixDatagramEchoServer
-│   ├── client.rs       # UnixStreamEchoClient, UnixDatagramEchoClient
-│   ├── stream_protocol.rs # UnixStreamProtocol implementation
-│   ├── datagram_protocol.rs # UnixDatagramProtocol implementation
-│   └── tests.rs        # Unix domain socket tests
-├── http/               # HTTP protocol implementation
-│   ├── mod.rs          # Module exports and type aliases
-│   ├── config.rs       # HttpConfig
-│   ├── protocol.rs     # HttpProtocol implementation
-│   ├── client.rs       # HttpEchoClient type alias
-│   └── tests.rs        # HTTP protocol unit tests
-├── lib.rs              # Main library exports
-└── main.rs             # Binary entry point
-```
-
-### Design Philosophy
-
-- **Generic Architecture**: Stream and datagram clients/servers are generic over protocol implementations
-- **Type Aliases**: Concrete clients (`TcpEchoClient`, `UdpEchoClient`) are type aliases to generic implementations
-- **Protocol Traits**: `StreamProtocol` and `DatagramProtocol` traits define the interface for protocol implementations
-- **Extensibility**: Easy to add new protocols (Unix streams, WebSockets, etc.) by implementing the protocol traits
-
-### Common Traits
-
-Both TCP and UDP implementations share common traits for consistency:
-
-```rust
-use echosrv::common::{EchoServerTrait, EchoClient};
-
-// Both TcpEchoServer and UdpEchoServer implement EchoServerTrait
-// Both TcpEchoClient and UdpEchoClient implement EchoClient
-```
+# echosrv
+
+Async echo servers and clients for TCP, UDP, HTTP and Unix domain sockets,
+built on Tokio. It ships as a command-line tool and as a library. Use it as a
+predictable peer in tests, for debugging network setups, or as a socket
+activation playground.
+
+Every server sends back exactly the bytes it receives. The HTTP server echoes
+the body of each `POST` request.
+
+**Platform:** Unix-like systems only (Linux, macOS, BSD). The crate does not
+compile on Windows.
+
+| Protocol           | CLI name                        | Server                   | Client                   |
+|--------------------|---------------------------------|--------------------------|--------------------------|
+| TCP                | `tcp`                           | `TcpEchoServer`          | `TcpEchoClient`          |
+| UDP                | `udp`                           | `UdpEchoServer`          | `UdpEchoClient`          |
+| HTTP/1.1           | `http`                          | `HttpEchoServer`         | `HttpEchoClient`         |
+| Unix stream        | `unix-stream`                   | `UnixStreamEchoServer`   | `UnixStreamEchoClient`   |
+| Unix datagram      | `unix-dgram` / `unix-datagram`  | `UnixDatagramEchoServer` | `UnixDatagramEchoClient` |
 
 ## Installation
 
-Add to your `Cargo.toml`:
+Command-line tool:
+
+```bash
+cargo install echosrv
+```
+
+Library:
 
 ```toml
 [dependencies]
-echosrv = "0.1.0"
+echosrv = "0.4"
+tokio = { version = "1", features = ["full"] }
 ```
 
-## Zero-Downtime Reloads
+Minimum supported Rust version: 1.85 (edition 2024).
 
-EchoSrv supports file descriptor inheritance for zero-downtime service reloads, enabling seamless updates in production environments.
+## Command line
 
-### File Descriptor Inheritance
+```text
+Usage: echosrv [OPTIONS] [PROTOCOL] [PORT | SOCKET_PATH]
 
-The server can inherit pre-bound socket file descriptors from parent processes (like systemd), allowing for zero-downtime reloads:
+Protocols:
+  tcp            TCP echo server (default)
+  udp            UDP echo server
+  http           HTTP echo server (echoes POST bodies)
+  unix-stream    Unix domain stream socket server
+  unix-dgram     Unix domain datagram socket server (alias: unix-datagram)
+
+Arguments:
+  PORT           Port for tcp/udp/http (default: 8080)
+  SOCKET_PATH    Socket path for unix-stream/unix-dgram
+                 (default: /tmp/echosrv_stream.sock / /tmp/echosrv_datagram.sock)
+
+Options:
+  --host <ADDR>  IP address to bind for tcp/udp/http (default: 127.0.0.1)
+  -h, --help     Print this help and exit
+  -V, --version  Print version and exit
+```
+
+Examples:
+
+```bash
+# TCP on 127.0.0.1:8080
+echosrv
+echo hello | nc 127.0.0.1 8080
+
+# UDP on all interfaces, port 9090
+echosrv --host 0.0.0.0 udp 9090
+echo hello | nc -u -w1 127.0.0.1 9090
+
+# IPv6 loopback
+echosrv --host ::1 tcp 8080
+
+# HTTP: echoes the request body
+echosrv http 8080
+curl --data-binary 'hello' http://127.0.0.1:8080/   # -> hello
+curl -i http://127.0.0.1:8080/                      # -> 405 Method Not Allowed
+
+# Unix domain sockets
+echosrv unix-stream /tmp/echo.sock
+echo hello | nc -U /tmp/echo.sock
+echosrv unix-dgram /tmp/echo_dgram.sock
+```
+
+From a checkout, run it with `cargo run -- <args>`, for example
+`cargo run -- http 8080`.
+
+**Logging.** Logs go to stderr through `tracing`. The `RUST_LOG` variable sets
+the filter. The default is `echosrv=info`. Use `RUST_LOG=echosrv=debug` to see
+connections, or `RUST_LOG=echosrv=trace` to see payloads.
+
+**Signals.** `SIGINT` (Ctrl-C) and `SIGTERM` trigger a graceful shutdown. The
+server stops accepting, cancels in-flight connections, removes any Unix socket
+file it created, and exits with status 0.
+
+**Unix socket files.** If the socket path exists from a previous run and
+nothing is listening on it, the stale file is replaced. A live socket or a
+non-socket file at that path is an error. Missing parent directories are
+created.
+
+**Socket activation.** When `LISTEN_PID`/`LISTEN_FDS` (systemd socket
+activation) are set for this process, the server uses an inherited socket
+instead of binding. See [Socket activation](#socket-activation-and-fd-inheritance).
+
+## Library usage
+
+All servers implement `EchoServerTrait`:
+
+- `run()` binds and serves until shutdown.
+- `shutdown_signal()` returns a `broadcast::Sender<()>`. Calling `send(())` on
+  it stops the server gracefully. A shutdown sent before `run()` starts is not
+  lost.
+
+Every server also has `bind()`. It creates the socket and returns a bound
+server. Its `local_addr()` gives the real address, which is useful with port
+`0`, and its `serve()` runs the server. All clients implement `EchoClient`
+(`echo(&[u8])` and `echo_string(&str)`).
+
+The library does not install signal handlers. To stop on Ctrl-C, forward the
+signal to `shutdown_signal()` yourself.
+
+### TCP
 
 ```rust
-use echosrv::tcp::{TcpConfig, TcpEchoServer};
-use echosrv::network::fd_inheritance::{BindStrategy, BindTarget, FdInheritanceConfig};
+use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
+use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configure for FD inheritance with fallback to normal binding
+async fn main() -> echosrv::Result<()> {
     let config = TcpConfig {
-        bind_addr: "127.0.0.1:8080".parse()?,
+        bind_addr: "127.0.0.1:0".parse().unwrap(), // port 0: pick a free port
         max_connections: 100,
-        buffer_size: 1024,
         read_timeout: Duration::from_secs(30),
-        write_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
-
-    // Server automatically detects inherited FDs from environment
-    // Falls back to normal binding if no FDs are inherited
+    // TcpEchoServer is StreamEchoServer<TcpProtocol>; it takes a StreamConfig.
     let server = TcpEchoServer::new(config.into());
-    server.run().await?;
+    let shutdown = server.shutdown_signal();
+
+    let bound = server.bind().await?;
+    let addr = *bound.local_addr().as_network().unwrap();
+    let handle = tokio::spawn(bound.serve());
+
+    let mut client = TcpEchoClient::connect(addr).await?;
+    assert_eq!(client.echo_string("hello").await?, "hello");
+
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
     Ok(())
 }
 ```
 
-### Systemd Socket Activation
+`TcpEchoClient` is the generic stream client `Client<TcpProtocol>`. Use
+`connect_with_config` with a `ClientConfig` (or `ClientConfigBuilder`) to set
+the connect, read and write timeouts and the maximum response size.
 
-For systemd integration, create socket and service files:
+### UDP
 
-**echo-server.socket**:
+```rust
+use echosrv::{EchoClient, EchoServerTrait, UdpConfig, UdpEchoClient, UdpEchoServer};
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    // Defaults: 127.0.0.1:0 and a 64 KiB datagram buffer.
+    let server = UdpEchoServer::new(UdpConfig::default().into());
+    let shutdown = server.shutdown_signal();
+
+    let bound = server.bind().await?;
+    let addr = *bound.local_addr().as_network().unwrap();
+    let handle = tokio::spawn(bound.serve());
+
+    let mut client = UdpEchoClient::connect(addr).await?;
+    assert_eq!(client.echo(b"ping").await?, b"ping");
+
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
+    Ok(())
+}
+```
+
+Each datagram is echoed to its sender. Datagrams larger than `buffer_size` are
+truncated. UDP has no connections, so there is no connection limit.
+
+### HTTP
+
+```rust
+use echosrv::{EchoClient, EchoServerTrait, HttpConfig, HttpEchoClient, HttpEchoServer};
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    let server = HttpEchoServer::new(HttpConfig {
+        max_body_size: 64 * 1024,
+        ..HttpConfig::default() // 127.0.0.1:0
+    });
+    let shutdown = server.shutdown_signal();
+
+    let bound = server.bind().await?;
+    let addr = *bound.local_addr().as_network().unwrap();
+    let handle = tokio::spawn(bound.serve());
+
+    // Sends `POST /` with Content-Length; fails on non-2xx responses.
+    let mut client = HttpEchoClient::connect(addr).await?;
+    assert_eq!(client.echo(b"hello").await?, b"hello");
+
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
+    Ok(())
+}
+```
+
+### Unix domain sockets
+
+```rust
+use echosrv::unix::{
+    UnixDatagramConfig, UnixDatagramEchoClient, UnixDatagramEchoServer, UnixStreamConfig,
+    UnixStreamEchoClient, UnixStreamEchoServer,
+};
+use echosrv::{EchoClient, EchoServerTrait};
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Stream
+    let path = dir.path().join("stream.sock");
+    let server = UnixStreamEchoServer::new(UnixStreamConfig::default().with_socket_path(path.clone()));
+    let shutdown = server.shutdown_signal();
+    let handle = tokio::spawn(server.bind().await?.serve());
+
+    let mut client = UnixStreamEchoClient::connect(path.clone()).await?;
+    assert_eq!(client.echo_string("hello").await?, "hello");
+    drop(client);
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
+    assert!(!path.exists()); // the server removes the socket file it created
+
+    // Datagram
+    let path = dir.path().join("dgram.sock");
+    let server =
+        UnixDatagramEchoServer::new(UnixDatagramConfig::default().with_socket_path(path.clone()));
+    let shutdown = server.shutdown_signal();
+    let handle = tokio::spawn(server.bind().await?.serve());
+
+    // The client binds a temporary socket path for replies; it is removed on drop.
+    let mut client = UnixDatagramEchoClient::connect(path).await?;
+    assert_eq!(client.echo(b"ping").await?, b"ping");
+
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
+    Ok(())
+}
+```
+
+### Running until Ctrl-C
+
+```rust,no_run
+use echosrv::{EchoServerTrait, TcpConfig, TcpEchoServer};
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    let server = TcpEchoServer::new(
+        TcpConfig {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let shutdown = server.shutdown_signal();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown.send(());
+    });
+    server.run().await
+}
+```
+
+### Configuration
+
+| Config               | Fields (defaults)                                                                                                                                          |
+|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `TcpConfig`          | `bind_addr` (127.0.0.1:0), `max_connections` (100), `buffer_size` (1024), `read_timeout`/`write_timeout` (30 s), `bind_strategy` (None), `service_name` ("tcp") |
+| `UdpConfig`          | `bind_addr` (127.0.0.1:0), `buffer_size` (64 KiB), `read_timeout`/`write_timeout` (30 s), `bind_strategy`, `service_name` ("udp")                         |
+| `HttpConfig`         | as TCP plus `buffer_size` (8192), `server_name` ("EchoServer/1.0"), `default_content_type` ("text/plain"), `max_body_size` (1 MiB), `service_name` ("http") |
+| `UnixStreamConfig`   | `bind_strategy` (bind `/tmp/echosrv_stream.sock`), `max_connections` (100), `buffer_size` (1024), timeouts (30 s), `service_name` ("unix-stream")           |
+| `UnixDatagramConfig` | `bind_strategy` (bind `/tmp/echosrv_datagram.sock`), `buffer_size` (64 KiB), timeouts (30 s), `service_name` ("unix-datagram")                             |
+
+Build configs with `..Default::default()` so new fields do not break your
+code. `read_timeout` closes idle stream connections. When `max_connections`
+connections are active, new stream connections are accepted and closed right
+away.
+
+## HTTP semantics
+
+The HTTP server implements a small, strict subset of HTTP/1.1:
+
+- **One request per connection.** Every response carries `Connection: close`.
+  There is no keep-alive or pipelining.
+- **Only `POST` is accepted.** Other methods get `405 Method Not Allowed` with
+  `Allow: POST`. The path is ignored.
+- **Framing is by `Content-Length` only.** A request without one has an empty
+  body. An empty `POST` still gets `200 OK` with `Content-Length: 0`.
+- **Responses.** `200 OK` contains the request body byte for byte. Its headers
+  are `Content-Length`, `Connection: close`, plus `Server` and `Content-Type`
+  from `HttpConfig` (each is omitted if set to `None`). The body is streamed
+  back as it is read, so it is never fully buffered.
+- **`Expect: 100-continue`** is answered with `100 Continue` before the body is
+  read.
+- **Errors.** Error responses have a short `text/plain` body.
+
+  | Status | Cause                                                                            |
+  |--------|----------------------------------------------------------------------------------|
+  | 400    | Malformed request, more than 32 headers, or invalid/conflicting `Content-Length` |
+  | 405    | Method other than `POST`                                                         |
+  | 413    | `Content-Length` greater than `max_body_size` (default 1 MiB)                    |
+  | 431    | Request line plus headers larger than 8 KiB                                      |
+  | 501    | Any `Transfer-Encoding` header (chunked bodies are not supported)                |
+
+```bash
+curl -sS --data-binary @payload.bin http://127.0.0.1:8080/ -o echoed.bin
+printf 'POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello' | nc 127.0.0.1 8080
+```
+
+## Socket activation and FD inheritance
+
+A server can use a listening socket created by another process instead of
+binding its own. This works for every protocol, including Unix sockets. Use it
+for systemd socket activation, privileged ports, or handing a socket to a new
+process during a restart.
+
+Socket acquisition is controlled by `bind_strategy`:
+
+- `None` (network configs) binds `bind_addr`.
+- `BindStrategy::Bind(BindTarget)` binds the given address or path.
+- `BindStrategy::Inherit(InheritedFd)` must use the given descriptor.
+- `BindStrategy::InheritOrBind { fd, fallback_target }` tries the explicit `fd`
+  first. Next it takes a descriptor from the systemd pool: the one whose name
+  equals the config's `service_name`, or else the only descriptor passed. If
+  neither exists, it binds `fallback_target`. When `fallback_target` is `None`
+  on a network config, it falls back to `bind_addr`.
+
+`with_fd_inheritance` sets up `InheritOrBind` for you:
+
+```rust
+use echosrv::unix::UnixStreamConfig;
+use echosrv::{HttpConfig, TcpConfig};
+
+// Use the systemd socket named "http" (or the only socket passed), else bind bind_addr.
+let http = HttpConfig::default().with_fd_inheritance("http");
+let tcp = TcpConfig::default().with_fd_inheritance("tcp");
+// Unix configs need an explicit fallback path.
+let unix = UnixStreamConfig::default()
+    .with_fd_inheritance("unix-stream".to_string(), "/run/echo.sock".into());
+# let _ = (http, tcp, unix);
+```
+
+Inherited descriptors are checked before use. They must be sockets of the right
+type (stream or datagram) and family (IP or Unix), and stream sockets must
+already be listening. Each descriptor is owned by exactly one server. The
+systemd environment is parsed once per process. `LISTEN_PID` must match the
+current process, and the descriptors are marked close-on-exec. A server never
+deletes the socket file of an inherited Unix socket.
+
+Passing a descriptor directly, for example one received from a custom process
+manager:
+
+```rust
+use echosrv::network::{BindStrategy, InheritedFd};
+use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
+use std::os::fd::OwnedFd;
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    // Stands in for a listening socket created by a parent process.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+
+    let server = TcpEchoServer::new(
+        TcpConfig {
+            bind_strategy: Some(BindStrategy::Inherit(InheritedFd::new(OwnedFd::from(listener)))),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let shutdown = server.shutdown_signal();
+    let handle = tokio::spawn(server.bind().await?.serve());
+
+    let mut client = TcpEchoClient::connect(addr).await?;
+    assert_eq!(client.echo(b"inherited").await?, b"inherited");
+
+    shutdown.send(()).unwrap();
+    handle.await.unwrap()?;
+    Ok(())
+}
+```
+
+If you only have a raw descriptor number, use the `unsafe`
+`InheritedFd::from_raw_fd`. You must guarantee that nothing else owns the
+descriptor.
+
+### systemd example
+
+The `echosrv` binary always prefers an inherited socket. It looks for the
+socket whose `FileDescriptorName=` matches the protocol name (`tcp`, `udp`,
+`http`, `unix-stream`, `unix-datagram`). If there is no such socket but exactly
+one socket was passed, it uses that one. The port or path argument is only used
+when nothing was inherited.
+
 ```ini
+# /etc/systemd/system/echosrv-http.socket
 [Unit]
-Description=Echo Server Socket
+Description=echosrv HTTP socket
 
 [Socket]
-ListenStream=8080
-Accept=false
+ListenStream=0.0.0.0:8080
+FileDescriptorName=http
 
 [Install]
 WantedBy=sockets.target
 ```
 
-**echo-server.service**:
 ```ini
+# /etc/systemd/system/echosrv-http.service
 [Unit]
-Description=Echo Server
-Requires=echo-server.socket
+Description=echosrv HTTP echo server
+Requires=echosrv-http.socket
+After=echosrv-http.socket
 
 [Service]
-Type=simple
-ExecStart=/path/to/echosrv tcp
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/local/bin/echosrv http
+Environment=RUST_LOG=echosrv=info
+DynamicUser=yes
 ```
 
-Enable and start:
 ```bash
-sudo systemctl enable echo-server.socket
-sudo systemctl start echo-server.socket
-sudo systemctl start echo-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now echosrv-http.socket
+curl --data-binary hello http://127.0.0.1:8080/
 ```
 
-### Unix Domain Socket Inheritance
+For UDP, use `ListenDatagram=` and `echosrv udp`. For Unix sockets, use
+`ListenStream=/run/echosrv.sock` with `echosrv unix-stream`, or
+`ListenDatagram=/run/echosrv.sock` with `echosrv unix-dgram`. Do not set
+`Accept=yes`: the server needs the listening socket, not individual
+connections. systemd keeps the socket open while the service restarts, so
+clients queue in the backlog instead of being refused.
 
-Unix domain sockets also support FD inheritance:
+## Testing
 
-```rust
-use echosrv::unix::{UnixStreamConfig, UnixStreamEchoServer};
-
-let config = UnixStreamConfig::default()
-    .with_fd_inheritance("echo-server".to_string()); // Service name for systemd
-
-let server = UnixStreamEchoServer::new(config);
-server.run().await?;
+```bash
+cargo test                          # unit, integration and doc tests (README examples included)
+cargo test --test tcp               # one integration suite
+cargo test --test property_tests    # property-based tests (proptest)
+cargo clippy --all-targets
+cargo bench                         # Criterion benchmarks (benches/echo_performance.rs)
 ```
 
-**Unix socket systemd configuration**:
-```ini
-# echo-unix.socket
-[Socket]
-ListenStream=/tmp/echo.sock
-Accept=false
+The integration suites are in `tests/`:
+
+| File                       | Covers                                                                |
+|----------------------------|-----------------------------------------------------------------------|
+| `tests/tcp.rs`             | TCP server and client, connection limits, timeouts, shutdown          |
+| `tests/udp.rs`             | UDP server and client                                                 |
+| `tests/unix.rs`            | Unix stream and datagram servers, socket file handling                |
+| `tests/http.rs`            | HTTP framing, status codes, `HttpEchoClient`                          |
+| `tests/fd_inheritance.rs`  | End-to-end socket inheritance for every protocol                      |
+| `tests/cli.rs`             | The `echosrv` binary: arguments, signals, socket activation           |
+| `tests/property_tests.rs`  | Echo round trips with random payloads                                 |
+
+Tests bind port `0` or a temporary socket path and get the real address from
+`local_addr()`. They use no fixed ports and no sleeps.
+
+## Module layout
+
+```text
+src/
+├── lib.rs        EchoError, Result, re-exports
+├── main.rs       echosrv binary (CLI, signals, socket activation)
+├── common/       EchoServerTrait, EchoClient, shared server lifecycle
+├── stream/       StreamProtocol, StreamEchoServer<P>, Client<P>, StreamConfig
+├── datagram/     DatagramProtocol, DatagramEchoServer<P>, DatagramEchoClient<P>, DatagramConfig
+├── tcp/          TcpProtocol, TcpConfig, type aliases
+├── udp/          UdpProtocol, UdpConfig, type aliases
+├── unix/         Unix stream/datagram protocols, servers, clients, configs
+├── http/         HttpProtocol (HTTP/1.1 framing), HttpEchoServer, HttpEchoClient, HttpConfig
+└── network/      Address, BindStrategy, FdInheritanceConfig, SocketBuilder
 ```
 
-### Manual FD Inheritance
-
-For custom deployment scenarios without systemd:
-
-```rust
-use echosrv::network::fd_inheritance::{BindStrategy, BindTarget};
-
-// Inherit specific file descriptor
-let bind_strategy = BindStrategy::Inherit { fd: 3 };
-
-// Inherit with fallback to normal binding
-let bind_strategy = BindStrategy::InheritOrBind {
-    service_name: "echo-server".to_string(),
-    fallback_target: BindTarget::Network("127.0.0.1:8080".parse()?),
-};
-```
-
-### Benefits
-
-- **Zero-Downtime**: No connection drops during service updates
-- **Systemd Integration**: Native support for systemd socket activation
-- **Fallback Safety**: Automatic fallback to normal binding when inheritance fails
-- **Multi-Protocol**: Supports TCP, UDP, and Unix domain socket inheritance
-- **Production Ready**: Robust error handling and validation
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the architecture and how to add a
+protocol.
 
 ## License
 
-MIT License - see LICENSE file for details. 
+MIT. See [LICENSE](LICENSE).
