@@ -260,8 +260,8 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
   `start_http`, `start_unix_stream`, `start_unix_datagram`, `socket_dir`,
   `payload` and `tagged_payload`. `TestServer::stats` is the server's
   `ServerStats`.
-- **CLI tests are serialized** (`serial()` in `tests/cli.rs` and
-  `tests/client_cli.rs`). On macOS, std
+- **CLI tests are serialized** (`serial()` in `tests/cli.rs`,
+  `tests/client_cli.rs` and `tests/client_signals.rs`). On macOS, std
   sets `FD_CLOEXEC` on a new socket in a separate syscall. A child process
   spawned at the same moment by another test can inherit that socket and keep
   a port or path alive. Tests in this file that spawn processes or create
@@ -269,8 +269,9 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
 - **Doc tests.** README code blocks are compiled and run through
   `ReadmeDoctests` in `src/lib.rs`. Mark blocks that bind fixed ports as
   `rust,no_run`, and mark shell or config snippets `bash`/`text`/`ini`.
-- **Client tests stay light.** `tests/client_cli.rs` runs the client
-  against in-process servers with small `-n` or short `-d` and the default
+- **Client tests stay light.** `tests/client_cli.rs` and
+  `tests/client_signals.rs` (helpers in `tests/client_common/mod.rs`) run
+  the client against in-process servers with small `-n` or short `-d` and the default
   `--conn-rate`. Do not add unthrottled runs (`--conn-rate unlimited`, high
   per-request rates) and do not loop the suites: TIME_WAIT sockets from a few
   hundred new connections/s can exhaust the machine's ephemeral ports.
@@ -279,7 +280,7 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
 
 ```bash
 cargo test                           # everything, including README doctests
-cargo test --test tcp                # tcp | udp | unix | http | rate_limit | fd_inheritance | cli | client_cli | property_tests
+cargo test --test tcp                # tcp | udp | unix | http | rate_limit | fd_inheritance | cli | client_cli | client_signals | property_tests
 cargo test --bin echosrv-client      # client unit tests
 cargo test --lib http::              # HTTP unit tests
 cargo test --doc                     # doctests only

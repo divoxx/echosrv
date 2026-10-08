@@ -901,6 +901,7 @@ cargo test                          # unit, integration and doc tests (README ex
 cargo test --test tcp               # one integration suite
 cargo test --test property_tests    # property-based tests (proptest)
 cargo test --test client_cli        # the echosrv-client binary (light, throttled runs)
+cargo test --test client_signals    # echosrv-client SIGINT/SIGTERM handling
 cargo clippy --all-targets
 cargo bench                         # Criterion benchmarks (benches/echo_performance.rs)
 ```
@@ -917,6 +918,7 @@ The integration suites are in `tests/`:
 | `tests/fd_inheritance.rs`  | End-to-end socket inheritance for every protocol                      |
 | `tests/cli.rs`             | The `echosrv` binary: arguments, signals, socket activation           |
 | `tests/client_cli.rs`      | The `echosrv-client` binary: flags, output, outages, exit codes       |
+| `tests/client_signals.rs`  | `echosrv-client` graceful stop and abort on SIGINT / SIGTERM          |
 | `tests/property_tests.rs`  | Echo round trips with random payloads                                 |
 
 Tests bind port `0` or a temporary socket path and get the real address from
