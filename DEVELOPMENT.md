@@ -171,9 +171,10 @@ the process has one thread, so changing the environment is safe.
 
 `echosrv-client` (`src/bin/echosrv-client/`) is a separate binary built only
 on the public library API, so it also exercises that API the way users see
-it. It shares `src/cli_help.rs` with the server through a `#[path]` module
-(the library does not depend on clap) and takes its default targets from
-`src/defaults.rs`, so both binaries agree on them.
+it. It shares the help layout and color resolution with the server through
+the library's `cli` module (`src/cli/`, `#[doc(hidden)]`, built only with the
+`cli` feature) and takes its default targets from `src/defaults.rs`, so both
+binaries agree on them.
 
 ```text
 cli.rs      Cli (clap) ── resolve() ──> RunConfig + warnings, RunHeader (config line)
@@ -237,7 +238,7 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
    speak it too, add a `Protocol` variant in its `cli.rs` and a `Transport`
    branch in `runner::make_client`. Options with a literal default
    use clap's `default_value`; optional or computed defaults are written at
-   the end of the doc comment as ` [default: …]`, which `src/cli_help.rs`
+   the end of the doc comment as ` [default: …]`, which `src/cli/help.rs`
    moves onto its own line in `--help`. Shared default endpoints live in
    `src/defaults.rs`.
 

@@ -145,6 +145,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   example an HTTP 500) are answers from a live server: they still count as
   errors, and mismatches still fail the run, but they are no longer reported
   as outages.
+- **`cli` feature** (on by default). The binaries and their dependencies
+  (clap, color-eyre, tracing-subscriber, colored, hdrhistogram, serde,
+  serde_json, and Tokio's `rt-multi-thread` and `signal` features) are now
+  behind it, so the library alone builds with `default-features = false`.
+  The default build is unchanged.
+- The server's logs honor `CLICOLOR_FORCE` like `echosrv-client` does: set,
+  it colors them even when stderr is not a terminal.
 
 ## [0.4.0] - Unreleased
 

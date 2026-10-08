@@ -6,15 +6,15 @@
 //! (e.g. `| head`).
 
 mod cli;
-#[path = "../../cli_help.rs"]
-mod cli_help;
 mod output;
 mod report;
 mod runner;
 mod stats;
 
 use cli::Cli;
-use output::{ColorEnv, Palette, resolve_color};
+use echosrv::cli::color::{ColorEnv, resolve_color};
+use echosrv::cli::help;
+use output::Palette;
 use report::Verdict;
 use stats::LiveEvent;
 use std::io::{IsTerminal, Write};
@@ -69,7 +69,7 @@ fn palettes(cli: &Cli) -> (Palette, Palette) {
 async fn main() -> ExitCode {
     let _ = color_eyre::install();
     // clap exits with 2 on usage errors and 0 for --help/--version.
-    let (cli, matches) = cli_help::parse_with_matches::<Cli>();
+    let (cli, matches) = help::parse_with_matches::<Cli>();
     let (out_palette, err_palette) = palettes(&cli);
     init_logging(cli.verbose, err_palette != Palette::PLAIN);
 

@@ -1,12 +1,12 @@
 //! The `echosrv` command-line echo server. Run `echosrv --help` for usage.
 
-mod cli_help;
-
 use clap::builder::{PossibleValue, TypedValueParser};
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Parser, ValueEnum};
 use color_eyre::eyre::{Result, WrapErr};
+use echosrv::cli::color::{ColorChoice, ColorEnv, resolve_color};
+use echosrv::cli::help;
 use echosrv::defaults::{
     DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
 };
@@ -152,6 +152,7 @@ const AFTER_LONG_HELP: &str = "\
 Environment:
   RUST_LOG       Log filter; overrides --log-level when set (e.g. echosrv=debug)
   NO_COLOR       Disables colored logs (they are only colored on a terminal)
+  CLICOLOR_FORCE Colors logs even when stderr is not a terminal
   LISTEN_PID, LISTEN_FDS, LISTEN_FDNAMES
                  systemd socket activation. When present, the server uses the
                  inherited socket named after the protocol (e.g. \"tcp\"), or the
@@ -314,8 +315,8 @@ where
     I: IntoIterator<Item = A>,
     A: Into<OsString> + Clone,
 {
-    let (args, matches) = cli_help::try_parse_from::<Args, _, _>(args)?;
-    Cli::resolve(args, &matches).map_err(|(kind, msg)| cli_help::command::<Args>().error(kind, msg))
+    let (args, matches) = help::try_parse_from::<Args, _, _>(args)?;
+    Cli::resolve(args, &matches).map_err(|(kind, msg)| help::command::<Args>().error(kind, msg))
 }
 
 fn main() -> ExitCode {
@@ -341,10 +342,14 @@ fn main() -> ExitCode {
     }
 }
 
-/// Logs are colored only when stderr is a terminal and `NO_COLOR` is unset
-/// (or empty, per <https://no-color.org>).
+/// Logs are colored when stderr is a terminal, unless `NO_COLOR` is set.
+/// `CLICOLOR_FORCE` colors them even when stderr is not a terminal.
 fn stderr_wants_color() -> bool {
-    std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+    resolve_color(
+        ColorChoice::Auto,
+        std::io::stderr().is_terminal(),
+        ColorEnv::from_env(),
+    )
 }
 
 fn init_logging(level: LogLevel) {
@@ -576,7 +581,7 @@ mod tests {
 
     #[test]
     fn cli_definition_is_consistent() {
-        cli_help::command::<Args>().debug_assert();
+        help::command::<Args>().debug_assert();
     }
 
     #[test]
@@ -663,8 +668,8 @@ mod tests {
 
     #[test]
     fn help_states_every_default() {
-        let long = cli_help::command::<Args>().render_long_help().to_string();
-        let short = cli_help::command::<Args>().render_help().to_string();
+        let long = help::command::<Args>().render_long_help().to_string();
+        let short = help::command::<Args>().render_help().to_string();
         let unix_max = UnixStreamConfig::default().max_connections;
         for needle in [
             format!("[default: {DEFAULT_PROTOCOL}]"),

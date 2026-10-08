@@ -400,6 +400,9 @@ impl From<HttpProtocolError> for EchoError {
 /// Result type for the echosrv library, using [`EchoError`].
 pub type Result<T> = std::result::Result<T, EchoError>;
 
+#[cfg(feature = "cli")]
+#[doc(hidden)]
+pub mod cli;
 pub mod common;
 pub mod datagram;
 pub mod defaults;
