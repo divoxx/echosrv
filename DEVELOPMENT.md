@@ -178,7 +178,9 @@ the library's `cli` module (`src/cli/`, `#[doc(hidden)]`, built only with the
 binaries agree on them.
 
 ```text
-cli.rs      Cli (clap) ── resolve() ──> RunConfig + warnings, RunHeader (config line)
+cli.rs      Cli (clap) ── resolve() ──> RunConfig + warnings
+header.rs   RunConfig ──> RunInfo (shared by header and summary), RunHeader (config line);
+            defaulted(ArgMatches) -> the HeaderFields left at their defaults
 runner.rs   C workers ─┬─ shaper: TokenBucket (--rate/--burst), shared
                        ├─ conn limiter: TokenBucket (--conn-rate), before every new client
                        ├─ make_client() -> Box<dyn EchoClient>, echo, byte-for-byte compare
@@ -187,7 +189,8 @@ runner.rs   C workers ─┬─ shaper: TokenBucket (--rate/--burst), shared
                 v
 stats.rs    Aggregator ── interval Window (hdrhistogram) ──> LiveEvent::Interval every -i
                        ── OutageTracker ──────────────────> LiveEvent::Outage (start/end)
-                       └─ on channel close ───────────────> Summary
+                       └─ on channel close ───────────────> RunStats
+runner.rs   Summary::new(RunInfo, RunStats, StopReason)
 report.rs   text or JSON lines for each event; Verdict from the Summary
 main.rs     SIGINT/SIGTERM stop the run (CancellationToken: no new attempts, in-flight
             attempts finish); a second signal exits 130/143; verdict -> exit code

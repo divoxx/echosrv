@@ -4,6 +4,7 @@
 //! the same text as with color, minus the ANSI codes. JSON is never colored.
 
 use crate::cli::DEFAULT_BURST;
+use crate::header::{HeaderField, RunHeader};
 use crate::output::{Palette, Tag, tagged};
 use crate::stats::{ErrorKind, IntervalReport, OutageEvent, StopReason, Summary};
 use serde::Serialize;
@@ -177,71 +178,6 @@ pub fn summary_json(s: &Summary) -> String {
     to_json(s)
 }
 
-/// The resolved run configuration, printed once before the first interval
-/// so the output records what was actually used.
-#[derive(Debug, Clone, Serialize)]
-pub struct RunHeader {
-    /// Always `"config"`.
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub protocol: &'static str,
-    /// Resolved address or socket path.
-    pub target: String,
-    pub concurrency: usize,
-    pub conn_mode: &'static str,
-    /// `None` = unlimited.
-    pub requests: Option<u64>,
-    /// `None` = no time limit.
-    #[serde(serialize_with = "secs::opt")]
-    pub duration_s: Option<Duration>,
-    /// Client-side shaping in req/s; `None` = unshaped.
-    pub rate: Option<u32>,
-    /// Token bucket capacity; `None` when unshaped.
-    pub burst: Option<u32>,
-    /// Cap on new connections per second; `None` = unlimited.
-    pub conn_rate: Option<u32>,
-    /// `None` = sequence header + the `--payload` text.
-    pub payload_size: Option<usize>,
-    /// `pattern`, `text` or `random`.
-    pub filler: &'static str,
-    #[serde(serialize_with = "secs::one")]
-    pub timeout_s: Duration,
-    #[serde(serialize_with = "secs::one")]
-    pub reconnect_delay_s: Duration,
-    #[serde(serialize_with = "secs::one")]
-    pub max_backoff_s: Duration,
-    pub honor_retry_after: bool,
-    /// `None` = live interval output disabled (`-i 0`).
-    #[serde(serialize_with = "secs::opt")]
-    pub interval_s: Option<Duration>,
-    pub max_error_rate_pct: f64,
-    /// Names of the fields above whose values came from defaults.
-    pub defaults: Vec<&'static str>,
-}
-
-/// Serializes `Duration`s as seconds (`f64`), for the `*_s` header fields.
-mod secs {
-    use serde::Serializer;
-    use std::time::Duration;
-
-    pub fn one<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_f64(d.as_secs_f64())
-    }
-
-    pub fn opt<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
-        match d {
-            Some(d) => s.serialize_some(&d.as_secs_f64()),
-            None => s.serialize_none(),
-        }
-    }
-}
-
-impl RunHeader {
-    pub fn is_default(&self, field: &str) -> bool {
-        self.defaults.contains(&field)
-    }
-}
-
 /// `5s`, `100ms`, `1.5s`, `2m`, `1h`, `250us`: the largest unit that gives a
 /// whole number (`90s`, `90m`), so the text parses back with `--duration`.
 fn fmt_dur(d: Duration) -> String {
@@ -266,7 +202,7 @@ fn fmt_dur(d: Duration) -> String {
 /// Multi-line human-readable configuration header; values that came from
 /// defaults are followed by a dimmed `(default)`.
 pub fn header_text(h: &RunHeader, p: Palette) -> String {
-    let mark = |field: &str, value: String| {
+    let mark = |field: HeaderField, value: String| {
         if h.is_default(field) {
             format!("{value} {}", p.dim("(default)"))
         } else {
@@ -279,18 +215,21 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
         out,
         "{}{} {}",
         label(p, "target"),
-        h.protocol,
-        mark("target", p.bold(&h.target))
+        h.info.protocol,
+        mark(HeaderField::Target, p.bold(&h.info.target))
     );
     let _ = writeln!(
         out,
         "{}{}, {}",
         label(p, "workers"),
-        mark("concurrency", h.concurrency.to_string()),
-        mark("conn_mode", format!("{} connections", h.conn_mode))
+        mark(HeaderField::Concurrency, h.info.concurrency.to_string()),
+        mark(
+            HeaderField::ConnMode,
+            format!("{} connections", h.info.conn_mode)
+        )
     );
-    let requests = match (h.requests, h.duration_s) {
-        (None, None) => mark("requests", "unlimited, until Ctrl-C".into()),
+    let requests = match (h.info.requests, h.duration_s) {
+        (None, None) => mark(HeaderField::Requests, "unlimited, until Ctrl-C".into()),
         (Some(n), None) => n.to_string(),
         (None, Some(d)) => format!("unlimited, for {}", fmt_dur(d)),
         (Some(n), Some(d)) => format!("{n} or {}, whichever comes first", fmt_dur(d)),
@@ -299,12 +238,15 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
     let rate = match (h.rate, h.burst) {
         (Some(rate), burst) => format!(
             "{rate} req/s, {}",
-            mark("burst", format!("burst {}", burst.unwrap_or(DEFAULT_BURST)))
+            mark(
+                HeaderField::Burst,
+                format!("burst {}", burst.unwrap_or(DEFAULT_BURST))
+            )
         ),
-        (None, _) => mark("rate", "unshaped".into()),
+        (None, _) => mark(HeaderField::Rate, "unshaped".into()),
     };
     let conns = mark(
-        "conn_rate",
+        HeaderField::ConnRate,
         h.conn_rate.map_or_else(
             || "unlimited new connections".into(),
             |n| format!("at most {n} new connections/s"),
@@ -318,20 +260,20 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
         out,
         "{}{}, {}",
         label(p, "payload"),
-        mark("payload_size", size),
-        mark("filler", format!("{} filler", h.filler))
+        mark(HeaderField::PayloadSize, size),
+        mark(HeaderField::Filler, format!("{} filler", h.filler))
     );
     let _ = writeln!(
         out,
         "{}{}, {} {}{}",
         label(p, "timeout"),
-        mark("timeout_s", fmt_dur(h.timeout_s)),
+        mark(HeaderField::Timeout, fmt_dur(h.timeout_s)),
         mark(
-            "reconnect_delay_s",
+            HeaderField::ReconnectDelay,
             format!("backoff {}", fmt_dur(h.reconnect_delay_s))
         ),
         mark(
-            "max_backoff_s",
+            HeaderField::MaxBackoff,
             format!("up to {}", fmt_dur(h.max_backoff_s))
         ),
         if h.honor_retry_after {
@@ -345,13 +287,16 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
         out,
         "{}{}",
         label(p, "interval"),
-        mark("interval_s", interval)
+        mark(HeaderField::Interval, interval)
     );
     let _ = writeln!(
         out,
         "{}{}",
         label(p, "max errors"),
-        mark("max_error_rate_pct", format!("{}%", h.max_error_rate_pct))
+        mark(
+            HeaderField::MaxErrorRate,
+            format!("{}%", h.max_error_rate_pct)
+        )
     );
     out
 }
@@ -400,18 +345,18 @@ impl Verdict {
             | StopReason::Interrupt
             | StopReason::Terminated => {}
         }
-        if s.total == 0 {
+        if s.stats.total == 0 {
             Verdict::NoAttempts
-        } else if s.mismatches() > 0 {
-            Verdict::Mismatches(s.mismatches())
-        } else if s.error_rate_pct > max_error_rate {
+        } else if s.stats.mismatches() > 0 {
+            Verdict::Mismatches(s.stats.mismatches())
+        } else if s.stats.error_rate_pct > max_error_rate {
             Verdict::ErrorRate {
-                error_rate_pct: s.error_rate_pct,
+                error_rate_pct: s.stats.error_rate_pct,
                 max: max_error_rate,
             }
         } else {
             Verdict::Pass {
-                error_rate_pct: s.error_rate_pct,
+                error_rate_pct: s.stats.error_rate_pct,
                 max: max_error_rate,
             }
         }
@@ -469,39 +414,48 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
         out,
         "{}{} {} ({}, c={})",
         label(p, "target"),
-        s.protocol,
-        p.bold(&s.target),
-        s.conn_mode,
-        s.concurrency
+        s.info.protocol,
+        p.bold(&s.info.target),
+        s.info.conn_mode,
+        s.info.concurrency
     );
     let reason = if s.interrupted {
         format!("{}, interrupted before -n completed", s.stop_reason)
     } else {
         s.stop_reason.to_string()
     };
-    let _ = writeln!(out, "{}{:.2}s ({reason})", label(p, "elapsed"), s.elapsed_s);
-    let requested = s.requests.map_or_else(String::new, |n| format!(" of {n}"));
+    let _ = writeln!(
+        out,
+        "{}{:.2}s ({reason})",
+        label(p, "elapsed"),
+        s.stats.elapsed_s
+    );
+    let requested = s
+        .info
+        .requests
+        .map_or_else(String::new, |n| format!(" of {n}"));
     let _ = writeln!(
         out,
         "{}{}{requested} total, {} ok, {}",
         label(p, "requests"),
-        s.total,
-        p.green(&s.ok.to_string()),
+        s.stats.total,
+        p.green(&s.stats.ok.to_string()),
         err_style(
             p,
-            s.errors,
-            &format!("{} errors ({:.2}%)", s.errors, s.error_rate_pct)
+            s.stats.errors,
+            &format!("{} errors ({:.2}%)", s.stats.errors, s.stats.error_rate_pct)
         )
     );
     let _ = writeln!(
         out,
         "{}{} ({:.1} ok/s)",
         label(p, "throughput"),
-        p.bold(&format!("{:.1} req/s", s.req_per_sec)),
-        s.ok_per_sec
+        p.bold(&format!("{:.1} req/s", s.stats.req_per_sec)),
+        s.stats.ok_per_sec
     );
-    if s.errors > 0 {
+    if s.stats.errors > 0 {
         let parts: Vec<_> = s
+            .stats
             .errors_by_kind
             .iter()
             .filter(|(_, v)| **v > 0)
@@ -509,7 +463,7 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
             .collect();
         let _ = writeln!(out, "{}{}", label(p, "errors"), p.red(&parts.join(" ")));
     }
-    match &s.latency {
+    match &s.stats.latency {
         Some(l) => {
             let _ = writeln!(
                 out,
@@ -533,7 +487,7 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
             );
         }
     }
-    let o = &s.outages;
+    let o = &s.stats.outages;
     if o.count == 0 {
         let _ = writeln!(out, "{}{}", label(p, "outages"), p.green("none"));
     } else {
@@ -574,6 +528,7 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::header::RunInfo;
     use crate::output::enable_ansi;
     use crate::stats::{Aggregator, ErrorKind, OutageWindow, Outcome, Sample, Window};
     use tokio::time::Instant;
@@ -639,14 +594,20 @@ mod tests {
         assert!(v.get("outage").is_none());
     }
 
-    fn header(defaults: &[&'static str]) -> RunHeader {
-        RunHeader {
-            kind: "config",
+    fn info() -> RunInfo {
+        RunInfo {
             protocol: "tcp",
             target: "127.0.0.1:8080".into(),
             concurrency: 1,
             conn_mode: "persistent",
             requests: None,
+        }
+    }
+
+    fn header(defaults: &[HeaderField]) -> RunHeader {
+        RunHeader {
+            kind: "config",
+            info: info(),
             duration_s: None,
             rate: None,
             burst: None,
@@ -663,29 +624,9 @@ mod tests {
         }
     }
 
-    const ALL_DEFAULTS: [&str; 17] = [
-        "protocol",
-        "target",
-        "concurrency",
-        "conn_mode",
-        "requests",
-        "duration_s",
-        "rate",
-        "burst",
-        "conn_rate",
-        "payload_size",
-        "filler",
-        "timeout_s",
-        "reconnect_delay_s",
-        "max_backoff_s",
-        "honor_retry_after",
-        "interval_s",
-        "max_error_rate_pct",
-    ];
-
     #[test]
     fn header_all_defaults() {
-        let h = header(&ALL_DEFAULTS);
+        let h = header(&HeaderField::ALL);
         let text = header_text(&h, Palette::PLAIN);
         assert_eq!(
             text,
@@ -708,10 +649,13 @@ mod tests {
     #[test]
     fn header_explicit_values() {
         let h = RunHeader {
-            target: "10.0.0.5:9090".into(),
-            concurrency: 20,
-            conn_mode: "per-request",
-            requests: Some(10_000),
+            info: RunInfo {
+                target: "10.0.0.5:9090".into(),
+                concurrency: 20,
+                conn_mode: "per-request",
+                requests: Some(10_000),
+                ..info()
+            },
             duration_s: Some(Duration::from_secs(30)),
             rate: Some(500),
             burst: Some(1),
@@ -724,7 +668,7 @@ mod tests {
             honor_retry_after: true,
             interval_s: None,
             max_error_rate_pct: 2.5,
-            ..header(&["burst"])
+            ..header(&[HeaderField::Burst])
         };
         let text = header_text(&h, Palette::PLAIN);
         assert_eq!(
@@ -745,14 +689,14 @@ mod tests {
 
         let only_d = RunHeader {
             duration_s: Some(Duration::from_secs(120)),
-            ..header(&["requests"])
+            ..header(&[HeaderField::Requests])
         };
         assert!(header_text(&only_d, Palette::PLAIN).contains("requests    unlimited, for 2m\n"));
     }
 
     #[test]
     fn header_json_shape() {
-        let line = header_json(&header(&["target", "rate"]));
+        let line = header_json(&header(&[HeaderField::Target, HeaderField::Rate]));
         assert!(line.starts_with(r#"{"type":"config","#), "{line}");
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["protocol"], "tcp");
@@ -780,7 +724,7 @@ mod tests {
         assert_eq!(v["timeout_s"], 1e-9);
         assert!(v["interval_s"].is_null());
         // Every name in `defaults` is a field of the line.
-        let all = header_json(&header(&ALL_DEFAULTS));
+        let all = header_json(&header(&HeaderField::ALL));
         let v: serde_json::Value = serde_json::from_str(&all).unwrap();
         for name in v["defaults"].as_array().unwrap() {
             assert!(v.get(name.as_str().unwrap()).is_some(), "{name}");
@@ -871,9 +815,10 @@ mod tests {
     #[test]
     fn verdicts() {
         let start = Instant::now();
-        let mut s = Aggregator::new(start).finish(start + Duration::from_secs(1));
-        s.total = 100;
-        s.error_rate_pct = 5.0;
+        let stats = Aggregator::new(start).finish(start + Duration::from_secs(1));
+        let mut s = Summary::new(info(), stats, StopReason::Completed);
+        s.stats.total = 100;
+        s.stats.error_rate_pct = 5.0;
         let v = Verdict::of(&s, 1.0);
         assert!(!v.passed());
         assert_eq!(
@@ -886,7 +831,9 @@ mod tests {
             v.line(Palette::PLAIN),
             "  [ok] no mismatches, error rate 5.00% within --max-error-rate 5%"
         );
-        s.errors_by_kind.insert(ErrorKind::Mismatch.as_str(), 2);
+        s.stats
+            .errors_by_kind
+            .insert(ErrorKind::Mismatch.as_str(), 2);
         assert_eq!(Verdict::of(&s, 100.0), Verdict::Mismatches(2));
         assert_eq!(
             Verdict::Mismatches(2).line(Palette::PLAIN),
@@ -903,7 +850,7 @@ mod tests {
             "[fail] stopped: the client machine ran out of local ports"
         );
         // Any other way of stopping leaves the verdict to the results.
-        s.errors_by_kind.clear();
+        s.stats.errors_by_kind.clear();
         for reason in [
             StopReason::Completed,
             StopReason::Duration,
@@ -918,8 +865,9 @@ mod tests {
     #[test]
     fn no_attempts_fails() {
         let start = Instant::now();
-        let s = Aggregator::new(start).finish(start + Duration::from_secs(1));
-        assert_eq!(s.total, 0);
+        let stats = Aggregator::new(start).finish(start + Duration::from_secs(1));
+        let s = Summary::new(info(), stats, StopReason::Completed);
+        assert_eq!(s.stats.total, 0);
         let v = Verdict::of(&s, 100.0);
         assert_eq!(v, Verdict::NoAttempts);
         assert!(!v.passed());
@@ -933,8 +881,8 @@ mod tests {
     #[test]
     fn summary_formats() {
         let start = Instant::now();
-        let mut agg_summary = Aggregator::new(start).finish(start + Duration::from_secs(2));
-        agg_summary.protocol = "tcp";
+        let stats = Aggregator::new(start).finish(start + Duration::from_secs(2));
+        let mut agg_summary = Summary::new(info(), stats, StopReason::Completed);
         let verdict = Verdict::of(&agg_summary, 0.0);
         assert_eq!(verdict, Verdict::NoAttempts);
         let text = summary_text(&agg_summary, &verdict, Palette::PLAIN);

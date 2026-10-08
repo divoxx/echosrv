@@ -3,6 +3,7 @@
 //! This is the only module that knows how to build a client for each
 //! protocol; everything else works through [`EchoClient`].
 
+use crate::header::RunInfo;
 use crate::stats::{
     Aggregator, ErrorKind, LiveEvent, Outcome, Phase, Sample, StopReason, Summary, classify,
 };
@@ -522,7 +523,8 @@ pub fn stop(cancel: &CancellationToken, stop_reason: &OnceLock<StopReason>, reas
 /// [`StopReason::PortsExhausted`], and [`StopReason::Completed`] if nothing
 /// else stopped it first.
 ///
-/// The returned summary has run metadata and the stop reason filled in.
+/// The returned summary is complete: run metadata, statistics and the stop
+/// reason.
 pub async fn run(
     config: RunConfig,
     cancel: CancellationToken,
@@ -566,7 +568,7 @@ pub async fn run(
         .collect();
     drop(tx);
 
-    let mut summary = Aggregator::new(start)
+    let stats = Aggregator::new(start)
         .run(rx, config.interval, on_event)
         .await;
     // Every worker has dropped its sender, so the run is over: settle the
@@ -582,14 +584,7 @@ pub async fn run(
         }
     }
 
-    summary.protocol = config.transport.protocol().as_str();
-    summary.target = config.transport.to_string();
-    summary.concurrency = config.concurrency;
-    summary.conn_mode = config.conn_mode.as_str();
-    summary.requests = config.requests;
-    summary.interrupted = config.requests.is_some_and(|n| summary.total < n);
-    summary.stop_reason = reason;
-    summary
+    Summary::new(RunInfo::new(&config), stats, reason)
 }
 
 #[cfg(test)]
