@@ -191,7 +191,8 @@ pub struct RunHeader {
     /// `None` = unlimited.
     pub requests: Option<u64>,
     /// `None` = no time limit.
-    pub duration_s: Option<f64>,
+    #[serde(serialize_with = "secs::opt")]
+    pub duration_s: Option<Duration>,
     /// Client-side shaping in req/s; `None` = unshaped.
     pub rate: Option<u32>,
     /// Token bucket capacity; `None` when unshaped.
@@ -202,15 +203,36 @@ pub struct RunHeader {
     pub payload_size: Option<usize>,
     /// `pattern`, `text` or `random`.
     pub filler: &'static str,
-    pub timeout_s: f64,
-    pub reconnect_delay_s: f64,
-    pub max_backoff_s: f64,
+    #[serde(serialize_with = "secs::one")]
+    pub timeout_s: Duration,
+    #[serde(serialize_with = "secs::one")]
+    pub reconnect_delay_s: Duration,
+    #[serde(serialize_with = "secs::one")]
+    pub max_backoff_s: Duration,
     pub honor_retry_after: bool,
     /// `None` = live interval output disabled (`-i 0`).
-    pub interval_s: Option<f64>,
+    #[serde(serialize_with = "secs::opt")]
+    pub interval_s: Option<Duration>,
     pub max_error_rate_pct: f64,
     /// Names of the fields above whose values came from defaults.
     pub defaults: Vec<&'static str>,
+}
+
+/// Serializes `Duration`s as seconds (`f64`), for the `*_s` header fields.
+mod secs {
+    use serde::Serializer;
+    use std::time::Duration;
+
+    pub fn one<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(d.as_secs_f64())
+    }
+
+    pub fn opt<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match d {
+            Some(d) => s.serialize_some(&d.as_secs_f64()),
+            None => s.serialize_none(),
+        }
+    }
 }
 
 impl RunHeader {
@@ -219,13 +241,17 @@ impl RunHeader {
     }
 }
 
-/// `5s`, `100ms`, `1.5s`, `2m`, `250us`.
+/// `5s`, `100ms`, `1.5s`, `2m`, `1h`, `250us`: the largest unit that gives a
+/// whole number (`90s`, `90m`), so the text parses back with `--duration`.
 fn fmt_dur(d: Duration) -> String {
+    let whole_secs = d.subsec_nanos() == 0;
     if d.is_zero() {
         "0s".into()
-    } else if d.subsec_nanos() == 0 && d.as_secs() >= 60 && d.as_secs() % 60 == 0 {
+    } else if whole_secs && d.as_secs() % 3600 == 0 {
+        format!("{}h", d.as_secs() / 3600)
+    } else if whole_secs && d.as_secs() % 60 == 0 {
         format!("{}m", d.as_secs() / 60)
-    } else if d.subsec_nanos() == 0 {
+    } else if whole_secs {
         format!("{}s", d.as_secs())
     } else if d >= Duration::from_secs(1) {
         format!("{}s", d.as_secs_f64())
@@ -234,10 +260,6 @@ fn fmt_dur(d: Duration) -> String {
     } else {
         format!("{}us", d.as_nanos() as f64 / 1000.0)
     }
-}
-
-fn fmt_secs(s: f64) -> String {
-    fmt_dur(Duration::from_secs_f64(s))
 }
 
 /// Multi-line human-readable configuration header; values that came from
@@ -269,8 +291,8 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
     let requests = match (h.requests, h.duration_s) {
         (None, None) => mark("requests", "unlimited, until Ctrl-C".into()),
         (Some(n), None) => n.to_string(),
-        (None, Some(d)) => format!("unlimited, for {}", fmt_secs(d)),
-        (Some(n), Some(d)) => format!("{n} or {}, whichever comes first", fmt_secs(d)),
+        (None, Some(d)) => format!("unlimited, for {}", fmt_dur(d)),
+        (Some(n), Some(d)) => format!("{n} or {}, whichever comes first", fmt_dur(d)),
     };
     let _ = writeln!(out, "{}{requests}", label(p, "requests"));
     let rate = match (h.rate, h.burst) {
@@ -302,14 +324,14 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
         out,
         "{}{}, {} {}{}",
         label(p, "timeout"),
-        mark("timeout_s", fmt_secs(h.timeout_s)),
+        mark("timeout_s", fmt_dur(h.timeout_s)),
         mark(
             "reconnect_delay_s",
-            format!("backoff {}", fmt_secs(h.reconnect_delay_s))
+            format!("backoff {}", fmt_dur(h.reconnect_delay_s))
         ),
         mark(
             "max_backoff_s",
-            format!("up to {}", fmt_secs(h.max_backoff_s))
+            format!("up to {}", fmt_dur(h.max_backoff_s))
         ),
         if h.honor_retry_after {
             ", honors Retry-After"
@@ -317,7 +339,7 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
             ""
         }
     );
-    let interval = h.interval_s.map_or_else(|| "off".into(), fmt_secs);
+    let interval = h.interval_s.map_or_else(|| "off".into(), fmt_dur);
     let _ = writeln!(
         out,
         "{}{}",
@@ -347,6 +369,9 @@ pub enum Verdict {
     },
     /// The run stopped because the client machine ran out of local ports.
     PortsExhausted,
+    /// The run ended before any request completed (for example Ctrl-C right
+    /// after start): a load test that sent nothing does not pass.
+    NoAttempts,
     Mismatches(u64),
     ErrorRate {
         error_rate_pct: f64,
@@ -358,6 +383,8 @@ impl Verdict {
     pub fn of(s: &Summary, max_error_rate: f64) -> Self {
         if s.stop_reason == crate::runner::STOP_PORTS_EXHAUSTED {
             Verdict::PortsExhausted
+        } else if s.total == 0 {
+            Verdict::NoAttempts
         } else if s.mismatches() > 0 {
             Verdict::Mismatches(s.mismatches())
         } else if s.error_rate_pct > max_error_rate {
@@ -395,6 +422,7 @@ impl Verdict {
                 Tag::Fail,
                 &p.red("stopped: the client machine ran out of local ports"),
             ),
+            Verdict::NoAttempts => tagged(p, Tag::Fail, &p.red("no requests were attempted")),
             Verdict::Mismatches(n) => tagged(p, Tag::Fail, &p.red(&format!("{n} echo mismatches"))),
             Verdict::ErrorRate {
                 error_rate_pct,
@@ -608,11 +636,11 @@ mod tests {
             conn_rate: Some(100),
             payload_size: Some(64),
             filler: "pattern",
-            timeout_s: 5.0,
-            reconnect_delay_s: 0.1,
-            max_backoff_s: 0.2,
+            timeout_s: Duration::from_secs(5),
+            reconnect_delay_s: Duration::from_millis(100),
+            max_backoff_s: Duration::from_millis(200),
             honor_retry_after: false,
-            interval_s: Some(1.0),
+            interval_s: Some(Duration::from_secs(1)),
             max_error_rate_pct: 0.0,
             defaults: defaults.to_vec(),
         }
@@ -667,15 +695,15 @@ mod tests {
             concurrency: 20,
             conn_mode: "per-request",
             requests: Some(10_000),
-            duration_s: Some(30.0),
+            duration_s: Some(Duration::from_secs(30)),
             rate: Some(500),
             burst: Some(1),
             payload_size: None,
             filler: "text",
-            timeout_s: 0.25,
+            timeout_s: Duration::from_millis(250),
             conn_rate: None,
-            reconnect_delay_s: 1.5,
-            max_backoff_s: 4.0,
+            reconnect_delay_s: Duration::from_millis(1500),
+            max_backoff_s: Duration::from_secs(4),
             honor_retry_after: true,
             interval_s: None,
             max_error_rate_pct: 2.5,
@@ -699,7 +727,7 @@ mod tests {
         assert_eq!(strip_ansi(&header_text(&h, Palette::new(true))), text);
 
         let only_d = RunHeader {
-            duration_s: Some(120.0),
+            duration_s: Some(Duration::from_secs(120)),
             ..header(&["requests"])
         };
         assert!(header_text(&only_d, Palette::PLAIN).contains("requests    unlimited, for 2m\n"));
@@ -719,7 +747,21 @@ mod tests {
         assert_eq!(v["filler"], "pattern");
         assert_eq!(v["timeout_s"], 5.0);
         assert_eq!(v["interval_s"], 1.0);
+        assert!(v["duration_s"].is_null());
+        // Durations serialize as seconds, exactly as `as_secs_f64` gives them.
+        assert_eq!(v["reconnect_delay_s"], 0.1);
+        assert_eq!(v["max_backoff_s"], 0.2);
         assert_eq!(v["defaults"], serde_json::json!(["target", "rate"]));
+        let h = RunHeader {
+            duration_s: Some(Duration::from_millis(1500)),
+            timeout_s: Duration::from_nanos(1),
+            interval_s: None,
+            ..header(&[])
+        };
+        let v: serde_json::Value = serde_json::from_str(&header_json(&h)).unwrap();
+        assert_eq!(v["duration_s"], 1.5);
+        assert_eq!(v["timeout_s"], 1e-9);
+        assert!(v["interval_s"].is_null());
         // Every name in `defaults` is a field of the line.
         let all = header_json(&header(&ALL_DEFAULTS));
         let v: serde_json::Value = serde_json::from_str(&all).unwrap();
@@ -735,10 +777,27 @@ mod tests {
         assert_eq!(f(Duration::from_secs(5)), "5s");
         assert_eq!(f(Duration::from_secs(120)), "2m");
         assert_eq!(f(Duration::from_secs(90)), "90s");
+        assert_eq!(f(Duration::from_secs(3600)), "1h");
+        assert_eq!(f(Duration::from_secs(7200)), "2h");
+        assert_eq!(f(Duration::from_secs(5400)), "90m");
+        assert_eq!(f(Duration::from_secs(3601)), "3601s");
+        assert_eq!(f(Duration::from_secs(60)), "1m");
+        assert_eq!(f(Duration::from_secs(1)), "1s");
+        assert_eq!(f(Duration::from_millis(3_600_500)), "3600.5s");
         assert_eq!(f(Duration::from_millis(1500)), "1.5s");
         assert_eq!(f(Duration::from_millis(100)), "100ms");
         assert_eq!(f(Duration::from_micros(250)), "250us");
-        assert_eq!(fmt_secs(0.1), "100ms");
+        // Every output parses back to the same duration.
+        for d in [
+            Duration::from_secs(3600),
+            Duration::from_secs(5400),
+            Duration::from_secs(90),
+            Duration::from_millis(1500),
+            Duration::from_millis(100),
+            Duration::from_micros(250),
+        ] {
+            assert_eq!(crate::cli::parse_duration(&f(d)), Ok(d), "{}", f(d));
+        }
     }
 
     #[test]
@@ -796,6 +855,7 @@ mod tests {
     fn verdicts() {
         let start = Instant::now();
         let mut s = Aggregator::new(start).finish(start + Duration::from_secs(1));
+        s.total = 100;
         s.error_rate_pct = 5.0;
         let v = Verdict::of(&s, 1.0);
         assert!(!v.passed());
@@ -803,7 +863,12 @@ mod tests {
             v.line(Palette::PLAIN),
             "[fail] error rate 5.00% above --max-error-rate 1%"
         );
-        assert!(Verdict::of(&s, 5.0).passed());
+        let v = Verdict::of(&s, 5.0);
+        assert!(v.passed());
+        assert_eq!(
+            v.line(Palette::PLAIN),
+            "  [ok] no mismatches, error rate 5.00% within --max-error-rate 5%"
+        );
         s.errors_by_kind.insert(ErrorKind::Mismatch.as_str(), 2);
         assert_eq!(Verdict::of(&s, 100.0), Verdict::Mismatches(2));
         assert_eq!(
@@ -813,19 +878,34 @@ mod tests {
     }
 
     #[test]
+    fn no_attempts_fails() {
+        let start = Instant::now();
+        let s = Aggregator::new(start).finish(start + Duration::from_secs(1));
+        assert_eq!(s.total, 0);
+        let v = Verdict::of(&s, 100.0);
+        assert_eq!(v, Verdict::NoAttempts);
+        assert!(!v.passed());
+        assert_eq!(v.line(Palette::PLAIN), "[fail] no requests were attempted");
+        // Running out of ports is the more specific reason.
+        let mut s = s;
+        s.stop_reason = crate::runner::STOP_PORTS_EXHAUSTED;
+        assert_eq!(Verdict::of(&s, 100.0), Verdict::PortsExhausted);
+    }
+
+    #[test]
     fn summary_formats() {
         let start = Instant::now();
         let mut agg_summary = Aggregator::new(start).finish(start + Duration::from_secs(2));
         agg_summary.protocol = "tcp".into();
         let verdict = Verdict::of(&agg_summary, 0.0);
-        assert!(verdict.passed());
+        assert_eq!(verdict, Verdict::NoAttempts);
         let text = summary_text(&agg_summary, &verdict, Palette::PLAIN);
         assert!(!text.contains('\x1b'));
         assert!(text.contains("outages     none"));
         assert!(text.contains("no successful requests"));
         assert_eq!(
             text.lines().last(),
-            Some("  [ok] no mismatches, error rate 0.00% within --max-error-rate 0%")
+            Some("[fail] no requests were attempted")
         );
         enable_ansi();
         let colored = summary_text(&agg_summary, &verdict, Palette::new(true));

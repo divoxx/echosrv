@@ -415,17 +415,19 @@ open at the end has no `outage_end` line; it appears in `windows` with
 
 ### Exit status
 
-| Status | Meaning                                                                                      |
-|--------|----------------------------------------------------------------------------------------------|
-| 0      | No mismatches and the error rate is within `--max-error-rate` (default 0%)                   |
-| 1      | An echo mismatch, an error rate above `--max-error-rate`, or the machine ran out of ports     |
-| 2      | Usage or setup error (bad flags, unresolvable host, `--conn-mode persistent` with `http`)    |
-| 130    | Aborted by a second `SIGINT` (Ctrl-C)                                                        |
-| 143    | Aborted by a second `SIGTERM`                                                                |
-| 141    | stdout was closed (for example by `\| head`); the run stops quietly                          |
+| Status | Meaning                                                                                                                                       |
+|--------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| 0      | At least one attempt, no mismatches, and the error rate is within `--max-error-rate` (default 0%)                                             |
+| 1      | No attempts (for example Ctrl-C right after start), an echo mismatch, an error rate above `--max-error-rate`, or the machine ran out of ports |
+| 2      | Usage or setup error (bad flags, unresolvable host, `--conn-mode persistent` with `http`)                                                     |
+| 130    | Aborted by a second `SIGINT` (Ctrl-C)                                                                                                         |
+| 143    | Aborted by a second `SIGTERM`                                                                                                                 |
+| 141    | stdout was closed (for example by `\| head`); the run stops quietly                                                                           |
 
 The error rate is errors divided by attempts, including failed connects and
-`rate_limited` answers. `--max-error-rate 0.5` allows 0.5%.
+`rate_limited` answers. `--max-error-rate 0.5` allows 0.5%. A run that ends
+before any attempt completes fails with `[fail] no requests were attempted`:
+a load test that sent nothing does not pass.
 
 ### Colors and logging
 

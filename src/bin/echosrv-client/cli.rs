@@ -469,7 +469,7 @@ impl Cli {
             concurrency: config.concurrency,
             conn_mode: config.conn_mode.as_str(),
             requests: config.requests,
-            duration_s: self.duration.map(|d| d.as_secs_f64()),
+            duration_s: self.duration,
             rate: config.rate.map(|r| r.rate_per_sec),
             burst: config.rate.map(|r| r.burst),
             conn_rate: config.conn_rate.map(|r| r.rate_per_sec),
@@ -479,11 +479,11 @@ impl Cli {
                 Filler::Text(_) => "text",
                 Filler::Random => "random",
             },
-            timeout_s: config.timeout.as_secs_f64(),
-            reconnect_delay_s: config.reconnect_delay.as_secs_f64(),
-            max_backoff_s: config.max_backoff.as_secs_f64(),
+            timeout_s: config.timeout,
+            reconnect_delay_s: config.reconnect_delay,
+            max_backoff_s: config.max_backoff,
             honor_retry_after: config.honor_retry_after,
-            interval_s: config.interval.map(|d| d.as_secs_f64()),
+            interval_s: config.interval,
             max_error_rate_pct: self.max_error_rate,
             defaults,
         }
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!((h.protocol, h.target.as_str()), ("tcp", "127.0.0.1:8080"));
         assert_eq!((h.concurrency, h.conn_mode), (1, "persistent"));
         assert_eq!(h.payload_size, Some(64));
-        assert_eq!(h.interval_s, Some(1.0));
+        assert_eq!(h.interval_s, Some(Duration::from_secs(1)));
         assert_eq!(
             h.defaults,
             [
@@ -758,7 +758,10 @@ mod tests {
         ])
         .await;
         assert_eq!(h.target, "127.0.0.1:9090");
-        assert_eq!((h.requests, h.duration_s), (Some(10), Some(30.0)));
+        assert_eq!(
+            (h.requests, h.duration_s),
+            (Some(10), Some(Duration::from_secs(30)))
+        );
         assert_eq!((h.rate, h.burst), (Some(500), Some(1)));
         assert_eq!((h.filler, h.interval_s), ("random", None));
         assert_eq!(

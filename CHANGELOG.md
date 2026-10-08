@@ -136,6 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flood of rejected connections cannot lock out admitted clients.
 - **Breaking (minor):** `RejectReason` has the new variant
   `TooManyConnections`. Exhaustive matches on it must handle it.
+- `echosrv-client` fails a run with no attempts (exit status 1, verdict
+  `[fail] no requests were attempted`), for example one stopped by Ctrl-C
+  before any request completed; it used to pass with exit status 0. The
+  config header prints whole hours as `1h` instead of `60m`.
 
 ## [0.4.0] - Unreleased
 
