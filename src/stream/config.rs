@@ -1,6 +1,7 @@
 //! Configuration for stream echo servers.
 
 use crate::network::{BindStrategy, BindTarget};
+use crate::rate_limit::RateLimitConfig;
 use crate::{EchoError, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -55,6 +56,20 @@ pub struct StreamConfig {
     /// `FileDescriptorName=`) when the strategy is
     /// [`BindStrategy::InheritOrBind`] without an explicit descriptor.
     pub service_name: String,
+    /// Request rate limit for the whole server (`None`, the default, means
+    /// unlimited). Over-limit requests are rejected, not delayed: see
+    /// [`StreamProtocol::reject`](crate::stream::StreamProtocol::reject).
+    ///
+    /// For raw byte streams (TCP, Unix) every chunk read from a connection
+    /// counts as one request; for HTTP every request does. Rejections are
+    /// counted in [`ServerStats::rejected_requests`](crate::ServerStats::rejected_requests).
+    pub rate_limit: Option<RateLimitConfig>,
+    /// New-connection rate limit for the whole server (`None`, the default,
+    /// means unlimited). Over-limit connections are accepted and then
+    /// rejected (see [`StreamProtocol::reject`](crate::stream::StreamProtocol::reject))
+    /// and counted in
+    /// [`ServerStats::rejected_connections`](crate::ServerStats::rejected_connections).
+    pub accept_rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for StreamConfig {
@@ -67,6 +82,8 @@ impl Default for StreamConfig {
             write_timeout: Duration::from_secs(30),
             bind_strategy: None,
             service_name: "stream".to_string(),
+            rate_limit: None,
+            accept_rate_limit: None,
         }
     }
 }
@@ -99,10 +116,26 @@ impl StreamConfig {
         self
     }
 
+    /// Limits the request rate (see [`rate_limit`](Self::rate_limit)).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Limits the new-connection rate (see
+    /// [`accept_rate_limit`](Self::accept_rate_limit)).
+    pub fn with_accept_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.accept_rate_limit = Some(limit);
+        self
+    }
+
     /// Checks the configuration for values that cannot work.
     ///
-    /// Returns [`EchoError::Config`] if `buffer_size` or `max_connections` is zero.
+    /// Returns [`EchoError::Config`] if `buffer_size` or `max_connections` is
+    /// zero, or if a rate limit has a zero `rate_per_sec` or `burst`.
     pub fn validate(&self) -> Result<()> {
+        RateLimitConfig::validate_field(self.rate_limit.as_ref(), "rate_limit")?;
+        RateLimitConfig::validate_field(self.accept_rate_limit.as_ref(), "accept_rate_limit")?;
         if self.buffer_size == 0 {
             return Err(EchoError::Config(
                 "buffer_size must be greater than 0".into(),
@@ -132,7 +165,39 @@ mod tests {
         assert_eq!(config.write_timeout, Duration::from_secs(30));
         assert!(config.bind_strategy.is_none());
         assert_eq!(config.service_name, "stream");
+        assert!(config.rate_limit.is_none());
+        assert!(config.accept_rate_limit.is_none());
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn rate_limit_builders_set_fields() {
+        let config = StreamConfig::default()
+            .with_rate_limit(RateLimitConfig::new(10, 20))
+            .with_accept_rate_limit(RateLimitConfig::new(3, 4));
+        assert_eq!(config.rate_limit, Some(RateLimitConfig::new(10, 20)));
+        assert_eq!(config.accept_rate_limit, Some(RateLimitConfig::new(3, 4)));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_zero_rate_limits() {
+        let cases = [
+            (
+                StreamConfig::default().with_rate_limit(RateLimitConfig::new(0, 1)),
+                "rate_limit.rate_per_sec",
+            ),
+            (
+                StreamConfig::default().with_accept_rate_limit(RateLimitConfig::new(1, 0)),
+                "accept_rate_limit.burst",
+            ),
+        ];
+        for (config, needle) in cases {
+            match config.validate() {
+                Err(EchoError::Config(msg)) => assert!(msg.contains(needle), "{msg}"),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
     }
 
     #[test]

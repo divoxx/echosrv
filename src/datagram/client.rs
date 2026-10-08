@@ -74,6 +74,7 @@ where
             write_timeout: config.write_timeout,
             bind_strategy: Some(BindStrategy::Bind(BindTarget::Network(wildcard))),
             service_name: "datagram-client".to_string(),
+            rate_limit: None,
         };
 
         let socket = P::bind(&bind_config).await.map_err(Into::into)?;

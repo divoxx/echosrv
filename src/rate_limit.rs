@@ -4,8 +4,9 @@
 //!
 //! - [`Gcra`]: a lock-free *policer* based on the Generic Cell Rate Algorithm.
 //!   It never waits; [`Gcra::check`] either admits the event or returns how
-//!   long the caller would have to wait, which suits servers that reject
-//!   over-limit requests and connections.
+//!   long the caller would have to wait. The servers use it to enforce their
+//!   `rate_limit` and `accept_rate_limit` settings (see the
+//!   [crate-level overview](crate#rate-limiting)).
 //! - [`TokenBucket`]: an async *shaper*. [`TokenBucket::acquire`] blocks until a
 //!   token is available, so clients can pace their outgoing traffic.
 //!
@@ -21,7 +22,8 @@ const NANOS_PER_SEC: u64 = 1_000_000_000;
 ///
 /// `rate_per_sec` is the sustained rate; `burst` is how many events may happen
 /// back to back (for [`Gcra`]) or the bucket capacity (for [`TokenBucket`]).
-/// Zero values are treated as `1`.
+/// The primitives treat zero values as `1`; server configs reject them when
+/// the server binds.
 ///
 /// # Examples
 ///
@@ -46,6 +48,21 @@ impl RateLimitConfig {
         Self {
             rate_per_sec,
             burst,
+        }
+    }
+
+    /// Checks that a configured limit is usable by a server: `rate_per_sec`
+    /// and `burst` must both be non-zero. `field` names the config field in
+    /// the error message.
+    pub(crate) fn validate_field(limit: Option<&Self>, field: &str) -> crate::Result<()> {
+        match limit {
+            Some(limit) if limit.rate_per_sec == 0 => Err(crate::EchoError::Config(format!(
+                "{field}.rate_per_sec must be greater than 0"
+            ))),
+            Some(limit) if limit.burst == 0 => Err(crate::EchoError::Config(format!(
+                "{field}.burst must be greater than 0"
+            ))),
+            _ => Ok(()),
         }
     }
 
@@ -345,6 +362,21 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(admitted.load(Ordering::Relaxed), 50);
+    }
+
+    #[test]
+    fn validate_field_rejects_zero_values() {
+        assert!(RateLimitConfig::validate_field(None, "rate_limit").is_ok());
+        assert!(RateLimitConfig::validate_field(Some(&RateLimitConfig::new(1, 1)), "x").is_ok());
+        for (cfg, needle) in [
+            (RateLimitConfig::new(0, 5), "rate_limit.rate_per_sec"),
+            (RateLimitConfig::new(5, 0), "rate_limit.burst"),
+        ] {
+            match RateLimitConfig::validate_field(Some(&cfg), "rate_limit") {
+                Err(crate::EchoError::Config(msg)) => assert!(msg.contains(needle), "{msg}"),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
     }
 
     #[test]

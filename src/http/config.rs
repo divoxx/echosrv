@@ -2,6 +2,7 @@
 
 use super::protocol::DEFAULT_MAX_BODY_SIZE;
 use crate::network::BindStrategy;
+use crate::rate_limit::RateLimitConfig;
 use crate::stream::StreamConfig;
 use std::time::Duration;
 
@@ -27,6 +28,8 @@ use std::time::Duration;
 ///     max_body_size: 1024 * 1024,
 ///     bind_strategy: None,
 ///     service_name: "http".to_string(),
+///     rate_limit: None,
+///     accept_rate_limit: None,
 /// };
 ///
 /// // Prefer a socket passed by systemd (FileDescriptorName=http), else bind.
@@ -68,6 +71,15 @@ pub struct HttpConfig {
     /// Service name for inherited-descriptor lookup (default `"http"`).
     /// See [`StreamConfig::service_name`].
     pub service_name: String,
+    /// Request rate limit (`None`, the default, means unlimited). Over-limit
+    /// requests, valid or not, get `429 Too Many Requests` with a
+    /// `Retry-After` header.
+    /// See [`StreamConfig::rate_limit`].
+    pub rate_limit: Option<RateLimitConfig>,
+    /// New-connection rate limit (`None`, the default, means unlimited).
+    /// The request on an over-limit connection is read and answered with
+    /// `429 Too Many Requests`. See [`StreamConfig::accept_rate_limit`].
+    pub accept_rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for HttpConfig {
@@ -83,6 +95,8 @@ impl Default for HttpConfig {
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             bind_strategy: None,
             service_name: "http".to_string(),
+            rate_limit: None,
+            accept_rate_limit: None,
         }
     }
 }
@@ -108,6 +122,19 @@ impl HttpConfig {
         });
         self
     }
+
+    /// Limits the request rate (see [`StreamConfig::rate_limit`]).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Limits the new-connection rate (see
+    /// [`StreamConfig::accept_rate_limit`]).
+    pub fn with_accept_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.accept_rate_limit = Some(limit);
+        self
+    }
 }
 
 /// Extracts the connection-level settings.
@@ -125,6 +152,8 @@ impl From<HttpConfig> for StreamConfig {
             write_timeout: config.write_timeout,
             bind_strategy: config.bind_strategy,
             service_name: config.service_name,
+            rate_limit: config.rate_limit,
+            accept_rate_limit: config.accept_rate_limit,
         }
     }
 }
@@ -147,6 +176,8 @@ mod tests {
         assert_eq!(config.max_body_size, DEFAULT_MAX_BODY_SIZE);
         assert!(config.bind_strategy.is_none());
         assert_eq!(config.service_name, "http");
+        assert!(config.rate_limit.is_none());
+        assert!(config.accept_rate_limit.is_none());
     }
 
     #[test]
@@ -164,6 +195,8 @@ mod tests {
                 "127.0.0.1:8001".parse().unwrap(),
             ))),
             service_name: "api".into(),
+            rate_limit: Some(RateLimitConfig::new(5, 6)),
+            accept_rate_limit: Some(RateLimitConfig::new(7, 8)),
         };
         let stream: StreamConfig = config.into();
         assert_eq!(stream.bind_addr, "0.0.0.0:8000".parse().unwrap());
@@ -172,6 +205,8 @@ mod tests {
         assert_eq!(stream.read_timeout, Duration::from_millis(9));
         assert_eq!(stream.write_timeout, Duration::from_millis(10));
         assert_eq!(stream.service_name, "api");
+        assert_eq!(stream.rate_limit, Some(RateLimitConfig::new(5, 6)));
+        assert_eq!(stream.accept_rate_limit, Some(RateLimitConfig::new(7, 8)));
         match stream.bind_strategy {
             Some(BindStrategy::Bind(BindTarget::Network(addr))) => {
                 assert_eq!(addr, "127.0.0.1:8001".parse().unwrap())

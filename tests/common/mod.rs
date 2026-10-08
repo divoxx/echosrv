@@ -9,12 +9,13 @@
 use echosrv::http::{HttpConfig, HttpEchoServer};
 use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
 use echosrv::{
-    EchoServerTrait, Result, TcpConfig, TcpEchoServer, UdpConfig, UdpEchoServer,
+    EchoServerTrait, Result, ServerStats, TcpConfig, TcpEchoServer, UdpConfig, UdpEchoServer,
     UnixDatagramEchoServer, UnixStreamEchoServer,
 };
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -27,6 +28,8 @@ pub const WAIT: Duration = Duration::from_secs(5);
 pub struct TestServer<A> {
     /// The address the server is actually bound to.
     pub addr: A,
+    /// The server's counters (rate-limit rejections).
+    pub stats: Arc<ServerStats>,
     shutdown: broadcast::Sender<()>,
     handle: JoinHandle<Result<()>>,
 }
@@ -34,11 +37,13 @@ pub struct TestServer<A> {
 impl<A> TestServer<A> {
     fn spawn(
         addr: A,
+        stats: Arc<ServerStats>,
         shutdown: broadcast::Sender<()>,
         serve: impl Future<Output = Result<()>> + Send + 'static,
     ) -> Self {
         Self {
             addr,
+            stats,
             shutdown,
             handle: tokio::spawn(serve),
         }
@@ -87,7 +92,7 @@ pub async fn start_tcp(config: TcpConfig) -> TestServer<SocketAddr> {
     let server = TcpEchoServer::new(config.into());
     let bound = server.bind().await.expect("failed to bind TCP server");
     let addr = network_addr(bound.local_addr());
-    TestServer::spawn(addr, server.shutdown_signal(), bound.serve())
+    TestServer::spawn(addr, bound.stats(), server.shutdown_signal(), bound.serve())
 }
 
 /// Starts a TCP echo server with default settings and the given connection limit.
@@ -113,6 +118,7 @@ pub async fn try_start_udp(config: UdpConfig) -> Result<TestServer<SocketAddr>> 
     let addr = network_addr(bound.local_addr());
     Ok(TestServer::spawn(
         addr,
+        bound.stats(),
         server.shutdown_signal(),
         bound.serve(),
     ))
@@ -123,7 +129,7 @@ pub async fn start_http(config: HttpConfig) -> TestServer<SocketAddr> {
     let server = HttpEchoServer::new(config);
     let bound = server.bind().await.expect("failed to bind HTTP server");
     let addr = network_addr(bound.local_addr());
-    TestServer::spawn(addr, server.shutdown_signal(), bound.serve())
+    TestServer::spawn(addr, bound.stats(), server.shutdown_signal(), bound.serve())
 }
 
 /// Starts a Unix stream echo server.
@@ -140,6 +146,7 @@ pub async fn try_start_unix_stream(config: UnixStreamConfig) -> Result<TestServe
     let path = unix_path(bound.local_addr());
     Ok(TestServer::spawn(
         path,
+        bound.stats(),
         server.shutdown_signal(),
         bound.serve(),
     ))
@@ -164,6 +171,7 @@ pub async fn try_start_unix_datagram(config: UnixDatagramConfig) -> Result<TestS
     let path = unix_path(bound.local_addr());
     Ok(TestServer::spawn(
         path,
+        bound.stats(),
         server.shutdown_signal(),
         bound.serve(),
     ))

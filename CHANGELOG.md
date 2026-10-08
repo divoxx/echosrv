@@ -15,6 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TokenBucket`, a cancel-safe async shaper (`acquire()`), both configured by
   `RateLimitConfig { rate_per_sec, burst }`. `RateLimitError` is the
   matching error enum.
+- **Server rate limits.** `rate_limit: Option<RateLimitConfig>` on every
+  server config (`StreamConfig`, `DatagramConfig`, `TcpConfig`, `UdpConfig`,
+  `HttpConfig`, `UnixStreamConfig`, `UnixDatagramConfig`) limits the request
+  rate of the whole server, and `accept_rate_limit` on the stream configs
+  limits new connections. Set them with `with_rate_limit` /
+  `with_accept_rate_limit`. Over-limit traffic is rejected, not delayed:
+  - TCP resets the connection (`SO_LINGER` 0).
+  - HTTP answers `429 Too Many Requests` with `Retry-After` (whole seconds,
+    rounded up, at least 1) and `Connection: close`. A connection over the
+    accept limit has its request head read first, so the `429` is not lost
+    to a reset.
+  - Unix stream closes the connection.
+  - UDP and Unix datagram drop the datagram.
+- **`ServerStats`** (`rejected_requests`, `rejected_connections`,
+  `dropped_rate_limited`), available from `stats()` on every server and bound
+  server.
+- **`StreamProtocol` hooks** with default implementations: `reject(stream,
+  RejectReason, retry_after)`, `FRAMED_REQUESTS` and `begin_request`.
+
+### Changed
+
+- **Breaking:** the server config structs gained `rate_limit` (and, for
+  stream configs, `accept_rate_limit`). Struct literals without
+  `..Default::default()` must add them.
+- A zero `rate_per_sec` or `burst` in a server's rate limit is a
+  configuration error at `bind()`.
+- HTTP: an invalid request now counts as one request for the rate limit; its
+  error response is sent after the request has been admitted.
 
 ## [0.4.0] - Unreleased
 

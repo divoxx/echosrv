@@ -1,20 +1,29 @@
 //! The generic datagram echo server, [`DatagramEchoServer`].
 
 use super::{DatagramConfig, DatagramProtocol};
-use crate::common::EchoServerTrait;
-use crate::common::lifecycle::{ShutdownSignal, wait_for_shutdown};
+use crate::common::lifecycle::{RateLimiters, ShutdownSignal, wait_for_shutdown};
+use crate::common::{EchoServerTrait, ServerStats};
 use crate::network::{Address, FdInheritanceConfig, LocalAddress};
 use crate::{EchoError, Result};
 use async_trait::async_trait;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
+
+/// Rate-limited drops are logged (at debug level) only once per this many,
+/// so a flood does not flood the log as well.
+const DROP_LOG_EVERY: u64 = 100;
 
 /// Generic datagram-based echo server that works with any datagram protocol
 ///
 /// This server can work with any protocol that implements `DatagramProtocol`,
 /// such as UDP or Unix datagrams. Each received datagram is sent back to its
 /// sender.
+///
+/// An optional [`DatagramConfig::rate_limit`] caps the datagram rate for the
+/// whole server. Datagrams over the limit are dropped without a reply and
+/// counted in [`stats`](Self::stats).
 ///
 /// # Examples
 ///
@@ -67,6 +76,8 @@ pub struct DatagramEchoServer<P: DatagramProtocol> {
     config: DatagramConfig,
     protocol: std::marker::PhantomData<P>,
     shutdown: ShutdownSignal,
+    limiters: Arc<RateLimiters>,
+    stats: Arc<ServerStats>,
 }
 
 impl<P: DatagramProtocol> DatagramEchoServer<P>
@@ -76,6 +87,8 @@ where
     /// Creates a new datagram-based echo server with the given configuration
     pub fn new(config: DatagramConfig) -> Self {
         Self {
+            limiters: Arc::new(RateLimiters::new(config.rate_limit, None)),
+            stats: Arc::new(ServerStats::default()),
             config,
             protocol: std::marker::PhantomData,
             shutdown: ShutdownSignal::new(),
@@ -85,6 +98,14 @@ where
     /// The server configuration.
     pub fn config(&self) -> &DatagramConfig {
         &self.config
+    }
+
+    /// The server's counters (rate-limited drops).
+    ///
+    /// The handle is shared with every bound server created from this one,
+    /// so it can be read while the server runs.
+    pub fn stats(&self) -> Arc<ServerStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Validates the configuration and creates the socket.
@@ -105,6 +126,8 @@ where
             local_addr,
             config: self.config.clone(),
             shutdown_rx: self.shutdown.receiver(),
+            limiters: Arc::clone(&self.limiters),
+            stats: Arc::clone(&self.stats),
         })
     }
 }
@@ -117,6 +140,8 @@ pub struct BoundDatagramServer<P: DatagramProtocol> {
     local_addr: Address,
     config: DatagramConfig,
     shutdown_rx: broadcast::Receiver<()>,
+    limiters: Arc<RateLimiters>,
+    stats: Arc<ServerStats>,
 }
 
 impl<P: DatagramProtocol> BoundDatagramServer<P>
@@ -128,6 +153,11 @@ where
         &self.local_addr
     }
 
+    /// The server's counters; the same handle as [`DatagramEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        Arc::clone(&self.stats)
+    }
+
     /// Echoes datagrams until shutdown is requested, then returns `Ok(())`.
     pub async fn serve(self) -> Result<()> {
         let Self {
@@ -135,6 +165,8 @@ where
             local_addr,
             config,
             mut shutdown_rx,
+            limiters,
+            stats,
         } = self;
 
         info!(address = %local_addr, "Datagram echo server listening");
@@ -151,6 +183,15 @@ where
                 received = timeout(config.read_timeout, P::recv_from(&socket, &mut buffer)) => {
                     match received {
                         Ok(Ok((n, peer))) => {
+                            if limiters.check_request().is_err() {
+                                // There is no way to signal a rejection on a
+                                // datagram socket: drop it.
+                                let total = stats.inc_dropped_rate_limited();
+                                if total % DROP_LOG_EVERY == 1 {
+                                    debug!(?peer, total, "Datagram dropped: rate limited (logged every {DROP_LOG_EVERY})");
+                                }
+                                continue;
+                            }
                             trace!(?peer, size = n, preview = %String::from_utf8_lossy(&buffer[..n]), "Received datagram");
                             match timeout(config.write_timeout, P::send_to(&socket, &buffer[..n], &peer)).await {
                                 Ok(Ok(_)) => trace!(?peer, size = n, "Echoed datagram"),

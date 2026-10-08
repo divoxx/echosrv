@@ -13,5 +13,5 @@ pub mod server;
 
 pub use client::{Client, ClientConfig, ClientConfigBuilder};
 pub use config::StreamConfig;
-pub use protocol::StreamProtocol;
+pub use protocol::{RejectReason, StreamProtocol};
 pub use server::{BoundStreamServer, StreamEchoServer};

@@ -3,7 +3,7 @@
 use super::config::HttpConfig;
 use super::protocol::{HTTP_SETTINGS, HttpProtocol, HttpSettings};
 use crate::Result;
-use crate::common::EchoServerTrait;
+use crate::common::{EchoServerTrait, ServerStats};
 use crate::network::Address;
 use crate::stream::{BoundStreamServer, StreamConfig, StreamEchoServer};
 use async_trait::async_trait;
@@ -76,6 +76,12 @@ impl HttpEchoServer {
         self.inner.config()
     }
 
+    /// The server's counters (rate-limit rejections); see
+    /// [`StreamEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        self.inner.stats()
+    }
+
     /// Validates the configuration and creates the listening socket.
     ///
     /// See [`StreamEchoServer::bind`]. The returned [`BoundHttpServer`] is
@@ -102,6 +108,11 @@ impl BoundHttpServer {
     /// The address the listener is bound to (resolves port `0`).
     pub fn local_addr(&self) -> &Address {
         self.inner.local_addr()
+    }
+
+    /// The server's counters; the same handle as [`HttpEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        self.inner.stats()
     }
 
     /// Accepts and serves HTTP connections until shutdown is requested.

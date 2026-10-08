@@ -34,6 +34,12 @@ implementing a trait:
   operations are `bind`, `bind_with_inheritance`, `accept`, `connect`,
   `connect_address`, `read`, `write`, `flush` and `map_io_error`. Listeners
   implement `network::LocalAddress`, so `bind()` can report the real address.
+  Rate limiting adds three items with defaults: `reject(stream, reason,
+  retry_after)` signals a rejection before the server closes the stream
+  (default: nothing, so a plain close; TCP sets `SO_LINGER` 0 to send an RST;
+  HTTP answers `429`), and `FRAMED_REQUESTS` / `begin_request` let a protocol
+  define what one request is (default: every non-empty read; HTTP: the
+  request head).
 - **`DatagramProtocol`** declares `Socket`, `PeerAddr` and `Error` types. Its
   operations are `bind`, `bind_with_inheritance`, `recv_from`, `send_to` and
   `map_io_error`. `PeerAddr` is `SocketAddr` for UDP and a socket path for
@@ -107,6 +113,13 @@ loops:
    panics. Connections over `max_connections` are closed immediately. Tasks
    live in a `JoinSet`. A failed `accept` (for example `EMFILE`) is followed
    by a 100 ms backoff.
+   **Rate limits.** Each server builds its `Gcra` limiters (`RateLimiters`)
+   once in `new()`, so a limit is global to the server. A connection over
+   `accept_rate_limit` keeps its `ConnectionGuard` while a spawned task runs
+   `P::reject` (bounded by `REJECT_TIMEOUT`). The connection task checks
+   `rate_limit` per request and calls `P::reject` before closing. The datagram
+   loop drops over-limit datagrams. All of these increment the shared
+   `ServerStats` and log at `debug` only.
 4. **Shutdown.** The loop drops the listener (closing the socket and removing
    any owned Unix socket file), cancels a `CancellationToken` that every
    connection task selects on, awaits the `JoinSet`, and returns `Ok(())`.
@@ -171,7 +184,8 @@ the process has one thread, so changing the environment is safe.
   asserts that `serve()` returns `Ok(())` within `WAIT`.
 - **Helpers** are in `tests/common/mod.rs`: `start_tcp`, `start_udp`,
   `start_http`, `start_unix_stream`, `start_unix_datagram`, `socket_dir`,
-  `payload` and `tagged_payload`.
+  `payload` and `tagged_payload`. `TestServer::stats` is the server's
+  `ServerStats`.
 - **CLI tests are serialized** (`serial()` in `tests/cli.rs`). On macOS, std
   sets `FD_CLOEXEC` on a new socket in a separate syscall. A child process
   spawned at the same moment by another test can inherit that socket and keep
@@ -185,7 +199,7 @@ the process has one thread, so changing the environment is safe.
 
 ```bash
 cargo test                           # everything, including README doctests
-cargo test --test tcp                # tcp | udp | unix | http | fd_inheritance | cli | property_tests
+cargo test --test tcp                # tcp | udp | unix | http | rate_limit | fd_inheritance | cli | property_tests
 cargo test --lib http::              # HTTP unit tests
 cargo test --doc                     # doctests only
 ```

@@ -1,19 +1,22 @@
 //! Unix domain stream and datagram echo servers.
 
 use crate::Result;
-use crate::common::EchoServerTrait;
+use crate::common::{EchoServerTrait, ServerStats};
 use crate::datagram::{BoundDatagramServer, DatagramEchoServer};
 use crate::stream::{BoundStreamServer, StreamEchoServer};
 use crate::unix::config::{UnixDatagramConfig, UnixStreamConfig};
 use crate::unix::datagram_protocol::UnixDatagramProtocol;
 use crate::unix::stream_protocol::UnixStreamProtocol;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Unix domain stream echo server
 ///
 /// A thin wrapper around [`StreamEchoServer`]`<`[`UnixStreamProtocol`]`>` that
 /// accepts a [`UnixStreamConfig`]. It shares the generic server's behavior:
-/// `max_connections` enforcement, timeouts and graceful shutdown.
+/// `max_connections` enforcement, timeouts, rate limits and graceful
+/// shutdown. Connections rejected by a rate limit are simply closed, since a
+/// raw Unix stream has no way to signal the reason.
 ///
 /// Socket file handling (see the [module docs](crate::unix)):
 /// * at bind, a stale socket file (nothing listening) is removed and re-bound;
@@ -61,6 +64,12 @@ impl UnixStreamEchoServer {
     /// Creates the listening socket; see [`StreamEchoServer::bind`].
     pub async fn bind(&self) -> Result<BoundStreamServer<UnixStreamProtocol>> {
         self.inner.bind().await
+    }
+
+    /// The server's counters (rate-limit rejections); see
+    /// [`StreamEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        self.inner.stats()
     }
 }
 
@@ -120,6 +129,12 @@ impl UnixDatagramEchoServer {
     /// Creates the socket; see [`DatagramEchoServer::bind`].
     pub async fn bind(&self) -> Result<BoundDatagramServer<UnixDatagramProtocol>> {
         self.inner.bind().await
+    }
+
+    /// The server's counters (rate-limited drops); see
+    /// [`DatagramEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        self.inner.stats()
     }
 }
 

@@ -1,6 +1,7 @@
 //! Configuration for datagram echo servers and clients.
 
 use crate::network::{BindStrategy, BindTarget};
+use crate::rate_limit::RateLimitConfig;
 use crate::{EchoError, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -49,6 +50,11 @@ pub struct DatagramConfig {
     /// Service name used to look up an inherited descriptor when the strategy
     /// is [`BindStrategy::InheritOrBind`] without an explicit descriptor.
     pub service_name: String,
+    /// Datagram rate limit for the whole server (`None`, the default, means
+    /// unlimited). Over-limit datagrams are dropped without a reply and
+    /// counted in
+    /// [`ServerStats::dropped_rate_limited`](crate::ServerStats::dropped_rate_limited).
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for DatagramConfig {
@@ -60,6 +66,7 @@ impl Default for DatagramConfig {
             write_timeout: Duration::from_secs(30),
             bind_strategy: None,
             service_name: "datagram".to_string(),
+            rate_limit: None,
         }
     }
 }
@@ -92,8 +99,17 @@ impl DatagramConfig {
         self
     }
 
-    /// Checks the configuration; returns [`EchoError::Config`] if `buffer_size` is zero.
+    /// Limits the datagram rate (see [`rate_limit`](Self::rate_limit)).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Checks the configuration; returns [`EchoError::Config`] if
+    /// `buffer_size` is zero or the rate limit has a zero `rate_per_sec` or
+    /// `burst`.
     pub fn validate(&self) -> Result<()> {
+        RateLimitConfig::validate_field(self.rate_limit.as_ref(), "rate_limit")?;
         if self.buffer_size == 0 {
             return Err(EchoError::Config(
                 "buffer_size must be greater than 0".into(),
@@ -151,7 +167,21 @@ mod tests {
         assert_eq!(config.write_timeout, Duration::from_secs(30));
         assert!(config.bind_strategy.is_none());
         assert_eq!(config.service_name, "datagram");
+        assert!(config.rate_limit.is_none());
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn rate_limit_builder_and_validation() {
+        let config = DatagramConfig::default().with_rate_limit(RateLimitConfig::new(5, 6));
+        assert_eq!(config.rate_limit, Some(RateLimitConfig::new(5, 6)));
+        config.validate().unwrap();
+
+        let config = DatagramConfig::default().with_rate_limit(RateLimitConfig::new(0, 6));
+        match config.validate() {
+            Err(EchoError::Config(msg)) => assert!(msg.contains("rate_limit.rate_per_sec")),
+            other => panic!("expected Config error, got {other:?}"),
+        }
     }
 
     #[test]

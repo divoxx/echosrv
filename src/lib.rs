@@ -69,6 +69,42 @@
 //! (`413` above it), and every connection serves one request and then closes.
 //! See the [`http`] module for the exact semantics and limits.
 //!
+//! # Rate limiting
+//!
+//! Every server config has an optional `rate_limit`, and the stream configs
+//! (TCP, HTTP, Unix stream) also an `accept_rate_limit` for new connections.
+//! Both take a [`RateLimitConfig`] (sustained rate per second plus burst) and
+//! apply to the whole server. Traffic over a limit is rejected, never delayed:
+//!
+//! | Server             | Over `rate_limit`                          | Over `accept_rate_limit`           |
+//! |--------------------|--------------------------------------------|------------------------------------|
+//! | TCP                | connection reset (RST)                     | connection reset (RST)             |
+//! | HTTP               | `429 Too Many Requests` with `Retry-After` | request read, then the same `429`  |
+//! | Unix stream        | connection closed                          | connection closed                  |
+//! | UDP, Unix datagram | datagram dropped                           | n/a                                |
+//!
+//! For TCP and Unix streams every chunk read counts as one request; for HTTP
+//! every request does. Rejections are counted in [`ServerStats`], available
+//! from `stats()` on every server, and logged at `debug` level only. The
+//! primitives, [`Gcra`] and [`TokenBucket`], are in [`rate_limit`].
+//!
+//! ```
+//! use echosrv::{EchoServerTrait, RateLimitConfig, TcpConfig, TcpEchoServer};
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> echosrv::Result<()> {
+//! let config = TcpConfig::default()
+//!     .with_rate_limit(RateLimitConfig::new(1_000, 100)) // 1000 reads/s, bursts of 100
+//!     .with_accept_rate_limit(RateLimitConfig::new(50, 10)); // 50 new connections/s
+//! let server = TcpEchoServer::new(config.into());
+//! let stats = server.stats();
+//! let bound = server.bind().await?;
+//! # drop(bound);
+//! assert_eq!(stats.rejected_connections(), 0);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Socket inheritance and systemd socket activation
 //!
 //! Instead of binding, a server can use a socket created by a parent process
@@ -252,7 +288,7 @@ pub mod udp;
 pub mod unix;
 
 // Re-exports of the main types.
-pub use common::{EchoClient, EchoServerTrait};
+pub use common::{EchoClient, EchoServerTrait, ServerStats};
 pub use datagram::{DatagramConfig, DatagramEchoClient, DatagramEchoServer};
 pub use http::{HttpConfig, HttpEchoClient, HttpEchoServer, HttpProtocol};
 pub use network::Address;

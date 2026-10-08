@@ -281,16 +281,59 @@ async fn main() -> echosrv::Result<()> {
 
 | Config               | Fields (defaults)                                                                                                                                          |
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `TcpConfig`          | `bind_addr` (127.0.0.1:0), `max_connections` (100), `buffer_size` (1024), `read_timeout`/`write_timeout` (30 s), `bind_strategy` (None), `service_name` ("tcp") |
-| `UdpConfig`          | `bind_addr` (127.0.0.1:0), `buffer_size` (64 KiB), `read_timeout`/`write_timeout` (30 s), `bind_strategy`, `service_name` ("udp")                         |
+| `TcpConfig`          | `bind_addr` (127.0.0.1:0), `max_connections` (100), `buffer_size` (1024), `read_timeout`/`write_timeout` (30 s), `bind_strategy` (None), `service_name` ("tcp"), `rate_limit`/`accept_rate_limit` (None) |
+| `UdpConfig`          | `bind_addr` (127.0.0.1:0), `buffer_size` (64 KiB), `read_timeout`/`write_timeout` (30 s), `bind_strategy`, `service_name` ("udp"), `rate_limit` (None) |
 | `HttpConfig`         | as TCP plus `buffer_size` (8192), `server_name` ("EchoServer/1.0"), `default_content_type` ("text/plain"), `max_body_size` (1 MiB), `service_name` ("http") |
-| `UnixStreamConfig`   | `bind_strategy` (bind `/tmp/echosrv_stream.sock`), `max_connections` (100), `buffer_size` (1024), timeouts (30 s), `service_name` ("unix-stream")           |
-| `UnixDatagramConfig` | `bind_strategy` (bind `/tmp/echosrv_datagram.sock`), `buffer_size` (64 KiB), timeouts (30 s), `service_name` ("unix-datagram")                             |
+| `UnixStreamConfig`   | `bind_strategy` (bind `/tmp/echosrv_stream.sock`), `max_connections` (100), `buffer_size` (1024), timeouts (30 s), `service_name` ("unix-stream"), `rate_limit`/`accept_rate_limit` (None) |
+| `UnixDatagramConfig` | `bind_strategy` (bind `/tmp/echosrv_datagram.sock`), `buffer_size` (64 KiB), timeouts (30 s), `service_name` ("unix-datagram"), `rate_limit` (None) |
 
 Build configs with `..Default::default()` so new fields do not break your
 code. `read_timeout` closes idle stream connections. When `max_connections`
 connections are active, new stream connections are accepted and closed right
 away.
+
+### Rate limiting
+
+`rate_limit` caps the request rate of a whole server and `accept_rate_limit`
+(stream servers only) its rate of new connections. Both take a
+`RateLimitConfig { rate_per_sec, burst }` and can be set with
+`with_rate_limit` / `with_accept_rate_limit`. Traffic over a limit is rejected,
+not delayed:
+
+| Server             | Over `rate_limit`                          | Over `accept_rate_limit`           |
+|--------------------|--------------------------------------------|------------------------------------|
+| TCP                | connection reset (RST)                     | connection reset (RST)             |
+| HTTP               | `429 Too Many Requests` with `Retry-After` | request read, then the same `429`  |
+| Unix stream        | connection closed                          | connection closed                  |
+| UDP, Unix datagram | datagram dropped                           | n/a                                |
+
+For TCP and Unix streams every chunk read counts as a request; for HTTP every
+request does. `Retry-After` is in whole seconds, rounded up, at least 1. The
+servers count rejections in `ServerStats` (`stats()` on every server) and log
+them at `debug` level only.
+
+```rust
+use echosrv::{EchoServerTrait, RateLimitConfig, UdpConfig, UdpEchoServer};
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    // 500 datagrams/s sustained, bursts of up to 50.
+    let config = UdpConfig::default().with_rate_limit(RateLimitConfig::new(500, 50));
+    let server = UdpEchoServer::new(config.into());
+    let stats = server.stats();
+    let shutdown = server.shutdown_signal();
+    let serving = tokio::spawn(server.bind().await?.serve());
+
+    // ... later
+    println!("dropped so far: {}", stats.dropped_rate_limited());
+    shutdown.send(()).expect("server is running");
+    serving.await.expect("server task panicked")
+}
+```
+
+The `rate_limit` module also has the primitives: `Gcra`, a lock-free policer
+that admits an event or returns how long to wait, and `TokenBucket`, an async
+shaper whose `acquire()` waits for a token.
 
 ## HTTP semantics
 
@@ -315,6 +358,7 @@ The HTTP server implements a small, strict subset of HTTP/1.1:
   | 400    | Malformed request, more than 32 headers, or invalid/conflicting `Content-Length` |
   | 405    | Method other than `POST`                                                         |
   | 413    | `Content-Length` greater than `max_body_size` (default 1 MiB)                    |
+  | 429    | Over the server's `rate_limit` or `accept_rate_limit` (with `Retry-After`)      |
   | 431    | Request line plus headers larger than 8 KiB                                      |
   | 501    | Any `Transfer-Encoding` header (chunked bodies are not supported)                |
 
@@ -465,6 +509,7 @@ The integration suites are in `tests/`:
 | `tests/udp.rs`             | UDP server and client                                                 |
 | `tests/unix.rs`            | Unix stream and datagram servers, socket file handling                |
 | `tests/http.rs`            | HTTP framing, status codes, `HttpEchoClient`                          |
+| `tests/rate_limit.rs`      | Request and connection rate limits: 429, resets, drops, counters      |
 | `tests/fd_inheritance.rs`  | End-to-end socket inheritance for every protocol                      |
 | `tests/cli.rs`             | The `echosrv` binary: arguments, signals, socket activation           |
 | `tests/property_tests.rs`  | Echo round trips with random payloads                                 |
@@ -478,7 +523,8 @@ Tests bind port `0` or a temporary socket path and get the real address from
 src/
 ├── lib.rs        EchoError, Result, re-exports
 ├── main.rs       echosrv binary (CLI, signals, socket activation)
-├── common/       EchoServerTrait, EchoClient, shared server lifecycle
+├── rate_limit.rs Gcra, TokenBucket, RateLimitConfig
+├── common/       EchoServerTrait, EchoClient, ServerStats, shared server lifecycle
 ├── stream/       StreamProtocol, StreamEchoServer<P>, Client<P>, StreamConfig
 ├── datagram/     DatagramProtocol, DatagramEchoServer<P>, DatagramEchoClient<P>, DatagramConfig
 ├── tcp/          TcpProtocol, TcpConfig, type aliases
