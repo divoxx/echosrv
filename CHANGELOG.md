@@ -140,6 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[fail] no requests were attempted`), for example one stopped by Ctrl-C
   before any request completed; it used to pass with exit status 0. The
   config header prints whole hours as `1h` instead of `60m`.
+- `echosrv-client`: only `connect_refused`, `connect_failed`, `reset` and
+  `timeout` errors open or extend an outage. `mismatch` and `other` (for
+  example an HTTP 500) are answers from a live server: they still count as
+  errors, and mismatches still fail the run, but they are no longer reported
+  as outages.
 
 ## [0.4.0] - Unreleased
 
