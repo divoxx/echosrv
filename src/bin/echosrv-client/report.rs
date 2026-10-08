@@ -360,6 +360,17 @@ pub fn header_json(h: &RunHeader) -> String {
     to_json(h)
 }
 
+/// Hint on stderr when the run stopped because the machine ran out of
+/// local ports (see [`crate::runner::SAFE_CONN_RATE`]).
+pub fn ports_exhausted_hint() -> String {
+    format!(
+        "stopped: this machine ran out of local ports (EADDRNOTAVAIL). Closed connections \
+         hold their port for 30-60s, so new connections must stay under about {}/s: \
+         lower --conn-rate or --rate, or use --conn-mode persistent",
+        crate::runner::SAFE_CONN_RATE
+    )
+}
+
 /// Pass/fail decision for the run; drives the exit code and the summary's
 /// last line.
 #[derive(Debug, Clone, PartialEq)]
@@ -916,5 +927,13 @@ mod tests {
         assert_eq!(v["type"], "summary");
         assert_eq!(v["protocol"], "tcp");
         assert_eq!(v["interrupted"], false);
+    }
+
+    #[test]
+    fn ports_exhausted_hint_names_the_safe_rate() {
+        let hint = ports_exhausted_hint();
+        let rate = format!("about {}/s", crate::runner::SAFE_CONN_RATE);
+        assert!(hint.contains(&rate), "{hint}");
+        assert!(hint.contains("--conn-mode persistent"), "{hint}");
     }
 }

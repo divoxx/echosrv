@@ -43,9 +43,9 @@ pub enum ErrorKind {
     RateLimited,
     /// The echoed payload differs from what was sent.
     Mismatch,
-    /// The client machine ran out of local ports (`EADDRNOTAVAIL`): closed
-    /// connections hold their port in TIME_WAIT, so too many new connections
-    /// per second exhaust the ephemeral range. The run stops when it happens.
+    /// The client machine ran out of local ports (`EADDRNOTAVAIL`), from too
+    /// many new connections per second (see [`crate::runner::SAFE_CONN_RATE`]).
+    /// The run stops when it happens.
     PortsExhausted,
     /// Anything else.
     Other,
@@ -392,7 +392,8 @@ pub struct OutageSummary {
     pub longest_ms: f64,
     /// An outage was still open when the run ended.
     pub ongoing: bool,
-    /// More than 100 outages happened; only the first 100 are listed.
+    /// More than [`MAX_OUTAGE_WINDOWS`] outages happened; only the first
+    /// [`MAX_OUTAGE_WINDOWS`] are listed.
     pub windows_truncated: bool,
     pub windows: Vec<OutageWindow>,
 }

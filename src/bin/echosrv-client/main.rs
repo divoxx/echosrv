@@ -153,12 +153,7 @@ async fn main() -> ExitCode {
 
     let mut summary = runner::run(validated.config, cancel.clone(), on_event).await;
     if summary.stop_reason == runner::STOP_PORTS_EXHAUSTED {
-        output::fail(
-            err_palette,
-            "stopped: this machine ran out of local ports (EADDRNOTAVAIL). Closed connections \
-             hold their port for 30-60s, so new connections must stay well under ~500/s: \
-             lower --conn-rate or --rate, or use --conn-mode persistent",
-        );
+        output::fail(err_palette, &report::ports_exhausted_hint());
     } else if cancel.is_cancelled() {
         summary.stop_reason = stop_reason.get().copied().unwrap_or("completed");
     }

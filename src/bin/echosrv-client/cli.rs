@@ -2,7 +2,7 @@
 
 use crate::report::RunHeader;
 use crate::runner::{
-    ConnMode, DEFAULT_CONN_RATE, DEFAULT_PAYLOAD_SIZE, Filler, RunConfig, Transport,
+    ConnMode, DEFAULT_CONN_RATE, DEFAULT_PAYLOAD_SIZE, Filler, RunConfig, SAFE_CONN_RATE, Transport,
 };
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Parser};
@@ -19,13 +19,11 @@ use std::time::Duration;
 /// Token bucket capacity without `--burst`: smooth pacing.
 pub const DEFAULT_BURST: u32 = 1;
 
-/// Above this rate a tiny bucket can't keep up: each wait is close to the
-/// ~1ms timer resolution and wake-up overshoot is lost to the capacity cap.
+/// Highest `--rate` (req/s) that a bucket smaller than rate/100 can pace
+/// smoothly: above it each wait is close to the ~1ms timer resolution and
+/// wake-up overshoot is lost to the capacity cap. This is about timer
+/// resolution only; it is unrelated to port exhaustion ([`SAFE_CONN_RATE`]).
 const SMOOTH_PACING_MAX_RATE: u32 = 500;
-/// Above this many new TCP connections per second, closed connections in
-/// TIME_WAIT can use up the ephemeral port range (~16k ports held for 30s on
-/// macOS, ~28k for 60s on Linux), which stalls networking machine-wide.
-const SAFE_CONN_RATE: u32 = 400;
 
 /// A rate limit that may be lifted: `unlimited` or a positive number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,8 +182,8 @@ pub struct Cli {
 
     /// Maximum new connections per second across all workers (every
     /// request in per-request mode and for http, reconnects otherwise), or
-    /// `unlimited`. Closed connections hold a local port for 30-60s, so far
-    /// above ~500/s the machine runs out of ports.
+    /// `unlimited`. Closed connections hold a local port for 30-60s, so
+    /// above about 400/s the machine can run out of ports.
     #[arg(
         long,
         value_name = "PER_SEC",
@@ -525,6 +523,9 @@ mod tests {
             "[default: none]",
             "[default: unshaped]",
             &format!("[default: {DEFAULT_PAYLOAD_SIZE},"),
+            // The literal numbers in the flag docs match the constants.
+            &format!("above about {SAFE_CONN_RATE}/s"),
+            &format!("above ~{SMOOTH_PACING_MAX_RATE} req/s"),
         ] {
             assert!(help.contains(needle), "--help lacks {needle:?}:\n{help}");
         }
@@ -759,10 +760,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v.config.conn_rate, None);
+        let safe = format!("above ~{SAFE_CONN_RATE} new connections/s");
         assert!(
             v.warnings
                 .iter()
-                .any(|w| w.starts_with("--conn-rate unlimited:") && w.contains("run out of ports")),
+                .any(|w| w.starts_with("--conn-rate unlimited:") && w.contains(&safe)),
+            "{:?}",
+            v.warnings
+        );
+
+        // The safe rate itself is fine; one more warns.
+        let at = SAFE_CONN_RATE.to_string();
+        let v = parse(&["tcp", "--conn-rate", &at])
+            .unwrap()
+            .resolve()
+            .await
+            .unwrap();
+        assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+        let over = (SAFE_CONN_RATE + 1).to_string();
+        let v = parse(&["tcp", "--conn-rate", &over])
+            .unwrap()
+            .resolve()
+            .await
+            .unwrap();
+        assert!(
+            v.warnings.iter().any(|w| w.contains(&safe)),
             "{:?}",
             v.warnings
         );

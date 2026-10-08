@@ -219,9 +219,10 @@ timeout expires, so use a shorter one there (for example `-t 200ms`).
 
 Every closed TCP connection keeps its local port in `TIME_WAIT` for about 30
 seconds on macOS and 60 seconds on Linux, and the ephemeral port range has
-only about 16,000 (macOS) to 28,000 (Linux) ports. Above roughly 500 new
-connections per second sustained, the machine runs out of local ports, and
-networking then stalls for every application on it, not just the test.
+only about 16,000 (macOS) to 28,000 (Linux) ports. Sustained at about 500 new
+connections per second (470 on Linux, 530 on macOS), the machine runs out of
+local ports, and networking then stalls for every application on it, not just
+the test. 400 per second leaves a safe margin.
 `echosrv-client` therefore protects the machine it runs on:
 
 - **`--conn-rate PER_SEC`** caps new connections per second across all

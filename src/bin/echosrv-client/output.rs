@@ -1,15 +1,15 @@
 //! Terminal styling: a per-stream [`Palette`] and tagged status lines.
 //!
-//! Status lines follow the same layout as tinywyrd's CLI: tags are
-//! right-aligned within a 6-char column and the message starts at column 8;
-//! continuation lines are indented to the message column.
+//! Status lines put the tag right-aligned in a 6-char column, then one
+//! space, so the message starts at column 8; continuation lines are indented
+//! to the message column.
 //!
 //! ```text
-//! [info]  message
-//!   [ok]  message
-//! [warn]  message
-//! [fail]  message
-//!         continuation
+//! [info] message
+//!   [ok] message
+//! [warn] message
+//! [fail] message
+//!        continuation
 //! ```
 //!
 //! Diagnostics ([`info`], [`warn`], [`fail`]) go to stderr. The report on
