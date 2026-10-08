@@ -1,0 +1,159 @@
+//! `echosrv-client`: load / stress-test client for echosrv servers.
+//!
+//! Exit codes: 0 ok, 1 mismatch, error rate above `--max-error-rate` or
+//! local ports exhausted, 2 usage or setup error, 130 aborted by a second Ctrl-C, 141 stdout closed
+//! (e.g. `| head`).
+
+mod cli;
+#[path = "../../cli_help.rs"]
+mod cli_help;
+mod output;
+mod report;
+mod runner;
+mod stats;
+
+use cli::Cli;
+use output::{ColorEnv, Palette, resolve_color};
+use report::Verdict;
+use stats::LiveEvent;
+use std::io::{IsTerminal, Write};
+use std::process::ExitCode;
+use std::sync::{Arc, OnceLock};
+use tokio_util::sync::CancellationToken;
+use tracing_subscriber::EnvFilter;
+
+const EXIT_FAILURE: u8 = 1;
+const EXIT_USAGE: u8 = 2;
+const EXIT_INTERRUPTED: i32 = 130;
+/// 128 + SIGPIPE, what a shell reports for a process killed by a closed pipe.
+const EXIT_BROKEN_PIPE: i32 = 141;
+
+fn init_logging(verbose: bool, ansi: bool) {
+    let level = if verbose { "debug" } else { "warn" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(ansi)
+        .init();
+}
+
+/// Writes one line to stdout. If stdout was closed (e.g. `| head` has
+/// exited), nobody reads the report any more: exit quietly, like a process
+/// killed by SIGPIPE, instead of running on unseen.
+fn emit(line: &str) {
+    let mut out = std::io::stdout().lock();
+    let result = writeln!(out, "{line}").and_then(|()| out.flush());
+    if result.is_err_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe) {
+        std::process::exit(EXIT_BROKEN_PIPE);
+    }
+}
+
+/// Palettes for stdout (the report) and stderr (diagnostics), each decided
+/// against its own stream. JSON on stdout is never colored.
+fn palettes(cli: &Cli) -> (Palette, Palette) {
+    let env = ColorEnv::from_env();
+    let stdout = !cli.json && resolve_color(cli.color, std::io::stdout().is_terminal(), env);
+    let stderr = resolve_color(cli.color, std::io::stderr().is_terminal(), env);
+    if stdout || stderr {
+        output::enable_ansi();
+    }
+    (Palette::new(stdout), Palette::new(stderr))
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let _ = color_eyre::install();
+    // clap exits with 2 on usage errors and 0 for --help/--version.
+    let (cli, matches) = cli_help::parse_with_matches::<Cli>();
+    let (out_palette, err_palette) = palettes(&cli);
+    init_logging(cli.verbose, err_palette != Palette::PLAIN);
+
+    let validated = match cli.resolve().await {
+        Ok(v) => v,
+        Err(e) => {
+            output::fail(err_palette, &e);
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    for w in &validated.warnings {
+        output::warn(err_palette, w);
+    }
+
+    // The resolved configuration goes first, even with `-i 0`.
+    let header = cli.header(&matches, &validated.config);
+    if cli.json {
+        emit(&report::header_json(&header));
+    } else {
+        // Ends with a newline, so `emit` leaves a blank line after it.
+        emit(&report::header_text(&header, out_palette));
+    }
+
+    let cancel = CancellationToken::new();
+    let stop_reason: Arc<OnceLock<&'static str>> = Arc::new(OnceLock::new());
+
+    // First Ctrl-C stops gracefully; a second one aborts with 130.
+    {
+        let cancel = cancel.clone();
+        let stop_reason = stop_reason.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_err() {
+                return;
+            }
+            let _ = stop_reason.set("interrupt");
+            output::info(
+                err_palette,
+                "interrupted: finishing (press Ctrl-C again to abort)",
+            );
+            cancel.cancel();
+            if tokio::signal::ctrl_c().await.is_ok() {
+                output::fail(err_palette, "aborted");
+                std::process::exit(EXIT_INTERRUPTED);
+            }
+        });
+    }
+    if let Some(duration) = cli.duration {
+        let cancel = cancel.clone();
+        let stop_reason = stop_reason.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+            let _ = stop_reason.set("duration");
+            cancel.cancel();
+        });
+    }
+
+    let json = cli.json;
+    let on_event = move |event: LiveEvent| {
+        let line = match (&event, json) {
+            (LiveEvent::Interval(r), false) => report::interval_line(r, out_palette),
+            (LiveEvent::Interval(r), true) => report::interval_json(r),
+            (LiveEvent::Outage(e), false) => report::outage_line(e, out_palette),
+            (LiveEvent::Outage(e), true) => report::outage_json(e),
+        };
+        emit(&line);
+    };
+
+    let mut summary = runner::run(validated.config, cancel.clone(), on_event).await;
+    if summary.stop_reason == runner::STOP_PORTS_EXHAUSTED {
+        output::fail(
+            err_palette,
+            "stopped: this machine ran out of local ports (EADDRNOTAVAIL). Closed connections \
+             hold their port for 30-60s, so new connections must stay well under ~500/s: \
+             lower --conn-rate or --rate, or use --conn-mode persistent",
+        );
+    } else if cancel.is_cancelled() {
+        summary.stop_reason = stop_reason.get().copied().unwrap_or("completed");
+    }
+    let verdict = Verdict::of(&summary, cli.max_error_rate);
+    if json {
+        emit(&report::summary_json(&summary));
+    } else {
+        let text = report::summary_text(&summary, &verdict, out_palette);
+        emit(text.trim_end());
+    }
+    if verdict.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAILURE)
+    }
+}

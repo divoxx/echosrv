@@ -53,6 +53,7 @@ pub fn parse_with_matches<T: CommandFactory + FromArgMatches>() -> (T, ArgMatche
 /// [`DisplayHelp`](clap::error::ErrorKind::DisplayHelp) /
 /// [`DisplayVersion`](clap::error::ErrorKind::DisplayVersion) that carry the
 /// rendered text; `print()` them to show it.
+#[allow(dead_code)] // Not every binary uses every entry point.
 pub fn try_parse_from<T, I, A>(args: I) -> Result<(T, ArgMatches), clap::Error>
 where
     T: CommandFactory + FromArgMatches,
