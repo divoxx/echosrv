@@ -4,7 +4,7 @@ use super::{DatagramConfig, DatagramProtocol};
 use crate::common::lifecycle::{
     ACCEPT_ERROR_BACKOFF, RateLimiters, ShutdownSignal, wait_for_shutdown,
 };
-use crate::common::{EchoServerTrait, ServerStats};
+use crate::common::{EchoServerTrait, ServerStats, payload_preview};
 use crate::network::{Address, FdInheritanceConfig, LocalAddress};
 use crate::{EchoError, Result};
 use async_trait::async_trait;
@@ -210,7 +210,7 @@ where
                                 }
                                 continue;
                             }
-                            trace!(?peer, size = n, preview = %String::from_utf8_lossy(&buffer[..n]), "Received datagram");
+                            trace!(?peer, size = n, preview = %payload_preview(&buffer[..n]), "Received datagram");
                             match timeout(config.write_timeout, P::send_to(&socket, &buffer[..n], &peer)).await {
                                 Ok(Ok(_)) => trace!(?peer, size = n, "Echoed datagram"),
                                 Ok(Err(e)) => warn!(?peer, error = %e, "Failed to send echo response"),

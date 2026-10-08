@@ -40,9 +40,10 @@ pub struct DatagramConfig {
     pub bind_addr: SocketAddr,
     /// Receive buffer size; datagrams larger than this are truncated (must be non-zero)
     pub buffer_size: usize,
-    /// Idle receive timeout. Expiry is not an error; the server keeps waiting.
+    /// Idle receive timeout (must be non-zero). Expiry is not an error; the
+    /// server keeps waiting.
     pub read_timeout: Duration,
-    /// Timeout for sending each echo reply
+    /// Timeout for sending each echo reply (must be non-zero)
     pub write_timeout: Duration,
     /// How to obtain the socket. `None` (the default) binds
     /// [`bind_addr`](Self::bind_addr); `Some` overrides it (inheritance, Unix path).
@@ -106,8 +107,8 @@ impl DatagramConfig {
     }
 
     /// Checks the configuration; returns [`EchoError::Config`] if
-    /// `buffer_size` is zero or the rate limit has a zero `rate_per_sec` or
-    /// `burst`.
+    /// `buffer_size`, `read_timeout` or `write_timeout` is zero, or the rate
+    /// limit has a zero `rate_per_sec` or `burst`.
     pub fn validate(&self) -> Result<()> {
         RateLimitConfig::validate_field(self.rate_limit.as_ref(), "rate_limit")?;
         if self.buffer_size == 0 {
@@ -115,7 +116,7 @@ impl DatagramConfig {
                 "buffer_size must be greater than 0".into(),
             ));
         }
-        Ok(())
+        crate::common::validate_timeouts(self.read_timeout, self.write_timeout)
     }
 }
 
@@ -210,6 +211,31 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_zero_timeouts() {
+        for (config, needle) in [
+            (
+                DatagramConfig {
+                    read_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                "read_timeout",
+            ),
+            (
+                DatagramConfig {
+                    write_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                "write_timeout",
+            ),
+        ] {
+            match config.validate() {
+                Err(EchoError::Config(msg)) => assert!(msg.contains(needle), "{msg}"),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
     }
 
     #[test]
