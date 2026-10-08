@@ -119,6 +119,11 @@ are colored only when stderr is a terminal and `NO_COLOR` is not set;
 server stops accepting, cancels in-flight connections, removes any Unix socket
 file it created, and exits with status 0.
 
+**Exit status.** `echosrv` exits with 0 after a graceful shutdown and for
+`--help`/`--version`, with 2 on usage errors (bad flags, ports or hosts, like
+`echosrv-client`), and with 1 when the server fails at runtime, for example
+when the address is already in use.
+
 **Unix socket files.** If the socket path exists from a previous run and
 nothing is listening on it, the stale file is replaced. A live socket or a
 non-socket file at that path is an error. Missing parent directories are

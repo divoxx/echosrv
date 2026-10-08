@@ -61,12 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **CLI:** the argument parser is now clap. Arguments and behavior are the
-  same (positional `[PROTOCOL] [PORT|SOCKET_PATH]`, `--host`, exit status 1 on
-  usage errors), but error messages use clap's wording, for example
-  "unexpected argument '--bogus'" instead of "unknown option '--bogus'".
+  same (positional `[PROTOCOL] [PORT|SOCKET_PATH]`, `--host`), but error
+  messages use clap's wording, for example "unexpected argument '--bogus'"
+  instead of "unknown option '--bogus'".
   `--accept-rate` and `--max-connections` are rejected for `udp` and
   `unix-dgram`. Logs are colored only when stderr is a terminal and
   `NO_COLOR` is unset.
+- **CLI:** `echosrv` usage errors (bad flags, ports or hosts, an unknown
+  protocol) now exit with status 2, clap's convention and the same as
+  `echosrv-client`, instead of 1. Scripts that check for status 1 on usage
+  errors need updating. `--help` and `--version` still exit 0, and runtime
+  failures such as a bind error still exit 1.
 - **Breaking:** the server config structs gained `rate_limit` (and, for
   stream configs, `accept_rate_limit`). Struct literals without
   `..Default::default()` must add them.
