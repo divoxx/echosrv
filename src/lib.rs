@@ -391,6 +391,7 @@ impl From<HttpProtocolError> for EchoError {
     fn from(err: HttpProtocolError) -> Self {
         match err {
             HttpProtocolError::Io(e) => EchoError::Tcp(e),
+            HttpProtocolError::Bind(e) => e,
             other => EchoError::Http(other.to_string()),
         }
     }
@@ -581,6 +582,26 @@ mod tests {
             assert!(matches!(err, EchoError::Http(_)), "{err:?}");
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn from_http_protocol_error_unwraps_bind_errors() {
+        let err: EchoError = HttpProtocolError::Bind(EchoError::FdInheritance("f".into())).into();
+        assert!(
+            matches!(err, EchoError::FdInheritance(ref m) if m == "f"),
+            "{err:?}"
+        );
+
+        let err: EchoError = HttpProtocolError::Bind(EchoError::Config("c".into())).into();
+        assert!(
+            matches!(err, EchoError::Config(ref m) if m == "c"),
+            "{err:?}"
+        );
+
+        let err: EchoError = HttpProtocolError::Bind(EchoError::Tcp(io_err())).into();
+        assert!(
+            matches!(err, EchoError::Tcp(ref e) if e.kind() == io::ErrorKind::ConnectionRefused)
+        );
     }
 
     #[test]

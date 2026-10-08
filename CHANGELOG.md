@@ -33,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server.
 - **`StreamProtocol` hooks** with default implementations: `reject(stream,
   RejectReason, retry_after)`, `FRAMED_REQUESTS` and `begin_request`.
-
 - **CLI rate-limit and logging flags:** `--rate`, `--burst` (default: the
   rate), `--accept-rate`, `--accept-burst` (default: the accept rate),
   `--max-connections` (default 1000 for tcp/http, 100 for unix-stream) and
@@ -96,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of thousands (which could exhaust the ephemeral port range with TIME_WAIT
   sockets). `tcp_echo` and `tcp_raw` now measure the echo round trip only,
   without connection setup.
+- HTTP servers report bind errors with the same `EchoError` variant as TCP
+  servers. An unusable inherited socket is `EchoError::FdInheritance` and an
+  invalid bind target is `EchoError::Config`; both used to be wrapped as
+  `EchoError::Tcp` ("TCP error: FD inheritance error: ..."). The new
+  `HttpProtocolError::Bind` variant carries the original `EchoError` and
+  converts back into it unchanged.
 
 ## [0.4.0] - Unreleased
 

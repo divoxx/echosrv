@@ -6,7 +6,7 @@ mod common;
 use common::{
     socket_dir, start_http, start_tcp, start_udp, start_unix_datagram, start_unix_stream,
 };
-use echosrv::http::{HttpConfig, HttpEchoClient};
+use echosrv::http::{HttpConfig, HttpEchoClient, HttpEchoServer};
 use echosrv::network::{BindStrategy, BindTarget, InheritedFd};
 use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
 use echosrv::{
@@ -153,12 +153,20 @@ async fn inherited_fd_is_consumed_once() {
     // A second server given the same handle must not double-own the fd.
     let second = TcpEchoServer::new(
         TcpConfig {
-            bind_strategy: Some(BindStrategy::Inherit(fd)),
+            bind_strategy: Some(BindStrategy::Inherit(fd.clone())),
             ..Default::default()
         }
         .into(),
     );
     let err = second.bind().await.err().expect("fd was already consumed");
+    assert!(matches!(err, EchoError::FdInheritance(_)), "{err:?}");
+
+    // HTTP reports the same error kind, not a wrapped TCP I/O error.
+    let http = HttpEchoServer::new(HttpConfig {
+        bind_strategy: Some(BindStrategy::Inherit(fd)),
+        ..Default::default()
+    });
+    let err = http.bind().await.err().expect("fd was already consumed");
     assert!(matches!(err, EchoError::FdInheritance(_)), "{err:?}");
 
     first.stop().await;
@@ -265,6 +273,19 @@ async fn wrong_socket_kinds_are_rejected() {
         Err(EchoError::FdInheritance(_))
     ));
 
+    // UDP socket given to an HTTP server.
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let server = HttpEchoServer::new(HttpConfig {
+        bind_strategy: inherit(udp),
+        ..Default::default()
+    });
+    let err = server
+        .bind()
+        .await
+        .err()
+        .expect("a UDP socket was accepted");
+    assert!(matches!(err, EchoError::FdInheritance(_)), "{err:?}");
+
     // A connected (non-listening) TCP socket given to a TCP server. Detected
     // via SO_ACCEPTCONN, which macOS/BSD do not support (the check is skipped).
     #[cfg(target_os = "linux")]
@@ -323,4 +344,41 @@ async fn wrong_socket_kinds_are_rejected() {
         server.bind().await,
         Err(EchoError::FdInheritance(_))
     ));
+}
+
+/// A Unix path as the bind target of a network server is a configuration
+/// error, reported as such by every network server.
+#[tokio::test]
+async fn unix_bind_target_is_a_config_error() {
+    let dir = socket_dir();
+    let strategy = Some(BindStrategy::Bind(BindTarget::Unix(
+        dir.path().join("not-for-network.sock"),
+    )));
+
+    let tcp = TcpEchoServer::new(
+        TcpConfig {
+            bind_strategy: strategy.clone(),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let err = tcp.bind().await.err().expect("TCP bound a Unix path");
+    assert!(matches!(err, EchoError::Config(_)), "{err:?}");
+
+    let udp = UdpEchoServer::new(
+        UdpConfig {
+            bind_strategy: strategy.clone(),
+            ..Default::default()
+        }
+        .into(),
+    );
+    let err = udp.bind().await.err().expect("UDP bound a Unix path");
+    assert!(matches!(err, EchoError::Config(_)), "{err:?}");
+
+    let http = HttpEchoServer::new(HttpConfig {
+        bind_strategy: strategy,
+        ..Default::default()
+    });
+    let err = http.bind().await.err().expect("HTTP bound a Unix path");
+    assert!(matches!(err, EchoError::Config(_)), "{err:?}");
 }
