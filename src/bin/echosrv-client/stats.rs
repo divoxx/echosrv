@@ -5,6 +5,7 @@ use echosrv::EchoError;
 use hdrhistogram::Histogram;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -409,6 +410,41 @@ pub struct LatencySummary {
     pub max_ms: f64,
 }
 
+/// Why a run stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Every `-n` attempt was made.
+    Completed,
+    /// `--duration` elapsed.
+    Duration,
+    /// SIGINT (Ctrl-C).
+    Interrupt,
+    /// SIGTERM.
+    Terminated,
+    /// The machine ran out of local ports.
+    PortsExhausted,
+}
+
+impl StopReason {
+    /// Short, stable name used in reports and JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Completed => "completed",
+            StopReason::Duration => "duration",
+            StopReason::Interrupt => "interrupt",
+            StopReason::Terminated => "terminated",
+            StopReason::PortsExhausted => "ports_exhausted",
+        }
+    }
+}
+
+impl fmt::Display for StopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Final report of a run.
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
@@ -440,9 +476,9 @@ pub struct Summary {
     pub outages: OutageSummary,
     /// Stopped (a signal or `--duration`) before `-n` attempts completed.
     pub interrupted: bool,
-    /// `completed`, `duration`, `interrupt` (SIGINT), `terminated` (SIGTERM)
-    /// or `ports_exhausted`.
-    pub stop_reason: &'static str,
+    /// Why the run stopped (`completed`, `duration`, `interrupt`,
+    /// `terminated` or `ports_exhausted` in JSON).
+    pub stop_reason: StopReason,
 }
 
 impl Summary {
@@ -588,7 +624,7 @@ impl Aggregator {
             latency: total.latency_summary(),
             outages: self.outages.finish(end),
             interrupted: false,
-            stop_reason: "completed",
+            stop_reason: StopReason::Completed,
         }
     }
 }
@@ -599,6 +635,21 @@ mod tests {
 
     fn io_err(kind: io::ErrorKind) -> io::Error {
         io::Error::from(kind)
+    }
+
+    #[test]
+    fn stop_reason_names_match_serde() {
+        for reason in [
+            StopReason::Completed,
+            StopReason::Duration,
+            StopReason::Interrupt,
+            StopReason::Terminated,
+            StopReason::PortsExhausted,
+        ] {
+            let json = serde_json::to_value(reason).unwrap();
+            assert_eq!(json, reason.as_str());
+            assert_eq!(reason.to_string(), reason.as_str());
+        }
     }
 
     #[test]

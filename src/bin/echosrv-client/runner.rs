@@ -3,7 +3,9 @@
 //! This is the only module that knows how to build a client for each
 //! protocol; everything else works through [`EchoClient`].
 
-use crate::stats::{Aggregator, ErrorKind, LiveEvent, Outcome, Phase, Sample, Summary, classify};
+use crate::stats::{
+    Aggregator, ErrorKind, LiveEvent, Outcome, Phase, Sample, StopReason, Summary, classify,
+};
 use clap::ValueEnum;
 use echosrv::cli::Protocol;
 use echosrv::datagram::DatagramClientConfig;
@@ -15,8 +17,8 @@ use echosrv::{
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -49,8 +51,6 @@ pub const DEFAULT_CONN_RATE: u32 = 100;
 /// limit leaves a margin below both. Other code and messages that mention
 /// the port-exhaustion threshold refer here.
 pub const SAFE_CONN_RATE: u32 = 400;
-/// `stop_reason` of a run stopped because the machine ran out of ports.
-pub const STOP_PORTS_EXHAUSTED: &str = "ports_exhausted";
 
 /// Where and how to connect.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,8 +126,10 @@ impl Filler {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub transport: Transport,
-    /// Total attempts; `None` runs until cancelled.
+    /// Total attempts; `None` runs until stopped.
     pub requests: Option<u64>,
+    /// Stop after this long (`--duration`); `None` = no time limit.
+    pub duration: Option<Duration>,
     pub concurrency: usize,
     /// Client-side shaping (token bucket).
     pub rate: Option<RateLimitConfig>,
@@ -170,6 +172,7 @@ impl RunConfig {
         Self {
             transport,
             requests: None,
+            duration: None,
             concurrency: 1,
             rate: None,
             payload_size: Some(DEFAULT_PAYLOAD_SIZE),
@@ -331,8 +334,8 @@ struct Worker {
     conn_limiter: Option<Arc<TokenBucket>>,
     tx: mpsc::Sender<Sample>,
     cancel: CancellationToken,
-    /// Set (and the run cancelled) when the machine runs out of ports.
-    ports_exhausted: Arc<AtomicBool>,
+    /// Why the run stopped; the first writer wins.
+    stop_reason: Arc<OnceLock<StopReason>>,
 }
 
 impl Worker {
@@ -378,15 +381,14 @@ impl Worker {
         }
     }
 
-    /// On [`ErrorKind::PortsExhausted`], flags it and cancels the whole run:
-    /// retrying only keeps the machine out of ports. Returns whether the
-    /// worker should stop.
+    /// On [`ErrorKind::PortsExhausted`], stops the whole run with
+    /// [`StopReason::PortsExhausted`]: retrying only keeps the machine out of
+    /// ports. Returns whether the worker should stop.
     fn stop_if_ports_exhausted(&self, kind: ErrorKind) -> bool {
         if kind != ErrorKind::PortsExhausted {
             return false;
         }
-        self.ports_exhausted.store(true, Ordering::Relaxed);
-        self.cancel.cancel();
+        stop(&self.cancel, &self.stop_reason, StopReason::PortsExhausted);
         true
     }
 
@@ -500,19 +502,31 @@ impl Worker {
     }
 }
 
-/// Runs the load test until `config.requests` attempts are done or `cancel`
-/// fires, calling `on_event` for live intervals and outage changes.
+/// Records `reason` (unless a reason is already set) and cancels the run.
+pub fn stop(cancel: &CancellationToken, stop_reason: &OnceLock<StopReason>, reason: StopReason) {
+    let _ = stop_reason.set(reason);
+    cancel.cancel();
+}
+
+/// Runs the load test until `config.requests` attempts are done, until
+/// `config.duration` elapses or until `cancel` fires, calling `on_event` for
+/// live intervals and outage changes.
 ///
 /// Cancelling is a graceful stop: no new attempts start, while attempts
 /// already in flight finish (each bounded by `config.timeout`) and are
 /// recorded. To abort in-flight requests, drop the future (or exit).
 ///
-/// The returned summary has run metadata filled in. `stop_reason` is
-/// [`STOP_PORTS_EXHAUSTED`] if the run stopped itself because the machine ran
-/// out of ports, and otherwise `completed` for the caller to adjust.
+/// `stop_reason` is shared with whoever else may stop the run (a signal
+/// handler): set it before cancelling, ideally through [`stop`]. The first
+/// reason set wins. The run itself sets [`StopReason::Duration`] and
+/// [`StopReason::PortsExhausted`], and [`StopReason::Completed`] if nothing
+/// else stopped it first.
+///
+/// The returned summary has run metadata and the stop reason filled in.
 pub async fn run(
     config: RunConfig,
     cancel: CancellationToken,
+    stop_reason: Arc<OnceLock<StopReason>>,
     on_event: impl FnMut(LiveEvent),
 ) -> Summary {
     let config = Arc::new(config);
@@ -520,8 +534,20 @@ pub async fn run(
     let seq = Arc::new(AtomicU64::new(0));
     let shaper = config.rate.map(|r| Arc::new(TokenBucket::new(r)));
     let conn_limiter = config.conn_rate.map(|r| Arc::new(TokenBucket::new(r)));
-    let ports_exhausted = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel(SAMPLE_CHANNEL_CAPACITY);
+
+    let timer = config.duration.map(|duration| {
+        let cancel = cancel.clone();
+        let stop_reason = stop_reason.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = cancel.cancelled() => {}
+                () = tokio::time::sleep(duration) => {
+                    stop(&cancel, &stop_reason, StopReason::Duration);
+                }
+            }
+        })
+    });
 
     let workers: Vec<_> = (0..config.concurrency.max(1))
         .map(|id| {
@@ -533,7 +559,7 @@ pub async fn run(
                 conn_limiter: conn_limiter.clone(),
                 tx: tx.clone(),
                 cancel: cancel.clone(),
-                ports_exhausted: ports_exhausted.clone(),
+                stop_reason: stop_reason.clone(),
             };
             tokio::spawn(worker.run())
         })
@@ -543,6 +569,13 @@ pub async fn run(
     let mut summary = Aggregator::new(start)
         .run(rx, config.interval, on_event)
         .await;
+    // Every worker has dropped its sender, so the run is over: settle the
+    // reason before the timer is gone, so a late timer cannot relabel a run
+    // that completed.
+    let reason = *stop_reason.get_or_init(|| StopReason::Completed);
+    if let Some(timer) = timer {
+        timer.abort();
+    }
     for worker in workers {
         if let Err(e) = worker.await {
             tracing::error!(error = %e, "worker task failed");
@@ -555,9 +588,7 @@ pub async fn run(
     summary.conn_mode = config.conn_mode.as_str();
     summary.requests = config.requests;
     summary.interrupted = config.requests.is_some_and(|n| summary.total < n);
-    if ports_exhausted.load(Ordering::Relaxed) {
-        summary.stop_reason = STOP_PORTS_EXHAUSTED;
-    }
+    summary.stop_reason = reason;
     summary
 }
 

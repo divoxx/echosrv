@@ -104,10 +104,18 @@ fn next_seq_respects_limit() {
 // readiness probes and no serialization between tests. The helpers are
 // shared with the integration tests (`tests/common/mod.rs`).
 
+/// A stop reason nobody has set yet.
+fn unset() -> Arc<OnceLock<StopReason>> {
+    Arc::new(OnceLock::new())
+}
+
 async fn run_n(config: RunConfig) -> Summary {
-    tokio::time::timeout(WAIT * 3, run(config, CancellationToken::new(), |_| {}))
-        .await
-        .expect("run did not finish")
+    tokio::time::timeout(
+        WAIT * 3,
+        run(config, CancellationToken::new(), unset(), |_| {}),
+    )
+    .await
+    .expect("run did not finish")
 }
 
 fn fixed(transport: Transport, n: u64, c: usize) -> RunConfig {
@@ -124,6 +132,7 @@ fn assert_all_ok(s: &Summary, n: u64) {
     assert_eq!(s.errors, 0, "{s:#?}");
     assert_eq!(s.outages.count, 0);
     assert!(!s.interrupted);
+    assert_eq!(s.stop_reason, StopReason::Completed);
     assert!(s.latency.is_some());
 }
 
@@ -295,7 +304,7 @@ async fn errors_back_off_instead_of_reconnecting_in_a_loop() {
             cancel.cancel();
         })
     };
-    let s = tokio::time::timeout(WAIT * 3, run(config, cancel, |_| {}))
+    let s = tokio::time::timeout(WAIT * 3, run(config, cancel, unset(), |_| {}))
         .await
         .expect("run did not finish");
     stop.await.unwrap();
@@ -334,10 +343,13 @@ async fn ports_exhausted_stops_the_run() {
         concurrency: 2,
         ..RunConfig::new(Transport::Tcp("127.0.0.1:0".parse().unwrap()))
     };
-    let s = tokio::time::timeout(WAIT * 3, run(config, CancellationToken::new(), |_| {}))
-        .await
-        .expect("run did not stop by itself");
-    assert_eq!(s.stop_reason, STOP_PORTS_EXHAUSTED);
+    let s = tokio::time::timeout(
+        WAIT * 3,
+        run(config, CancellationToken::new(), unset(), |_| {}),
+    )
+    .await
+    .expect("run did not stop by itself");
+    assert_eq!(s.stop_reason, StopReason::PortsExhausted);
     assert!(s.errors_by_kind["ports_exhausted"] >= 1, "{s:#?}");
     assert_eq!(s.outages.count, 0);
 }
@@ -396,7 +408,7 @@ async fn restart_produces_one_outage(conn_mode: ConnMode) {
     };
     let cancel = CancellationToken::new();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let run_task = tokio::spawn(run(config, cancel.clone(), move |e| {
+    let run_task = tokio::spawn(run(config, cancel.clone(), unset(), move |e| {
         let _ = tx.send(e);
     }));
     let mut events = Vec::new();
@@ -479,7 +491,7 @@ async fn unix_stream_restart_persistent_mode() {
     };
     let cancel = CancellationToken::new();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let run_task = tokio::spawn(run(config, cancel.clone(), move |e| {
+    let run_task = tokio::spawn(run(config, cancel.clone(), unset(), move |e| {
         let _ = tx.send(e);
     }));
     let mut events = Vec::new();
@@ -519,7 +531,7 @@ async fn stop_lets_requests_in_flight_finish() {
     config.concurrency = 2;
     let cancel = CancellationToken::new();
     let started = Instant::now();
-    let run_task = tokio::spawn(run(config, cancel.clone(), |_| {}));
+    let run_task = tokio::spawn(run(config, cancel.clone(), unset(), |_| {}));
     // Both workers' first requests are waiting for their replies.
     for _ in 0..2 {
         tokio::time::timeout(WAIT, requests.recv())
@@ -545,6 +557,7 @@ async fn cancel_before_n_marks_interrupted() {
         ..fixed(Transport::Tcp(addr), 1000, 2)
     };
     let cancel = CancellationToken::new();
+    let reason = unset();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let run_task = tokio::spawn(run(
         RunConfig {
@@ -552,6 +565,7 @@ async fn cancel_before_n_marks_interrupted() {
             ..config
         },
         cancel.clone(),
+        reason.clone(),
         move |e| {
             let _ = tx.send(e);
         },
@@ -564,11 +578,64 @@ async fn cancel_before_n_marks_interrupted() {
         |e| matches!(e, LiveEvent::Interval(r) if r.window.ok > 0),
     )
     .await;
-    cancel.cancel();
+    stop(&cancel, &reason, StopReason::Interrupt);
     let s = tokio::time::timeout(WAIT, run_task).await.unwrap().unwrap();
     assert!(s.interrupted);
+    assert_eq!(s.stop_reason, StopReason::Interrupt);
     assert!(s.total > 0 && s.total < 1000, "{s:#?}");
     assert_eq!(s.errors, 0, "{s:#?}");
+    server.stop().await;
+}
+
+#[test]
+fn first_stop_reason_wins() {
+    let cancel = CancellationToken::new();
+    let reason = OnceLock::new();
+    stop(&cancel, &reason, StopReason::Terminated);
+    assert!(cancel.is_cancelled());
+    stop(&cancel, &reason, StopReason::PortsExhausted);
+    assert_eq!(reason.get(), Some(&StopReason::Terminated));
+}
+
+#[tokio::test]
+async fn duration_stops_the_run() {
+    let server = start_tcp(TcpConfig::default()).await;
+    let addr = server.addr;
+    let duration = Duration::from_millis(300);
+    let config = RunConfig {
+        rate: Some(RateLimitConfig::new(50, 1)),
+        duration: Some(duration),
+        ..RunConfig::new(Transport::Tcp(addr))
+    };
+    let cancel = CancellationToken::new();
+    let started = std::time::Instant::now();
+    let s = tokio::time::timeout(WAIT, run(config, cancel.clone(), unset(), |_| {}))
+        .await
+        .expect("run did not stop at --duration");
+    assert!(started.elapsed() >= duration, "{:?}", started.elapsed());
+    assert!(cancel.is_cancelled());
+    assert_eq!(s.stop_reason, StopReason::Duration);
+    assert!(!s.interrupted, "continuous runs are not 'interrupted'");
+    assert!(s.ok > 0 && s.errors == 0, "{s:#?}");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn completed_run_is_not_stopped_by_its_duration() {
+    let server = start_tcp(TcpConfig::default()).await;
+    let addr = server.addr;
+    let config = RunConfig {
+        duration: Some(Duration::from_millis(200)),
+        ..fixed(Transport::Tcp(addr), 5, 1)
+    };
+    let cancel = CancellationToken::new();
+    let s = tokio::time::timeout(WAIT, run(config, cancel.clone(), unset(), |_| {}))
+        .await
+        .expect("run did not finish");
+    assert_all_ok(&s, 5);
+    // The timer went with the run: it never fires afterwards.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!cancel.is_cancelled());
     server.stop().await;
 }
 

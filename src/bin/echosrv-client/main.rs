@@ -19,7 +19,7 @@ use echosrv::cli::color::{ColorEnv, resolve_color};
 use echosrv::cli::{help, init_logging};
 use output::Palette;
 use report::Verdict;
-use stats::LiveEvent;
+use stats::{LiveEvent, StopReason};
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
@@ -79,7 +79,7 @@ async fn main() -> ExitCode {
     }
 
     // Register the handlers before the header is printed and the run (and
-    // the `--duration` timer) starts: a signal that arrived before them
+    // its `--duration` timer) starts: a signal that arrived before them
     // would get the default action and kill the client without a summary.
     let signals = match (
         signal(SignalKind::interrupt()),
@@ -105,7 +105,7 @@ async fn main() -> ExitCode {
     }
 
     let cancel = CancellationToken::new();
-    let stop_reason: Arc<OnceLock<&'static str>> = Arc::new(OnceLock::new());
+    let stop_reason: Arc<OnceLock<StopReason>> = Arc::new(OnceLock::new());
 
     // The first SIGINT (Ctrl-C) or SIGTERM stops gracefully: no new requests
     // start, and the ones in flight finish and are reported. A second
@@ -116,30 +116,20 @@ async fn main() -> ExitCode {
         let (mut int, mut term) = signals;
         tokio::spawn(async move {
             let reason = tokio::select! {
-                _ = int.recv() => "interrupt",
-                _ = term.recv() => "terminated",
+                _ = int.recv() => StopReason::Interrupt,
+                _ = term.recv() => StopReason::Terminated,
             };
-            let _ = stop_reason.set(reason);
             output::info(
                 err_palette,
                 "stopping: letting requests in flight finish (signal again to abort)",
             );
-            cancel.cancel();
+            runner::stop(&cancel, &stop_reason, reason);
             let code = tokio::select! {
                 _ = int.recv() => EXIT_INTERRUPTED,
                 _ = term.recv() => EXIT_TERMINATED,
             };
             output::fail(err_palette, "aborted");
             std::process::exit(i32::from(code));
-        });
-    }
-    if let Some(duration) = cli.duration {
-        let cancel = cancel.clone();
-        let stop_reason = stop_reason.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(duration).await;
-            let _ = stop_reason.set("duration");
-            cancel.cancel();
         });
     }
 
@@ -154,11 +144,9 @@ async fn main() -> ExitCode {
         emit(&line);
     };
 
-    let mut summary = runner::run(validated.config, cancel.clone(), on_event).await;
-    if summary.stop_reason == runner::STOP_PORTS_EXHAUSTED {
+    let summary = runner::run(validated.config, cancel, stop_reason, on_event).await;
+    if summary.stop_reason == StopReason::PortsExhausted {
         output::fail(err_palette, &report::ports_exhausted_hint());
-    } else if cancel.is_cancelled() {
-        summary.stop_reason = stop_reason.get().copied().unwrap_or("completed");
     }
     let verdict = Verdict::of(&summary, cli.max_error_rate);
     if json {

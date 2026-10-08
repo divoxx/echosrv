@@ -189,8 +189,8 @@ stats.rs    Aggregator ── interval Window (hdrhistogram) ──> LiveEvent::
                        ── OutageTracker ──────────────────> LiveEvent::Outage (start/end)
                        └─ on channel close ───────────────> Summary
 report.rs   text or JSON lines for each event; Verdict from the Summary
-main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new attempts,
-            in-flight attempts finish); a second signal exits 130/143; verdict -> exit code
+main.rs     SIGINT/SIGTERM stop the run (CancellationToken: no new attempts, in-flight
+            attempts finish); a second signal exits 130/143; verdict -> exit code
 ```
 
 - **Workers** take sequence numbers from a shared counter (so `-n` is exact
@@ -203,6 +203,12 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
   `connect_failed`, `reset` and `timeout`. A
   `ports_exhausted` error cancels the whole run and sets the
   `ports_exhausted` stop reason.
+- **Stop reason.** `runner::run` takes the `CancellationToken` and an
+  `Arc<OnceLock<StopReason>>`; whoever stops the run sets the reason first
+  (`runner::stop`), and the first reason set wins. The signal handler in
+  `main.rs` sets `interrupt` / `terminated`, the runner's own `--duration`
+  timer sets `duration`, a worker sets `ports_exhausted`, and a run nobody
+  stopped is `completed`.
 - **Outages** are tracked by the single aggregator, so they are global across
   workers. A success closes an outage only if the attempt started after the
   outage did; samples arrive slightly out of order and in-flight requests can
