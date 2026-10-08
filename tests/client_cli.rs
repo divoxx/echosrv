@@ -694,3 +694,45 @@ async fn second_sigterm_aborts() {
     assert_eq!(status.code(), Some(143));
     server.abort();
 }
+
+/// The handlers are in place once the header is out, before any request:
+/// a signal at that moment still stops gracefully with a summary.
+#[tokio::test]
+async fn sigterm_right_after_header_still_reports() {
+    use tokio::io::AsyncBufReadExt;
+    let _serial = serial().await;
+    let (addr, _requests, server) = slow_echo_server(Duration::from_millis(300)).await;
+    let target = addr.to_string();
+    let mut child = client_command(&["tcp", &target, "-c", "2", "-i", "0", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let header = tokio::time::timeout(common::WAIT, stdout.next_line())
+        .await
+        .expect("no header")
+        .unwrap()
+        .expect("stdout closed before the header");
+
+    send_signal(&child, libc::SIGTERM);
+    let rest = tokio::time::timeout(RUN_TIMEOUT, async {
+        let mut lines = Vec::new();
+        while let Some(line) = stdout.next_line().await.unwrap() {
+            lines.push(line);
+        }
+        lines
+    })
+    .await
+    .expect("client did not stop");
+    let status = tokio::time::timeout(RUN_TIMEOUT, child.wait())
+        .await
+        .expect("client did not exit")
+        .unwrap();
+    assert_eq!(status.code(), Some(0), "header: {header}\nstdout: {rest:?}");
+    let summary: serde_json::Value =
+        serde_json::from_str(rest.last().expect("no summary")).unwrap();
+    assert_eq!(summary["type"], "summary");
+    assert_eq!(summary["stop_reason"], "terminated");
+    server.abort();
+}

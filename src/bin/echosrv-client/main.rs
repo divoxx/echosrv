@@ -84,6 +84,23 @@ async fn main() -> ExitCode {
         output::warn(err_palette, w);
     }
 
+    // Register the handlers before the header is printed and the run (and
+    // the `--duration` timer) starts: a signal that arrived before them
+    // would get the default action and kill the client without a summary.
+    let signals = match (
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::terminate()),
+    ) {
+        (Ok(int), Ok(term)) => (int, term),
+        (Err(e), _) | (_, Err(e)) => {
+            output::fail(
+                err_palette,
+                &format!("cannot install the SIGINT / SIGTERM handlers: {e}"),
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+
     // The resolved configuration goes first, even with `-i 0`.
     let header = cli.header(&matches, &validated.config);
     if cli.json {
@@ -102,13 +119,8 @@ async fn main() -> ExitCode {
     {
         let cancel = cancel.clone();
         let stop_reason = stop_reason.clone();
+        let (mut int, mut term) = signals;
         tokio::spawn(async move {
-            let (Ok(mut int), Ok(mut term)) = (
-                signal(SignalKind::interrupt()),
-                signal(SignalKind::terminate()),
-            ) else {
-                return;
-            };
             let reason = tokio::select! {
                 _ = int.recv() => "interrupt",
                 _ = term.recv() => "terminated",
