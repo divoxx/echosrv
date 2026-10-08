@@ -275,6 +275,105 @@ async fn test_inherited_socket_file_is_not_removed() {
     );
 }
 
+/// An inherited unnamed socket (here an unbound datagram socket) has no
+/// address to report, but binding must still succeed.
+#[tokio::test]
+async fn test_inherited_unnamed_datagram_socket() {
+    let unbound = std::os::unix::net::UnixDatagram::unbound().unwrap();
+    let config = UnixDatagramConfig {
+        bind_strategy: BindStrategy::Inherit(InheritedFd::new(OwnedFd::from(unbound))),
+        ..UnixDatagramConfig::default()
+    };
+    let server = UnixDatagramEchoServer::new(config);
+    let shutdown = server.shutdown_signal();
+    let bound = server.bind().await.unwrap();
+    assert_eq!(bound.local_addr(), &Address::UnixUnnamed);
+    let handle = tokio::spawn(bound.serve());
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+/// A unique abstract socket name for this test process.
+#[cfg(target_os = "linux")]
+fn abstract_name(tag: &str) -> (Vec<u8>, std::os::unix::net::SocketAddr) {
+    use std::os::linux::net::SocketAddrExt;
+    let name = format!("echosrv-test-{tag}-{}", std::process::id()).into_bytes();
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(&name).unwrap();
+    (name, addr)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_inherited_abstract_stream_socket() {
+    use crate::stream::Client;
+
+    let (name, addr) = abstract_name("stream");
+    let parent = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
+    let config = UnixStreamConfig {
+        bind_strategy: BindStrategy::Inherit(InheritedFd::new(OwnedFd::from(parent))),
+        ..UnixStreamConfig::default()
+    };
+    let server = UnixStreamEchoServer::new(config);
+    let shutdown = server.shutdown_signal();
+    let bound = server.bind().await.unwrap();
+    let local = bound.local_addr().clone();
+    assert_eq!(local, Address::UnixAbstract(name.clone()));
+    assert_eq!(
+        local.to_string(),
+        format!("unix:@{}", String::from_utf8(name).unwrap())
+    );
+    let handle = tokio::spawn(bound.serve());
+
+    let mut client = Client::<UnixStreamProtocol>::connect(local).await.unwrap();
+    assert_eq!(client.echo_string("abstract").await.unwrap(), "abstract");
+    drop(client);
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_inherited_abstract_datagram_socket() {
+    let (name, addr) = abstract_name("dgram");
+    let parent = std::os::unix::net::UnixDatagram::bind_addr(&addr).unwrap();
+    let config = UnixDatagramConfig {
+        bind_strategy: BindStrategy::Inherit(InheritedFd::new(OwnedFd::from(parent))),
+        ..UnixDatagramConfig::default()
+    };
+    let server = UnixDatagramEchoServer::new(config);
+    let shutdown = server.shutdown_signal();
+    let bound = server.bind().await.unwrap();
+    assert_eq!(bound.local_addr(), &Address::UnixAbstract(name));
+    let handle = tokio::spawn(bound.serve());
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn test_connect_abstract_is_unsupported_off_linux() {
+    let result = UnixStreamProtocol::connect_address(&Address::UnixAbstract(b"x".to_vec())).await;
+    assert!(
+        matches!(result, Err(EchoError::Unsupported(_))),
+        "{result:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_unix_stream_connection_limit() {
     let server = StreamServer::start(|c| UnixStreamConfig {

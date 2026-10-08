@@ -62,7 +62,7 @@ impl ManagedUnixDatagram {
 
 impl LocalAddress for ManagedUnixDatagram {
     fn local_address(&self) -> std::io::Result<Address> {
-        unix_address(&self.socket.local_addr()?)
+        Ok(unix_address(self.socket.local_addr()?))
     }
 }
 

@@ -1,4 +1,5 @@
-//! [`Address`]: a network socket address or a Unix socket path.
+//! [`Address`]: a network socket address or a Unix socket address (a path, an
+//! abstract name or unnamed).
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -12,6 +13,17 @@ pub enum Address {
     Network(SocketAddr),
     /// Unix domain socket path
     Unix(PathBuf),
+    /// Unix domain socket in the Linux abstract namespace, without the
+    /// leading NUL byte (systemd `ListenStream=@name`). Written `unix:@name`.
+    ///
+    /// Abstract sockets exist only on Linux (and Android); connecting to one
+    /// elsewhere fails with [`EchoError::Unsupported`](crate::EchoError::Unsupported).
+    UnixAbstract(Vec<u8>),
+    /// Unnamed Unix domain socket: not bound to a path or an abstract name
+    /// (e.g. one end of a `socketpair(2)` or an unbound datagram socket).
+    /// Displayed as `unix:(unnamed)`, which does not parse back to this
+    /// variant.
+    UnixUnnamed,
 }
 
 impl fmt::Display for Address {
@@ -19,6 +31,9 @@ impl fmt::Display for Address {
         match self {
             Address::Network(addr) => write!(f, "{addr}"),
             Address::Unix(path) => write!(f, "unix:{}", path.display()),
+            // Abstract names are arbitrary bytes; invalid UTF-8 is replaced.
+            Address::UnixAbstract(name) => write!(f, "unix:@{}", String::from_utf8_lossy(name)),
+            Address::UnixUnnamed => f.write_str("unix:(unnamed)"),
         }
     }
 }
@@ -43,8 +58,9 @@ impl From<&std::path::Path> for Address {
 
 /// Fallible conversion from a string.
 ///
-/// Equivalent to [`str::parse`]: strings prefixed with `unix:` become
-/// [`Address::Unix`], everything else must be a valid [`SocketAddr`].
+/// Equivalent to [`str::parse`]: strings prefixed with `unix:@` become
+/// [`Address::UnixAbstract`], other strings prefixed with `unix:` become
+/// [`Address::Unix`], and everything else must be a valid [`SocketAddr`].
 ///
 /// # Examples
 ///
@@ -63,8 +79,12 @@ impl TryFrom<&str> for Address {
     }
 }
 
-/// Parses `unix:<path>` as [`Address::Unix`] and anything else as a
-/// [`SocketAddr`] (e.g. `127.0.0.1:8080`, `[::1]:8080`).
+/// Parses `unix:@<name>` as [`Address::UnixAbstract`], `unix:<path>` as
+/// [`Address::Unix`] and anything else as a [`SocketAddr`] (e.g.
+/// `127.0.0.1:8080`, `[::1]:8080`).
+///
+/// As with systemd, a leading `@` denotes the abstract namespace; write
+/// `unix:./@name` for a file whose name starts with `@`.
 ///
 /// Returns [`EchoError::Config`](crate::EchoError::Config) for an invalid
 /// socket address or an empty Unix path (`"unix:"`).
@@ -77,6 +97,9 @@ impl FromStr for Address {
                 return Err(crate::EchoError::Config(
                     "Invalid Unix socket address: empty path after 'unix:'".to_string(),
                 ));
+            }
+            if let Some(name) = stripped.strip_prefix('@') {
+                return Ok(Address::UnixAbstract(name.as_bytes().to_vec()));
             }
             Ok(Address::Unix(PathBuf::from(stripped)))
         } else {
@@ -93,9 +116,13 @@ impl Address {
         matches!(self, Address::Network(_))
     }
 
-    /// Returns true if this is a Unix domain socket address
+    /// Returns true if this is a Unix domain socket address (a path, an
+    /// abstract name or unnamed)
     pub fn is_unix(&self) -> bool {
-        matches!(self, Address::Unix(_))
+        matches!(
+            self,
+            Address::Unix(_) | Address::UnixAbstract(_) | Address::UnixUnnamed
+        )
     }
 
     /// Get the network address if this is a network address
@@ -106,10 +133,19 @@ impl Address {
         }
     }
 
-    /// Get the Unix path if this is a Unix domain socket
+    /// Get the Unix path if this is a Unix domain socket bound to a path
     pub fn as_unix(&self) -> Option<&PathBuf> {
         match self {
             Address::Unix(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Get the abstract name (without the leading NUL byte) if this is a
+    /// Unix domain socket in the abstract namespace
+    pub fn as_unix_abstract(&self) -> Option<&[u8]> {
+        match self {
+            Address::UnixAbstract(name) => Some(name),
             _ => None,
         }
     }
@@ -161,6 +197,44 @@ mod tests {
             assert_eq!(addr.as_unix().unwrap(), Path::new(path), "{input}");
             assert!(addr.as_network().is_none());
         }
+    }
+
+    #[test]
+    fn parse_unix_abstract_names() {
+        for (input, name) in [
+            ("unix:@echo", &b"echo"[..]),
+            ("unix:@", b""),
+            ("unix:@@x", b"@x"),
+            ("unix:@with/slash", b"with/slash"),
+        ] {
+            let addr: Address = input.parse().unwrap();
+            assert_eq!(addr, Address::UnixAbstract(name.to_vec()), "{input}");
+            assert!(addr.is_unix(), "{input}");
+            assert!(!addr.is_network(), "{input}");
+            assert_eq!(addr.as_unix_abstract(), Some(name), "{input}");
+            assert!(addr.as_unix().is_none(), "{input}");
+        }
+        // A path whose file name starts with '@' is still a path.
+        assert_eq!(
+            "unix:./@echo".parse::<Address>().unwrap(),
+            Address::Unix(PathBuf::from("./@echo"))
+        );
+    }
+
+    #[test]
+    fn unnamed_unix_address() {
+        let addr = Address::UnixUnnamed;
+        assert!(addr.is_unix());
+        assert!(!addr.is_network());
+        assert!(addr.as_unix().is_none());
+        assert!(addr.as_unix_abstract().is_none());
+        assert_eq!(addr.to_string(), "unix:(unnamed)");
+    }
+
+    #[test]
+    fn abstract_display_replaces_invalid_utf8() {
+        let addr = Address::UnixAbstract(b"a\xffb".to_vec());
+        assert_eq!(addr.to_string(), "unix:@a\u{fffd}b");
     }
 
     #[test]
@@ -223,6 +297,8 @@ mod tests {
             "[2001:db8::42]:8443",
             "unix:/run/echo.sock",
             "unix:rel/echo.sock",
+            "unix:@echo",
+            "unix:@",
         ] {
             let addr: Address = input.parse().unwrap();
             assert_eq!(addr.to_string(), input);

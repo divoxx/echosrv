@@ -87,6 +87,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `DatagramClientConfig::buffer_size`, instead of truncating it.
 - `HttpEchoClient` reads responses in chunks of `ClientConfig::buffer_size`
   (it used a fixed 8 KiB buffer).
+- **Breaking:** `Address` has two new variants, `UnixAbstract(Vec<u8>)` (a
+  Linux abstract-namespace socket, written `unix:@name`) and `UnixUnnamed`.
+  Exhaustive matches on `Address` must handle them. `"unix:@name"` now parses
+  as `UnixAbstract`; write `unix:./@name` for a file whose name starts with
+  `@`. `Address::is_unix()` is true for all three Unix variants, and
+  `Address::as_unix_abstract()` returns the abstract name. Unix stream clients
+  can connect to `UnixAbstract` addresses on Linux. The minimum Tokio version
+  is now 1.41.
+
+### Fixed
+
+- Inheriting an abstract-namespace Unix socket (systemd
+  `ListenStream=@name`) or an unnamed one no longer fails at `bind()` with
+  `AddrNotAvailable`: `local_addr()` reports it as `Address::UnixAbstract` or
+  `Address::UnixUnnamed`. Inherited sockets are never unlinked, so an
+  abstract socket is never mistaken for a socket file.
 
 ### Fixed
 

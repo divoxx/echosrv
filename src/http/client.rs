@@ -127,10 +127,9 @@ impl HttpEchoClient {
     ) -> Result<Self> {
         let addr = match address.into() {
             Address::Network(addr) => addr,
-            Address::Unix(path) => {
+            unix => {
                 return Err(EchoError::Unsupported(format!(
-                    "HTTP echo client does not support Unix socket {}",
-                    path.display()
+                    "HTTP echo client does not support Unix socket {unix}"
                 )));
             }
         };
