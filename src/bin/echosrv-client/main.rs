@@ -13,7 +13,7 @@ mod stats;
 
 use cli::Cli;
 use echosrv::cli::color::{ColorEnv, resolve_color};
-use echosrv::cli::help;
+use echosrv::cli::{help, init_logging};
 use output::Palette;
 use report::Verdict;
 use stats::LiveEvent;
@@ -22,7 +22,6 @@ use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::EnvFilter;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
@@ -31,16 +30,6 @@ const EXIT_INTERRUPTED: i32 = 130;
 const EXIT_TERMINATED: i32 = 143;
 /// 128 + SIGPIPE, what a shell reports for a process killed by a closed pipe.
 const EXIT_BROKEN_PIPE: i32 = 141;
-
-fn init_logging(verbose: bool, ansi: bool) {
-    let level = if verbose { "debug" } else { "warn" };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(ansi)
-        .init();
-}
 
 /// Writes one line to stdout. If stdout was closed (e.g. `| head` has
 /// exited), nobody reads the report any more: exit quietly, like a process
@@ -71,7 +60,10 @@ async fn main() -> ExitCode {
     // clap exits with 2 on usage errors and 0 for --help/--version.
     let (cli, matches) = help::parse_with_matches::<Cli>();
     let (out_palette, err_palette) = palettes(&cli);
-    init_logging(cli.verbose, err_palette != Palette::PLAIN);
+    init_logging(
+        if cli.verbose { "debug" } else { "warn" },
+        err_palette != Palette::PLAIN,
+    );
 
     let validated = match cli.resolve().await {
         Ok(v) => v,

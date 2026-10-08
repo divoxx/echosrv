@@ -152,6 +152,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The default build is unchanged.
 - The server's logs honor `CLICOLOR_FORCE` like `echosrv-client` does: set,
   it colors them even when stderr is not a terminal.
+- `echosrv` and `echosrv-client` share one protocol list and target parser.
+  `echosrv-client` now reports an unknown protocol like the server does
+  (`unknown protocol 'gopher' (possible values: ...)`), its help describes
+  `http` as "HTTP echo server (echoes POST bodies)", and it rejects a
+  `HOST:PORT` target with a non-numeric or empty part as a usage error
+  instead of failing to resolve it. `echosrv` rejects an empty socket path
+  as a usage error instead of failing to bind it.
 
 ## [0.4.0] - Unreleased
 
