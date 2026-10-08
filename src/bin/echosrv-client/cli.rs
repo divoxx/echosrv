@@ -863,7 +863,15 @@ mod tests {
         assert!(matches!(v.config.transport, Transport::UnixDgram(_)));
         assert_eq!(v.warnings.len(), 1);
 
-        let cli = parse(&["tcp", "no-such-host.invalid:80"]).unwrap();
-        assert!(cli.resolve().await.is_err());
+        // An unresolvable host is an error. The 64-byte label is over the DNS
+        // limit of 63, so the resolver rejects it without a network lookup;
+        // the timeout bounds the test if a resolver tries anyway.
+        let host = format!("{}.invalid:80", "x".repeat(64));
+        let cli = parse(&["tcp", &host]).unwrap();
+        let resolved = tokio::time::timeout(std::time::Duration::from_secs(10), cli.resolve())
+            .await
+            .expect("resolving an over-long host name timed out");
+        let err = resolved.expect_err("over-long host name resolved");
+        assert!(err.contains("cannot resolve"), "{err}");
     }
 }
