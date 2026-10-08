@@ -1143,18 +1143,24 @@ mod tests {
         assert!(s.errors_by_kind["connect_failed"] > 0, "{s:#?}");
     }
 
-    /// A TCP echo server that waits `delay` before each reply.
-    async fn slow_echo_server(delay: Duration) -> (SocketAddr, JoinHandle<()>) {
+    /// A TCP echo server that waits `delay` before each reply. It sends `()`
+    /// on the returned channel as each request arrives.
+    async fn slow_echo_server(
+        delay: Duration,
+    ) -> (SocketAddr, mpsc::UnboundedReceiver<()>, JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind(localhost()).await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
         let handle = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
+                let tx = tx.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 4096];
                     while let Ok(n) = stream.read(&mut buf).await {
                         if n == 0 {
                             break;
                         }
+                        let _ = tx.send(());
                         tokio::time::sleep(delay).await;
                         if stream.write_all(&buf[..n]).await.is_err() {
                             break;
@@ -1163,20 +1169,27 @@ mod tests {
                 });
             }
         });
-        (addr, handle)
+        (addr, rx, handle)
     }
 
     #[tokio::test]
     async fn stop_lets_requests_in_flight_finish() {
         let delay = Duration::from_millis(300);
-        let (addr, server) = slow_echo_server(delay).await;
+        let (addr, mut requests, server) = slow_echo_server(delay).await;
         let mut config = RunConfig::new(Transport::Tcp(addr));
         config.concurrency = 2;
         let cancel = CancellationToken::new();
         let started = Instant::now();
         let run_task = tokio::spawn(run(config, cancel.clone(), |_| {}));
-        // Both workers' first requests are waiting for their replies.
-        tokio::time::sleep(delay / 3).await;
+        // Cancel once both workers' first requests are waiting for their
+        // replies.
+        tokio::time::timeout(WAIT, async {
+            for _ in 0..2 {
+                requests.recv().await.unwrap();
+            }
+        })
+        .await
+        .expect("both requests did not reach the server");
         cancel.cancel();
         let s = tokio::time::timeout(WAIT, run_task)
             .await
