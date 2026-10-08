@@ -128,9 +128,6 @@ pub fn defaulted(matches: &ArgMatches) -> Vec<HeaderField> {
 /// so the output records what was actually used.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunHeader {
-    /// Always `"config"`.
-    #[serde(rename = "type")]
-    pub kind: &'static str,
     #[serde(flatten)]
     pub info: RunInfo,
     /// `None` = no time limit.
@@ -183,7 +180,6 @@ impl RunHeader {
     /// threshold, which is not part of the run itself.
     pub fn new(config: &RunConfig, max_error_rate_pct: f64, defaults: Vec<HeaderField>) -> Self {
         Self {
-            kind: "config",
             info: RunInfo::new(config),
             duration_s: config.duration,
             rate: config.rate.map(|r| r.rate_per_sec),
@@ -244,7 +240,6 @@ mod tests {
     #[tokio::test]
     async fn header_marks_defaults() {
         let h = header_for(&[]).await;
-        assert_eq!(h.kind, "config");
         assert_eq!(
             (h.info.protocol, h.info.target.as_str()),
             ("tcp", "127.0.0.1:8080")

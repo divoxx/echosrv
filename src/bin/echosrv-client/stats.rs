@@ -28,7 +28,10 @@ pub enum Phase {
 }
 
 /// Error classes reported by the client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+///
+/// Kinds are ordered by name (see the [`Ord`] impl), so maps keyed by kind
+/// ([`ErrorCounts`]) list them alphabetically in text and JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     /// The server actively refused the connection (nothing listening on the
@@ -56,7 +59,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// All kinds, in index order.
-    pub const ALL: [ErrorKind; ErrorKind::COUNT] = [
+    pub const ALL: [ErrorKind; 8] = [
         ErrorKind::ConnectRefused,
         ErrorKind::ConnectFailed,
         ErrorKind::Reset,
@@ -68,7 +71,7 @@ impl ErrorKind {
     ];
 
     /// Number of kinds.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = Self::ALL.len();
 
     /// Position of this kind in [`ErrorKind::ALL`].
     pub fn index(self) -> usize {
@@ -104,6 +107,28 @@ impl ErrorKind {
         )
     }
 }
+
+impl Ord for ErrorKind {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl PartialOrd for ErrorKind {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error counts by kind, in name order. Serializes as a JSON object keyed by
+/// the kinds' names.
+pub type ErrorCounts = BTreeMap<ErrorKind, u64>;
 
 /// Maps a library error to an [`ErrorKind`].
 ///
@@ -212,12 +237,12 @@ impl Window {
         (!self.hist.is_empty()).then(|| Duration::from_micros(self.hist.value_at_quantile(q)))
     }
 
-    /// Non-zero error counts by kind name.
-    pub fn nonzero_errors(&self) -> BTreeMap<&'static str, u64> {
+    /// Non-zero error counts by kind.
+    pub fn nonzero_errors(&self) -> ErrorCounts {
         ErrorKind::ALL
-            .iter()
-            .filter(|k| self.errors_of(**k) > 0)
-            .map(|k| (k.as_str(), self.errors_of(*k)))
+            .into_iter()
+            .filter(|k| self.errors_of(*k) > 0)
+            .map(|k| (k, self.errors_of(k)))
             .collect()
     }
 
@@ -457,7 +482,7 @@ pub struct RunStats {
     /// All failed attempts, including rate-limited ones and mismatches.
     pub errors: u64,
     /// Every error kind, including zero counts.
-    pub errors_by_kind: BTreeMap<&'static str, u64>,
+    pub errors_by_kind: ErrorCounts,
     /// `errors / total * 100`.
     pub error_rate_pct: f64,
     /// Attempts per second.
@@ -472,7 +497,7 @@ pub struct RunStats {
 impl RunStats {
     pub fn mismatches(&self) -> u64 {
         self.errors_by_kind
-            .get(ErrorKind::Mismatch.as_str())
+            .get(&ErrorKind::Mismatch)
             .copied()
             .unwrap_or(0)
     }
@@ -481,9 +506,6 @@ impl RunStats {
 /// Final report of a run: what was run, its statistics and how it ended.
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
-    /// Always `"summary"`.
-    #[serde(rename = "type")]
-    pub kind: &'static str,
     #[serde(flatten)]
     pub info: RunInfo,
     #[serde(flatten)]
@@ -498,7 +520,6 @@ pub struct Summary {
 impl Summary {
     pub fn new(info: RunInfo, stats: RunStats, stop_reason: StopReason) -> Self {
         Self {
-            kind: "summary",
             interrupted: info.requests.is_some_and(|n| stats.total < n),
             info,
             stats,
@@ -621,8 +642,8 @@ impl Aggregator {
             ok: total.ok,
             errors,
             errors_by_kind: ErrorKind::ALL
-                .iter()
-                .map(|k| (k.as_str(), total.errors_of(*k)))
+                .into_iter()
+                .map(|k| (k, total.errors_of(k)))
                 .collect(),
             error_rate_pct: if total.count == 0 {
                 0.0
@@ -792,6 +813,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn error_kind_names_match_serde_and_order() {
+        for k in ErrorKind::ALL {
+            assert_eq!(serde_json::to_value(k).unwrap(), k.as_str());
+            assert_eq!(k.to_string(), k.as_str());
+        }
+        let mut by_kind = ErrorKind::ALL;
+        by_kind.sort();
+        let mut by_name = ErrorKind::ALL.map(ErrorKind::as_str);
+        by_name.sort_unstable();
+        assert_eq!(by_kind.map(ErrorKind::as_str), by_name);
+    }
+
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
     }
@@ -941,7 +975,7 @@ mod tests {
         assert_eq!(a.errors_of(ErrorKind::Reset), 1);
         assert_eq!(
             a.nonzero_errors().into_iter().collect::<Vec<_>>(),
-            vec![("rate_limited", 1), ("reset", 1)]
+            vec![(ErrorKind::RateLimited, 1), (ErrorKind::Reset, 1)]
         );
 
         let p50 = a.percentile(0.5).unwrap().as_secs_f64() * 1000.0;

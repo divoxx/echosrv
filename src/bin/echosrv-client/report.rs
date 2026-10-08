@@ -6,9 +6,8 @@
 use crate::cli::DEFAULT_BURST;
 use crate::header::{HeaderField, RunHeader};
 use crate::output::{Palette, Tag, tagged};
-use crate::stats::{ErrorKind, IntervalReport, OutageEvent, StopReason, Summary};
+use crate::stats::{ErrorCounts, ErrorKind, IntervalReport, OutageEvent, StopReason, Summary};
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -43,6 +42,16 @@ fn err_style(p: Palette, count: u64, s: &str) -> String {
     if count > 0 { p.red(s) } else { p.dim(s) }
 }
 
+/// Non-zero counts as `name=count` pairs separated by spaces, in name order.
+fn fmt_error_counts(counts: &ErrorCounts) -> String {
+    let parts: Vec<_> = counts
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(kind, n)| format!("{kind}={n}"))
+        .collect();
+    parts.join(" ")
+}
+
 /// `[  12.0s] 4821 req/s ok=4821 err=3 (reset=3) p50=0.18ms p99=0.92ms OUTAGE`
 ///
 /// `OUTAGE` means an outage is still open at the end of the interval; the
@@ -57,10 +66,9 @@ pub fn interval_line(r: &IntervalReport, p: Palette) -> String {
         p.green(&format!("ok={}", w.ok)),
         err_style(p, errs, &format!("err={errs}")),
     );
-    let errors = w.nonzero_errors();
+    let errors = fmt_error_counts(&w.nonzero_errors());
     if !errors.is_empty() {
-        let parts: Vec<_> = errors.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let _ = write!(line, " {}", p.red(&format!("({})", parts.join(" "))));
+        let _ = write!(line, " {}", p.red(&format!("({errors})")));
     }
     let _ = write!(
         line,
@@ -74,29 +82,51 @@ pub fn interval_line(r: &IntervalReport, p: Palette) -> String {
     line
 }
 
-/// JSON line for one interval (fields in a fixed, readable order).
+/// One line of `--json` output, tagged with its `type` (`config`,
+/// `interval`, `outage_start`, `outage_end` or `summary`) as the first key.
+/// The other fields keep the order they are declared in.
 #[derive(Serialize)]
-struct IntervalJson<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    elapsed_s: f64,
-    interval_s: f64,
-    req_per_sec: f64,
-    total: u64,
-    ok: u64,
-    errors: u64,
-    errors_by_kind: BTreeMap<&'a str, u64>,
-    p50_ms: Option<f64>,
-    p99_ms: Option<f64>,
-    /// An outage is still open at the end of the interval.
-    outage_open: bool,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum JsonLine<'a> {
+    /// The resolved configuration, before the first interval.
+    Config(&'a RunHeader),
+    Interval {
+        elapsed_s: f64,
+        interval_s: f64,
+        req_per_sec: f64,
+        total: u64,
+        ok: u64,
+        errors: u64,
+        /// Non-zero counts only.
+        errors_by_kind: ErrorCounts,
+        p50_ms: Option<f64>,
+        p99_ms: Option<f64>,
+        /// An outage is still open at the end of the interval.
+        outage_open: bool,
+    },
+    OutageStart {
+        elapsed_s: f64,
+        kind: ErrorKind,
+    },
+    OutageEnd {
+        elapsed_s: f64,
+        start_s: f64,
+        duration_ms: f64,
+        errors: u64,
+    },
+    Summary(&'a Summary),
+}
+
+impl JsonLine<'_> {
+    fn render(&self) -> String {
+        serde_json::to_string(self).expect("report types serialize")
+    }
 }
 
 pub fn interval_json(r: &IntervalReport) -> String {
     let w = &r.window;
     let ms = |q| w.percentile(q).map(dur_ms);
-    to_json(&IntervalJson {
-        kind: "interval",
+    JsonLine::Interval {
         elapsed_s: r.elapsed_s,
         interval_s: r.length.as_secs_f64(),
         req_per_sec: r.rate(),
@@ -107,7 +137,8 @@ pub fn interval_json(r: &IntervalReport) -> String {
         p50_ms: ms(0.50),
         p99_ms: ms(0.99),
         outage_open: r.outage_open,
-    })
+    }
+    .render()
 }
 
 /// `[    3.2s] [fail] outage started (connect_refused)` /
@@ -139,43 +170,24 @@ pub fn outage_line(e: &OutageEvent, p: Palette) -> String {
     }
 }
 
-/// JSON line for an outage start/end.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum OutageJson {
-    OutageStart {
-        elapsed_s: f64,
-        kind: ErrorKind,
-    },
-    OutageEnd {
-        elapsed_s: f64,
-        start_s: f64,
-        duration_ms: f64,
-        errors: u64,
-    },
-}
-
 pub fn outage_json(e: &OutageEvent) -> String {
-    to_json(&match *e {
-        OutageEvent::Started { at_s, kind } => OutageJson::OutageStart {
+    match *e {
+        OutageEvent::Started { at_s, kind } => JsonLine::OutageStart {
             elapsed_s: at_s,
             kind,
         },
-        OutageEvent::Ended { at_s, window } => OutageJson::OutageEnd {
+        OutageEvent::Ended { at_s, window } => JsonLine::OutageEnd {
             elapsed_s: at_s,
             start_s: window.start_s,
             duration_ms: window.duration_ms,
             errors: window.errors,
         },
-    })
-}
-
-fn to_json<T: Serialize>(value: &T) -> String {
-    serde_json::to_string(value).expect("report types serialize")
+    }
+    .render()
 }
 
 pub fn summary_json(s: &Summary) -> String {
-    to_json(s)
+    JsonLine::Summary(s).render()
 }
 
 /// `5s`, `100ms`, `1.5s`, `2m`, `1h`, `250us`: the largest unit that gives a
@@ -302,7 +314,7 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
 }
 
 pub fn header_json(h: &RunHeader) -> String {
-    to_json(h)
+    JsonLine::Config(h).render()
 }
 
 /// Hint on stderr when the run stopped because the machine ran out of
@@ -454,14 +466,12 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
         s.stats.ok_per_sec
     );
     if s.stats.errors > 0 {
-        let parts: Vec<_> = s
-            .stats
-            .errors_by_kind
-            .iter()
-            .filter(|(_, v)| **v > 0)
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        let _ = writeln!(out, "{}{}", label(p, "errors"), p.red(&parts.join(" ")));
+        let _ = writeln!(
+            out,
+            "{}{}",
+            label(p, "errors"),
+            p.red(&fmt_error_counts(&s.stats.errors_by_kind))
+        );
     }
     match &s.stats.latency {
         Some(l) => {
@@ -606,7 +616,6 @@ mod tests {
 
     fn header(defaults: &[HeaderField]) -> RunHeader {
         RunHeader {
-            kind: "config",
             info: info(),
             duration_s: None,
             rate: None,
@@ -794,6 +803,79 @@ mod tests {
         assert_eq!(strip_ansi(&colored), outage_line(&ended, Palette::PLAIN));
     }
 
+    #[test]
+    fn error_counts_format() {
+        let counts = ErrorCounts::from([
+            (ErrorKind::Timeout, 2),
+            (ErrorKind::Mismatch, 0),
+            (ErrorKind::ConnectRefused, 5),
+        ]);
+        assert_eq!(fmt_error_counts(&counts), "connect_refused=5 timeout=2");
+        assert_eq!(fmt_error_counts(&ErrorCounts::new()), "");
+    }
+
+    #[test]
+    fn interval_json_lines() {
+        let line = |elapsed_s, window, outage_open| {
+            interval_json(&IntervalReport {
+                elapsed_s,
+                length: Duration::from_secs(1),
+                window,
+                outage_open,
+            })
+        };
+        assert_eq!(
+            line(2.0, window(), false),
+            r#"{"type":"interval","elapsed_s":2.0,"interval_s":1.0,"req_per_sec":13.0,"total":13,"ok":10,"errors":3,"errors_by_kind":{"reset":3},"p50_ms":0.18000000000000002,"p99_ms":0.18000000000000002,"outage_open":false}"#
+        );
+        // Error kinds are listed by name, whatever order they happened in.
+        let mut w = Window::default();
+        for kind in [
+            ErrorKind::Timeout,
+            ErrorKind::PortsExhausted,
+            ErrorKind::Other,
+            ErrorKind::ConnectRefused,
+            ErrorKind::Timeout,
+            ErrorKind::RateLimited,
+            ErrorKind::ConnectFailed,
+        ] {
+            w.record(&Sample {
+                at: Instant::now(),
+                latency: Duration::ZERO,
+                outcome: Outcome::Err(kind),
+            });
+        }
+        assert_eq!(
+            line(3.5, w, true),
+            r#"{"type":"interval","elapsed_s":3.5,"interval_s":1.0,"req_per_sec":7.0,"total":7,"ok":0,"errors":7,"errors_by_kind":{"connect_failed":1,"connect_refused":1,"other":1,"ports_exhausted":1,"rate_limited":1,"timeout":2},"p50_ms":null,"p99_ms":null,"outage_open":true}"#
+        );
+    }
+
+    #[test]
+    fn outage_json_lines() {
+        let started = OutageEvent::Started {
+            at_s: 3.2,
+            kind: ErrorKind::ConnectRefused,
+        };
+        assert_eq!(
+            outage_json(&started),
+            r#"{"type":"outage_start","elapsed_s":3.2,"kind":"connect_refused"}"#
+        );
+        let ended = OutageEvent::Ended {
+            at_s: 4.1,
+            window: OutageWindow {
+                start_s: 3.2,
+                duration_ms: 920.0,
+                errors: 37,
+                ongoing: false,
+            },
+        };
+        assert_eq!(
+            outage_json(&ended),
+            r#"{"type":"outage_end","elapsed_s":4.1,"start_s":3.2,"duration_ms":920.0,"errors":37}"#
+        );
+    }
+
     /// Removes `ESC [ ... m` sequences.
     fn strip_ansi(s: &str) -> String {
         let mut out = String::new();
@@ -831,9 +913,7 @@ mod tests {
             v.line(Palette::PLAIN),
             "  [ok] no mismatches, error rate 5.00% within --max-error-rate 5%"
         );
-        s.stats
-            .errors_by_kind
-            .insert(ErrorKind::Mismatch.as_str(), 2);
+        s.stats.errors_by_kind.insert(ErrorKind::Mismatch, 2);
         assert_eq!(Verdict::of(&s, 100.0), Verdict::Mismatches(2));
         assert_eq!(
             Verdict::Mismatches(2).line(Palette::PLAIN),

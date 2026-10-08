@@ -217,7 +217,11 @@ async fn refused_port_counts_attempts_and_outage() {
         let s = run_n(config).await;
         assert_eq!(s.stats.total, 20);
         assert_eq!(s.stats.ok, 0);
-        assert_eq!(s.stats.errors_by_kind["connect_refused"], 20, "{s:#?}");
+        assert_eq!(
+            s.stats.errors_by_kind[&ErrorKind::ConnectRefused],
+            20,
+            "{s:#?}"
+        );
         assert!((s.stats.error_rate_pct - 100.0).abs() < 1e-9);
         assert!(s.stats.latency.is_none());
         assert_eq!(s.stats.outages.count, 1);
@@ -238,7 +242,11 @@ async fn missing_unix_socket_is_connect_failed() {
         let mut config = fixed(transport, 4, 1);
         config.reconnect_delay = Duration::ZERO;
         let s = run_n(config).await;
-        assert_eq!(s.stats.errors_by_kind["connect_failed"], 4, "{s:#?}");
+        assert_eq!(
+            s.stats.errors_by_kind[&ErrorKind::ConnectFailed],
+            4,
+            "{s:#?}"
+        );
         assert_eq!(s.stats.outages.count, 1);
     }
 }
@@ -267,7 +275,7 @@ async fn wrong_echo_is_a_mismatch() {
     let mut config = fixed(Transport::Tcp(addr), 5, 1);
     config.conn_mode = ConnMode::PerRequest;
     let s = run_n(config).await;
-    assert_eq!(s.stats.errors_by_kind["mismatch"], 5, "{s:#?}");
+    assert_eq!(s.stats.errors_by_kind[&ErrorKind::Mismatch], 5, "{s:#?}");
     assert_eq!(s.stats.mismatches(), 5);
     // A live server echoing wrong bytes is not an outage.
     assert_eq!(s.stats.outages.count, 0, "{s:#?}");
@@ -311,7 +319,7 @@ async fn errors_back_off_instead_of_reconnecting_in_a_loop() {
     // 10+20+40+80ms, then 100ms each: about 13 attempts per worker in
     // 1s. Without the backoff it was thousands.
     assert!(s.stats.total > 4 && s.stats.total <= 4 * 20, "{s:#?}");
-    assert_eq!(s.stats.errors_by_kind["reset"], s.stats.total);
+    assert_eq!(s.stats.errors_by_kind[&ErrorKind::Reset], s.stats.total);
     server.abort();
 }
 
@@ -350,7 +358,10 @@ async fn ports_exhausted_stops_the_run() {
     .await
     .expect("run did not stop by itself");
     assert_eq!(s.stop_reason, StopReason::PortsExhausted);
-    assert!(s.stats.errors_by_kind["ports_exhausted"] >= 1, "{s:#?}");
+    assert!(
+        s.stats.errors_by_kind[&ErrorKind::PortsExhausted] >= 1,
+        "{s:#?}"
+    );
     assert_eq!(s.stats.outages.count, 0);
 }
 
@@ -361,7 +372,7 @@ async fn short_echo_then_close_is_reset_not_ok() {
     config.conn_mode = ConnMode::PerRequest;
     let s = run_n(config).await;
     assert_eq!(s.stats.ok, 0, "{s:#?}");
-    assert_eq!(s.stats.errors_by_kind["reset"], 5, "{s:#?}");
+    assert_eq!(s.stats.errors_by_kind[&ErrorKind::Reset], 5, "{s:#?}");
     assert_eq!(s.stats.mismatches(), 0);
     server.abort();
 }
@@ -454,7 +465,7 @@ async fn restart_produces_one_outage(conn_mode: ConnMode) {
     let mode = conn_mode.as_str();
     assert!(s.stats.ok > 0, "{mode}: {s:#?}");
     assert!(
-        s.stats.errors_by_kind["connect_refused"] > 0,
+        s.stats.errors_by_kind[&ErrorKind::ConnectRefused] > 0,
         "{mode}: {s:#?}"
     );
     assert_eq!(s.stats.outages.count, 1, "{mode}: {s:#?}");
@@ -523,7 +534,10 @@ async fn unix_stream_restart_persistent_mode() {
     assert_eq!(s.stats.outages.count, 1, "{s:#?}");
     assert!(s.stats.outages.longest_ms >= 200.0, "{s:#?}");
     // The removed socket file shows up as a missing path.
-    assert!(s.stats.errors_by_kind["connect_failed"] > 0, "{s:#?}");
+    assert!(
+        s.stats.errors_by_kind[&ErrorKind::ConnectFailed] > 0,
+        "{s:#?}"
+    );
 }
 
 #[tokio::test]
@@ -676,9 +690,13 @@ async fn server_rate_limit_is_not_an_outage() {
     };
     let s = run_n(config).await;
     assert!(s.stats.ok >= 10, "{s:#?}");
-    assert!(s.stats.errors_by_kind["rate_limited"] > 0, "{s:#?}");
+    assert!(
+        s.stats.errors_by_kind[&ErrorKind::RateLimited] > 0,
+        "{s:#?}"
+    );
     assert_eq!(
-        s.stats.errors, s.stats.errors_by_kind["rate_limited"],
+        s.stats.errors,
+        s.stats.errors_by_kind[&ErrorKind::RateLimited],
         "{s:#?}"
     );
     assert_eq!(s.stats.outages.count, 0, "{s:#?}");
@@ -699,7 +717,7 @@ async fn honor_retry_after_waits() {
     };
     let started = std::time::Instant::now();
     let s = run_n(config).await;
-    assert_eq!(s.stats.errors_by_kind["rate_limited"], 1, "{s:#?}");
+    assert_eq!(s.stats.errors_by_kind[&ErrorKind::RateLimited], 1, "{s:#?}");
     assert_eq!(s.stats.ok, 2, "{s:#?}");
     assert!(started.elapsed() >= Duration::from_millis(900));
     server.stop().await;
