@@ -35,13 +35,20 @@ const DATAGRAM_BUFFER_SIZE: usize = 65_536;
 const MAX_HEADER_LEN: usize = 64;
 /// Payload size without `--payload-size` or `--payload`, header included.
 pub const DEFAULT_PAYLOAD_SIZE: usize = 64;
-/// Default cap on new connections per second, across all workers.
-///
-/// Every closed TCP connection holds a local port in TIME_WAIT for 30-60s,
-/// and the ephemeral range has ~16k ports (macOS) to ~28k (Linux), so a
-/// sustained rate above roughly 500/s runs the machine out of ports and
-/// stalls networking for every application on it.
+/// Default cap on new connections per second, across all workers; well
+/// under [`SAFE_CONN_RATE`].
 pub const DEFAULT_CONN_RATE: u32 = 100;
+/// Highest sustained rate of new TCP connections per second that is safe
+/// for the machine the client runs on; `--conn-rate` above it warns.
+///
+/// Every closed TCP connection holds its local port in TIME_WAIT: about 30s
+/// on macOS, 60s on Linux. The ephemeral port range has about 16k ports on
+/// macOS and 28k on Linux, so the machine runs out of local ports at roughly
+/// 16k / 30s = 530/s (macOS) or 28k / 60s = 470/s (Linux), and networking
+/// then stalls for every application on it, not just the load test. This
+/// limit leaves a margin below both. Other code and messages that mention
+/// the port-exhaustion threshold refer here.
+pub const SAFE_CONN_RATE: u32 = 400;
 /// `stop_reason` of a run stopped because the machine ran out of ports.
 pub const STOP_PORTS_EXHAUSTED: &str = "ports_exhausted";
 
@@ -1274,8 +1281,7 @@ mod tests {
         let (addr, server) = http_server(Some(RateLimitConfig::new(10, 10))).await;
         // 60 requests at 100/s against a server admitting 10/s plus a burst
         // of 10: the excess gets 429. (Shaped rather than unbounded: every
-        // HTTP request is a new connection, and an unbounded flood exhausts
-        // ephemeral ports via TIME_WAIT.)
+        // HTTP request is a new connection; see `SAFE_CONN_RATE`.)
         let config = RunConfig {
             rate: Some(RateLimitConfig::new(100, 8)),
             ..fixed(Transport::Http(addr), 60, 8)
