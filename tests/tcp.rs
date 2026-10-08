@@ -178,6 +178,7 @@ async fn connection_limit_rejects_extra_and_frees_slot() {
         read_until_closed(&mut third).await.is_empty(),
         "over-limit connection must not be echoed"
     );
+    assert_eq!(server.stats.rejected_over_capacity(), 1);
 
     // The held connections are unaffected.
     assert_eq!(first.echo_string("still").await.unwrap(), "still");

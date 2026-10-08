@@ -2,8 +2,8 @@
 
 use super::{RejectReason, StreamConfig, StreamProtocol};
 use crate::common::lifecycle::{
-    ACCEPT_ERROR_BACKOFF, ConnectionGuard, REJECT_TIMEOUT, RateLimiters, ShutdownSignal,
-    wait_for_shutdown,
+    ACCEPT_ERROR_BACKOFF, ConnectionGuard, MAX_PENDING_REJECTIONS, REJECT_TIMEOUT, RateLimiters,
+    ShutdownSignal, wait_for_shutdown,
 };
 use crate::common::{EchoServerTrait, ServerStats};
 use crate::network::{Address, FdInheritanceConfig, LocalAddress};
@@ -25,7 +25,10 @@ use tracing::{Instrument, debug, error, info, trace, warn};
 /// such as TCP, HTTP or Unix streams.
 ///
 /// Features:
-/// * bounded concurrency (`max_connections`; extra connections are closed),
+/// * bounded concurrency (`max_connections`; extra connections are rejected
+///   through [`StreamProtocol::reject`] with
+///   [`RejectReason::TooManyConnections`] and counted in
+///   [`stats`](Self::stats)),
 /// * per-read and per-write timeouts,
 /// * optional request and new-connection rate limits
 ///   ([`StreamConfig::rate_limit`], [`StreamConfig::accept_rate_limit`]);
@@ -114,7 +117,7 @@ where
         &self.config
     }
 
-    /// The server's counters (rate-limit rejections).
+    /// The server's counters (rate-limit and connection-limit rejections).
     ///
     /// The handle is shared with every bound server created from this one,
     /// so it can be read while the server runs.
@@ -195,6 +198,7 @@ where
         let config = Arc::new(config);
         let limits = Limits { limiters, stats };
         let active = Arc::new(AtomicUsize::new(0));
+        let rejecting = Arc::new(AtomicUsize::new(0));
         let cancel = CancellationToken::new();
         let mut tasks = JoinSet::new();
 
@@ -215,33 +219,50 @@ where
                 accepted = P::accept(&mut listener) => {
                     match accepted {
                         Ok((stream, addr)) => {
-                            let Some(guard) = ConnectionGuard::try_acquire(&active, config.max_connections) else {
-                                warn!(%addr, limit = config.max_connections, "Connection rejected: limit reached");
-                                drop(stream);
-                                continue;
+                            let span = tracing::debug_span!("connection", %addr);
+                            let admitted = match ConnectionGuard::try_acquire(&active, config.max_connections) {
+                                None => {
+                                    let total = limits.stats.inc_rejected_over_capacity();
+                                    debug!(%addr, limit = config.max_connections, total, "Connection rejected: limit reached");
+                                    Err((RejectReason::TooManyConnections, Duration::ZERO))
+                                }
+                                Some(guard) => match limits.limiters.check_connection() {
+                                    Ok(()) => Ok(guard),
+                                    Err(limited) => {
+                                        let total = limits.stats.inc_rejected_connections();
+                                        debug!(%addr, retry_after = ?limited.retry_after, total, "Connection rejected: accept rate limited");
+                                        Err((RejectReason::ConnectionRateLimited, limited.retry_after))
+                                    }
+                                },
+                            };
+                            let guard = match admitted {
+                                Ok(guard) => guard,
+                                Err((reason, retry_after)) => {
+                                    // Rejecting may involve I/O (e.g. HTTP reads the
+                                    // request and answers 429 or 503), so do it off the
+                                    // accept loop, in a pool of its own: rejections must
+                                    // not take the slots of admitted connections.
+                                    let Some(slot) = ConnectionGuard::try_acquire(&rejecting, MAX_PENDING_REJECTIONS) else {
+                                        debug!(%addr, ?reason, "Too many pending rejections, closing connection");
+                                        drop(stream);
+                                        continue;
+                                    };
+                                    let cancel = cancel.clone();
+                                    tasks.spawn(
+                                        async move {
+                                            let _slot = slot;
+                                            let mut stream = stream;
+                                            tokio::select! {
+                                                () = send_rejection::<P>(&mut stream, reason, retry_after) => {}
+                                                _ = cancel.cancelled() => {}
+                                            }
+                                        }
+                                        .instrument(span),
+                                    );
+                                    continue;
+                                }
                             };
                             let cancel = cancel.clone();
-                            let span = tracing::debug_span!("connection", %addr);
-
-                            if let Err(limited) = limits.limiters.check_connection() {
-                                let total = limits.stats.inc_rejected_connections();
-                                debug!(%addr, retry_after = ?limited.retry_after, total, "Connection rejected: accept rate limited");
-                                // Rejecting may involve I/O (e.g. HTTP reads the
-                                // request and answers 429), so do it off the accept
-                                // loop. The guard bounds how many run at once.
-                                tasks.spawn(
-                                    async move {
-                                        let _guard = guard;
-                                        let mut stream = stream;
-                                        tokio::select! {
-                                            () = send_rejection::<P>(&mut stream, RejectReason::ConnectionRateLimited, limited.retry_after) => {}
-                                            _ = cancel.cancelled() => {}
-                                        }
-                                    }
-                                    .instrument(span),
-                                );
-                                continue;
-                            }
 
                             debug!(%addr, active = guard.active(), "Accepted connection");
 

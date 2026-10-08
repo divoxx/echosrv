@@ -54,9 +54,9 @@ impl Response {
 
 /// Sends `request` on a new connection and reads the response until EOF.
 /// A reset instead of EOF fails the test: the 429 must arrive intact.
-async fn http_exchange(addr: SocketAddr, request: &[u8]) -> Response {
+async fn http_exchange(addr: SocketAddr, request: impl AsRef<[u8]>) -> Response {
     let mut stream = TcpStream::connect(addr).await.unwrap();
-    stream.write_all(request).await.unwrap();
+    stream.write_all(request.as_ref()).await.unwrap();
     let mut raw = Vec::new();
     tokio::time::timeout(WAIT, stream.read_to_end(&mut raw))
         .await
@@ -183,6 +183,88 @@ async fn http_connection_over_accept_limit_gets_429() {
 
     assert_eq!(server.stats.rejected_connections(), 2);
     assert_eq!(server.stats.rejected_requests(), 0);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn http_connection_over_max_connections_gets_503() {
+    let server = start_http(HttpConfig {
+        max_connections: 1,
+        ..HttpConfig::default()
+    })
+    .await;
+
+    // Takes the only slot: admitted, then waits for its request head.
+    let mut held = TcpStream::connect(server.addr).await.unwrap();
+
+    let response = http_exchange(server.addr, &post("over")).await;
+    assert_eq!(response.status, 503, "{}", response.head);
+    assert!(
+        response
+            .head
+            .starts_with("HTTP/1.1 503 Service Unavailable\r\n")
+    );
+    assert_eq!(response.header("Connection"), Some("close"));
+    assert_eq!(response.header("Retry-After"), None);
+
+    // The library client sees the 503 as a status error, not rate limiting.
+    let mut client = HttpEchoClient::connect(server.addr).await.unwrap();
+    let err = client.echo(b"over").await.unwrap_err();
+    assert!(
+        matches!(err, EchoError::HttpStatus { status: 503, .. }),
+        "{err:?}"
+    );
+    assert!(!err.is_rate_limited());
+
+    assert_eq!(server.stats.rejected_over_capacity(), 2);
+    assert_eq!(server.stats.rejected_connections(), 0);
+
+    // The held connection is still served.
+    held.write_all(&post("held")).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(WAIT, held.read_to_end(&mut raw))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(raw.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(raw.ends_with(b"held"));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn http_accept_limit_flood_does_not_take_connection_slots() {
+    const FLOOD: usize = 20;
+    let server = start_http(HttpConfig {
+        max_connections: 2,
+        ..HttpConfig::default().with_accept_rate_limit(ONE_PER_SEC)
+    })
+    .await;
+
+    // Admitted first (takes the accept token and one of the two slots).
+    let mut admitted = TcpStream::connect(server.addr).await.unwrap();
+
+    // Every connection of the flood is over the accept limit. Its rejection
+    // runs in the rejection pool, so the second slot stays free and every one
+    // of them gets its 429 (a rejection holding the slot would turn the rest
+    // away as over capacity).
+    let flood: Vec<_> = (0..FLOOD)
+        .map(|_| tokio::spawn(http_exchange(server.addr, post("flood"))))
+        .collect();
+    for task in flood {
+        assert_too_many_requests(&task.await.unwrap());
+    }
+    assert_eq!(server.stats.rejected_connections(), FLOOD as u64);
+    assert_eq!(server.stats.rejected_over_capacity(), 0);
+
+    // The admitted client is served.
+    admitted.write_all(&post("admitted")).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(WAIT, admitted.read_to_end(&mut raw))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(raw.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(raw.ends_with(b"admitted"));
     server.stop().await;
 }
 
