@@ -338,6 +338,7 @@ impl Cli {
             config: RunConfig {
                 transport,
                 requests: self.requests,
+                duration: self.duration,
                 concurrency: self.concurrency,
                 rate: self.rate.map(|rate| RateLimitConfig::new(rate, burst)),
                 payload_size,

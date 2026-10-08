@@ -5,7 +5,7 @@
 
 use crate::cli::DEFAULT_BURST;
 use crate::output::{Palette, Tag, tagged};
-use crate::stats::{ErrorKind, IntervalReport, OutageEvent, Summary};
+use crate::stats::{ErrorKind, IntervalReport, OutageEvent, StopReason, Summary};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -393,9 +393,14 @@ pub enum Verdict {
 
 impl Verdict {
     pub fn of(s: &Summary, max_error_rate: f64) -> Self {
-        if s.stop_reason == crate::runner::STOP_PORTS_EXHAUSTED {
-            Verdict::PortsExhausted
-        } else if s.total == 0 {
+        match s.stop_reason {
+            StopReason::PortsExhausted => return Verdict::PortsExhausted,
+            StopReason::Completed
+            | StopReason::Duration
+            | StopReason::Interrupt
+            | StopReason::Terminated => {}
+        }
+        if s.total == 0 {
             Verdict::NoAttempts
         } else if s.mismatches() > 0 {
             Verdict::Mismatches(s.mismatches())
@@ -889,7 +894,7 @@ mod tests {
         );
 
         // Running out of local ports fails the run whatever the error rate.
-        s.stop_reason = crate::runner::STOP_PORTS_EXHAUSTED;
+        s.stop_reason = StopReason::PortsExhausted;
         let v = Verdict::of(&s, 100.0);
         assert_eq!(v, Verdict::PortsExhausted);
         assert!(!v.passed());
@@ -897,6 +902,17 @@ mod tests {
             v.line(Palette::PLAIN),
             "[fail] stopped: the client machine ran out of local ports"
         );
+        // Any other way of stopping leaves the verdict to the results.
+        s.errors_by_kind.clear();
+        for reason in [
+            StopReason::Completed,
+            StopReason::Duration,
+            StopReason::Interrupt,
+            StopReason::Terminated,
+        ] {
+            s.stop_reason = reason;
+            assert!(Verdict::of(&s, 5.0).passed(), "{reason}");
+        }
     }
 
     #[test]
@@ -910,7 +926,7 @@ mod tests {
         assert_eq!(v.line(Palette::PLAIN), "[fail] no requests were attempted");
         // Running out of ports is the more specific reason.
         let mut s = s;
-        s.stop_reason = crate::runner::STOP_PORTS_EXHAUSTED;
+        s.stop_reason = StopReason::PortsExhausted;
         assert_eq!(Verdict::of(&s, 100.0), Verdict::PortsExhausted);
     }
 
@@ -937,6 +953,19 @@ mod tests {
         assert_eq!(v["type"], "summary");
         assert_eq!(v["protocol"], "tcp");
         assert_eq!(v["interrupted"], false);
+        assert_eq!(v["stop_reason"], "completed");
+        assert!(text.contains("(completed)"), "{text}");
+
+        // Stop reasons keep their snake_case names in text and JSON.
+        agg_summary.stop_reason = StopReason::PortsExhausted;
+        agg_summary.interrupted = true;
+        let v: serde_json::Value = serde_json::from_str(&summary_json(&agg_summary)).unwrap();
+        assert_eq!(v["stop_reason"], "ports_exhausted");
+        let text = summary_text(&agg_summary, &Verdict::PortsExhausted, Palette::PLAIN);
+        assert!(
+            text.contains("(ports_exhausted, interrupted before -n completed)"),
+            "{text}"
+        );
     }
 
     #[test]
