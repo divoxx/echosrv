@@ -859,7 +859,9 @@ curl --data-binary hello http://127.0.0.1:8080/
 
 For UDP, use `ListenDatagram=` and `echosrv udp`. For Unix sockets, use
 `ListenStream=/run/echosrv.sock` with `echosrv unix-stream`, or
-`ListenDatagram=/run/echosrv.sock` with `echosrv unix-dgram`. Do not set
+`ListenDatagram=/run/echosrv.sock` with `echosrv unix-dgram`. On Linux,
+abstract sockets (`ListenStream=@echosrv`) work too; the server reports their
+address as `unix:@echosrv`. Do not set
 `Accept=yes`: the server needs the listening socket, not individual
 connections. systemd keeps the socket open while the service restarts, so
 clients queue in the backlog instead of being refused.

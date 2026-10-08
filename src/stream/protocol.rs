@@ -78,18 +78,15 @@ pub trait StreamProtocol: Send + Sync + 'static {
     /// Connects to a server at a unified [`Address`] (client-side).
     ///
     /// The default implementation handles [`Address::Network`] via
-    /// [`connect`](Self::connect) and rejects [`Address::Unix`] with an
+    /// [`connect`](Self::connect) and rejects Unix socket addresses with an
     /// [`Unsupported`](std::io::ErrorKind::Unsupported) I/O error. Unix
     /// protocols override it.
     async fn connect_address(addr: &Address) -> std::result::Result<Self::Stream, Self::Error> {
         match addr {
             Address::Network(addr) => Self::connect(*addr).await,
-            Address::Unix(path) => Err(Self::map_io_error(std::io::Error::new(
+            unix => Err(Self::map_io_error(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                format!(
-                    "protocol does not support Unix socket address {}",
-                    path.display()
-                ),
+                format!("protocol does not support Unix socket address {unix}"),
             ))),
         }
     }

@@ -51,7 +51,7 @@ impl ManagedUnixListener {
 
 impl LocalAddress for ManagedUnixListener {
     fn local_address(&self) -> std::io::Result<Address> {
-        unix_address(&self.listener.local_addr()?)
+        Ok(unix_address(self.listener.local_addr()?))
     }
 }
 
@@ -101,6 +101,37 @@ impl BuildSocket<ManagedUnixListener> for UnixStreamSocketBuilder {
             ))),
         }
     }
+}
+
+/// Connects to a stream socket in the Linux abstract namespace.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+async fn connect_abstract(name: &[u8]) -> Result<UnixStream> {
+    #[cfg(target_os = "android")]
+    use std::os::android::net::SocketAddrExt;
+    #[cfg(target_os = "linux")]
+    use std::os::linux::net::SocketAddrExt;
+
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name).map_err(EchoError::Unix)?;
+    // std has no non-blocking connect for a `SocketAddr`, and a blocking
+    // connect waits while the listener's backlog is full.
+    let stream = tokio::task::spawn_blocking(move || {
+        let stream = std::os::unix::net::UnixStream::connect_addr(&addr)?;
+        stream.set_nonblocking(true)?;
+        Ok::<_, std::io::Error>(stream)
+    })
+    .await
+    .map_err(|e| EchoError::Unix(std::io::Error::other(e)))?
+    .map_err(EchoError::Unix)?;
+    UnixStream::from_std(stream).map_err(EchoError::Unix)
+}
+
+/// Abstract Unix sockets exist only on Linux and Android.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+async fn connect_abstract(name: &[u8]) -> Result<UnixStream> {
+    Err(EchoError::Unsupported(format!(
+        "abstract Unix socket @{} is only supported on Linux",
+        String::from_utf8_lossy(name)
+    )))
 }
 
 /// Unix domain stream protocol implementation
@@ -163,6 +194,10 @@ impl StreamProtocol for UnixStreamProtocol {
     async fn connect_address(addr: &Address) -> std::result::Result<Self::Stream, Self::Error> {
         match addr {
             Address::Unix(path) => UnixStream::connect(path).await.map_err(EchoError::Unix),
+            Address::UnixAbstract(name) => connect_abstract(name).await,
+            Address::UnixUnnamed => Err(EchoError::Unsupported(
+                "cannot connect to an unnamed Unix socket".to_string(),
+            )),
             Address::Network(addr) => Err(EchoError::Unsupported(format!(
                 "Unix domain stream protocol cannot connect to network address {addr}"
             ))),
