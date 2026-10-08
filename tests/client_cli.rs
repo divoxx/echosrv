@@ -25,6 +25,13 @@ use std::process::Output;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// A host name that fails to resolve without a DNS query: its first label is
+/// 64 bytes, over the 63-byte limit.
+const UNRESOLVABLE: &str =
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.invalid:80";
+/// Bound for runs that only resolve a target.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The lock behind [`serial`] / [`serial_blocking`]. A Tokio mutex, because
 /// async tests hold it across `.await`.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -123,7 +130,6 @@ fn usage_errors_exit_2() {
         &["tcp", "127.0.0.1:1", "-c", "0"],
         &["tcp", "127.0.0.1:1", "--color", "sometimes"],
         &["http", "127.0.0.1:1", "--conn-mode", "persistent"],
-        &["tcp", "no-such-host.invalid:80", "-n", "1"],
         &["tcp", "nope"],
     ] {
         SyncCommand::new(BIN)
@@ -132,6 +138,15 @@ fn usage_errors_exit_2() {
             .assert()
             .code(2);
     }
+    // An unresolvable host is a setup error. Its 64-byte label is over the DNS
+    // limit of 63, so the resolver rejects it without a network lookup; the
+    // timeout bounds the run if a resolver tries anyway.
+    SyncCommand::new(BIN)
+        .args(["tcp", UNRESOLVABLE, "-n", "1"])
+        .timeout(RESOLVE_TIMEOUT)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot resolve"));
     // Setup errors are tagged on stderr.
     SyncCommand::new(BIN)
         .args(["tcp", "nope"])

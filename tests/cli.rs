@@ -266,6 +266,24 @@ impl Server {
         }
     }
 
+    /// Waits for the "echo server listening" log line and returns the bound
+    /// address it reports. Lets the binary bind port 0, so no port is
+    /// picked by the test and released before the server takes it. Needs
+    /// info logs from `echosrv` (the default `RUST_LOG=echosrv=debug`).
+    fn wait_for_addr(&mut self) -> SocketAddr {
+        let log_path = self.log.clone();
+        self.wait_until("listening log line", || {
+            let log = std::fs::read_to_string(&log_path).ok()?;
+            log.lines()
+                .map(strip_ansi)
+                .filter(|line| line.contains("echo server listening"))
+                .find_map(|line| {
+                    let (_, rest) = line.split_once("address=")?;
+                    rest.split_whitespace().next()?.parse().ok()
+                })
+        })
+    }
+
     /// Sends `signal` and waits for the process to exit.
     fn signal_and_wait(&mut self, signal: libc::c_int) -> ExitStatus {
         let pid = libc::pid_t::try_from(self.child.id()).unwrap();
@@ -299,22 +317,38 @@ impl Drop for Server {
     }
 }
 
-/// A loopback port that is free right now. The external process binds it a
-/// moment later; that small window is acceptable for a CLI test.
-fn free_tcp_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// A command that runs `echosrv args...` with `listener` passed by
+/// systemd-style socket activation: the child finds it as fd 3 with
+/// `LISTEN_FDS=1` and `LISTEN_PID=<its pid>`.
+///
+/// `LISTEN_PID` must equal the child's PID, which is only known after fork, so
+/// a shell sets it to `$$` and then `exec`s echosrv (same PID). The caller
+/// drops its `listener` after spawning, so only the child answers on it.
+fn activated_command(listener: &TcpListener, args: &[&str]) -> std::process::Command {
+    let listener_fd = listener.as_raw_fd();
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", r#"LISTEN_PID=$$ exec "$0" "$@""#, BIN])
+        .args(args)
+        .env("LISTEN_FDS", "1")
+        .env_remove("LISTEN_PID")
+        .env_remove("LISTEN_FDNAMES");
+    // SAFETY: only async-signal-safe libc calls between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if listener_fd == 3 {
+                // Already in place; just clear close-on-exec.
+                if libc::fcntl(3, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else if libc::dup2(listener_fd, 3) == -1 {
+                // dup2 clears FD_CLOEXEC on the new descriptor.
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
 }
 
 fn tcp_echo(addr: SocketAddr, msg: &[u8]) -> Vec<u8> {
@@ -329,9 +363,9 @@ fn tcp_echo(addr: SocketAddr, msg: &[u8]) -> Vec<u8> {
 #[test]
 fn tcp_echoes_and_exits_cleanly_on_sigterm() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
-    let mut server = Server::spawn(&["tcp", &addr.port().to_string()]);
-    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    let mut server = Server::spawn(&["tcp", "0"]);
+    let addr = server.wait_for_addr();
+    assert!(addr.ip().is_loopback() && addr.port() != 0, "{addr}");
 
     assert_eq!(tcp_echo(addr, b"hello cli"), b"hello cli");
 
@@ -348,9 +382,9 @@ fn tcp_echoes_and_exits_cleanly_on_sigterm() {
 #[test]
 fn tcp_honors_host_option_and_sigint() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
-    let mut server = Server::spawn(&["--host", "127.0.0.1", "tcp", &addr.port().to_string()]);
-    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    let mut server = Server::spawn(&["--host", "127.0.0.1", "tcp", "0"]);
+    let addr = server.wait_for_addr();
+    assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST, "{addr}");
     assert_eq!(tcp_echo(addr, b"via --host"), b"via --host");
     server.stop_with(libc::SIGINT);
 }
@@ -358,8 +392,8 @@ fn tcp_honors_host_option_and_sigint() {
 #[test]
 fn udp_echoes_and_exits_cleanly_on_sigterm() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_udp_port()).into();
-    let mut server = Server::spawn(&["udp", &addr.port().to_string()]);
+    let mut server = Server::spawn(&["udp", "0"]);
+    let addr = server.wait_for_addr();
 
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
     client
@@ -378,9 +412,9 @@ fn udp_echoes_and_exits_cleanly_on_sigterm() {
 #[test]
 fn http_echoes_post_body() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
-    let mut server = Server::spawn(&["http", &addr.port().to_string()]);
-    let mut stream = server.wait_until("HTTP listener", || TcpStream::connect(addr).ok());
+    let mut server = Server::spawn(&["http", "0"]);
+    let addr = server.wait_for_addr();
+    let mut stream = TcpStream::connect(addr).unwrap();
 
     stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
     stream
@@ -412,18 +446,8 @@ fn http_post(addr: SocketAddr, body: &str) -> String {
 #[test]
 fn http_rate_flags_reject_with_429() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
-    let mut server = Server::spawn(&[
-        "http",
-        &addr.port().to_string(),
-        "--rate",
-        "1",
-        "--burst",
-        "2",
-    ]);
-    // The readiness probe connects without sending a request, so it does not
-    // use up the burst.
-    drop(server.wait_until("HTTP listener", || TcpStream::connect(addr).ok()));
+    let mut server = Server::spawn(&["http", "0", "--rate", "1", "--burst", "2"]);
+    let addr = server.wait_for_addr();
 
     for body in ["one", "two"] {
         let response = http_post(addr, body);
@@ -449,10 +473,9 @@ fn http_rate_flags_reject_with_429() {
 #[test]
 fn tcp_accept_rate_and_max_connections_flags_apply() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
     let mut server = Server::spawn(&[
         "tcp",
-        &addr.port().to_string(),
+        "0",
         "--max-connections",
         "1",
         "--accept-rate",
@@ -460,19 +483,17 @@ fn tcp_accept_rate_and_max_connections_flags_apply() {
         "--accept-burst",
         "1000",
     ]);
-    let mut first = server.wait_until("TCP listener", || {
-        let mut stream = TcpStream::connect(addr).ok()?;
-        stream.set_read_timeout(Some(IO_TIMEOUT)).ok()?;
-        stream.write_all(b"x").ok()?;
-        let mut buf = [0u8; 1];
-        stream.read_exact(&mut buf).ok()?;
-        Some(stream)
-    });
+    let addr = server.wait_for_addr();
+    // Echo once, so the server holds this connection's slot.
+    let mut first = TcpStream::connect(addr).unwrap();
+    first.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    first.write_all(b"x").unwrap();
+    let mut buf = [0u8; 1];
+    first.read_exact(&mut buf).unwrap();
 
     // With the only slot taken, another connection is closed right away.
     let mut second = TcpStream::connect(addr).unwrap();
     second.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-    let mut buf = [0u8; 1];
     assert!(
         matches!(second.read(&mut buf), Ok(0) | Err(_)),
         "second connection was served despite --max-connections 1"
@@ -494,15 +515,17 @@ fn tcp_accept_rate_and_max_connections_flags_apply() {
 fn log_level_flag_and_rust_log_override() {
     let _serial = serial();
 
-    // --log-level warn hides the info lines (RUST_LOG unset).
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    // --log-level warn hides the info lines (RUST_LOG unset). That includes
+    // the "listening" line, so the test passes the listener in by socket
+    // activation and knows its address up front.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
     let mut server = Server::spawn_with(
-        std::process::Command::new(BIN)
-            .args(["--log-level", "warn", "tcp", &addr.port().to_string()])
+        activated_command(&listener, &["--log-level", "warn", "tcp", "0"])
             .env_remove("RUST_LOG")
             .env_remove("NO_COLOR"),
     );
-    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    drop(listener);
     assert_eq!(tcp_echo(addr, b"quiet"), b"quiet");
     server.stop_with(libc::SIGTERM);
     let log = server.log();
@@ -512,13 +535,12 @@ fn log_level_flag_and_rust_log_override() {
     );
 
     // RUST_LOG wins over --log-level.
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
     let mut server = Server::spawn_with(
         std::process::Command::new(BIN)
-            .args(["--log-level", "error", "tcp", &addr.port().to_string()])
+            .args(["--log-level", "error", "tcp", "0"])
             .env("RUST_LOG", "echosrv=debug"),
     );
-    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    let addr = server.wait_for_addr();
     assert_eq!(tcp_echo(addr, b"loud"), b"loud");
     server.stop_with(libc::SIGTERM);
     let log = server.log();
@@ -530,20 +552,38 @@ fn log_level_flag_and_rust_log_override() {
 #[test]
 fn clicolor_force_colors_non_terminal_log() {
     let _serial = serial();
-    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
     let mut server = Server::spawn_with(
         std::process::Command::new(BIN)
-            .args(["tcp", &addr.port().to_string()])
+            .args(["tcp", "0"])
             .env_remove("NO_COLOR")
             .env("CLICOLOR_FORCE", "1"),
     );
-    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    let addr = server.wait_for_addr();
+    assert_eq!(tcp_echo(addr, b"color"), b"color");
     server.stop_with(libc::SIGTERM);
     let log = server.log();
     assert!(
         log.contains('\x1b'),
         "no ANSI escapes with CLICOLOR_FORCE:\n{log}"
     );
+}
+
+/// `line` without ANSI escape sequences (colored logs with `CLICOLOR_FORCE`).
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn wait_for_unix_stream(server: &mut Server, path: &Path) -> UnixStream {
@@ -653,42 +693,15 @@ fn unix_dgram_echoes_and_removes_socket_on_sigterm() {
 }
 
 /// systemd-style socket activation: the parent creates the listener and the
-/// child finds it as fd 3 with `LISTEN_FDS=1` and `LISTEN_PID=<its pid>`.
-///
-/// `LISTEN_PID` must equal the child's PID, which is only known after fork, so
-/// a shell sets it to `$$` and then `exec`s echosrv (same PID).
+/// child uses it instead of binding the port given on the command line.
 #[test]
 fn tcp_socket_activation_uses_inherited_listener() {
     let _serial = serial();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let inherited_addr = listener.local_addr().unwrap();
-    let listener_fd = listener.as_raw_fd();
-    // Tell the CLI to bind a different port; it must ignore it.
-    let cli_port = free_tcp_port();
-    assert_ne!(cli_port, inherited_addr.port());
-
-    let mut command = std::process::Command::new("/bin/sh");
-    command
-        .args(["-c", r#"LISTEN_PID=$$ exec "$0" "$@""#, BIN, "tcp"])
-        .arg(cli_port.to_string())
-        .env("LISTEN_FDS", "1")
-        .env_remove("LISTEN_PID")
-        .env_remove("LISTEN_FDNAMES");
-    // SAFETY: only async-signal-safe libc calls between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            if listener_fd == 3 {
-                // Already in place; just clear close-on-exec.
-                if libc::fcntl(3, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            } else if libc::dup2(listener_fd, 3) == -1 {
-                // dup2 clears FD_CLOEXEC on the new descriptor.
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // Tell the CLI to bind port 0; it must ignore it and serve only the
+    // inherited listener.
+    let mut command = activated_command(&listener, &["tcp", "0"]);
     let mut server = Server::spawn_with(&mut command);
     // The child owns its copy now; closing ours means only the child can
     // answer on this port.
@@ -711,9 +724,9 @@ fn tcp_socket_activation_uses_inherited_listener() {
     assert_eq!(&buf, b"again");
     drop(stream);
 
-    let cli_addr: SocketAddr = ([127, 0, 0, 1], cli_port).into();
-    assert!(
-        TcpStream::connect(cli_addr).is_err(),
+    assert_eq!(
+        server.wait_for_addr(),
+        inherited_addr,
         "echosrv bound the CLI port instead of only using the inherited socket"
     );
     assert!(
