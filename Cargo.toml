@@ -15,15 +15,25 @@ authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 default-run = "echosrv"
 
 [dependencies]
-tokio = { version = "1.41.0", features = ["full", "signal", "net"] }
+# The library needs net, io-util, time, sync, rt and macros. The binaries add
+# rt-multi-thread (multi-threaded runtime) and signal (SIGINT/SIGTERM handling).
+tokio = { version = "1.41.0", features = [
+    "net",
+    "io-util",
+    "time",
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 thiserror = "2"
 color-eyre = "0.6.2"
 async-trait = "0.1.88"
-http = "1.0"
 httparse = "1.8"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = "0.7"
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 # Used by the echosrv-client binary.
@@ -41,7 +51,8 @@ name = "echosrv-client"
 path = "src/bin/echosrv-client/main.rs"
 
 [dev-dependencies]
-tokio-test = "0.4"
+# process: tests/cli.rs spawns the binaries; test-util: paused-clock tests.
+tokio = { version = "1.32.0", features = ["process", "test-util"] }
 tempfile = "3.8"
 proptest = "1.0"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
