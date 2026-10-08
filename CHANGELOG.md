@@ -122,6 +122,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (shutdown still interrupts the wait) and log the first failure and then
   every 100th at `error`, the others at `debug`.
 
+### Fixed
+
+- **Stale Unix socket detection no longer removes a live server's socket.**
+  The probe connect is non-blocking, so it no longer stalls a runtime thread
+  on Linux when the listener's backlog is full (that answer, `EAGAIN`, now
+  counts as live). Unix stream servers hold an advisory lock on
+  `<path>.lock` while bound, because macOS and the BSDs report a full backlog
+  as `ECONNREFUSED`, the same as a dead socket. A server finding the lock
+  held reports `AddrInUse` without touching the socket file.
+
 ## [0.4.0] - Unreleased
 
 This release makes the servers behave as documented. HTTP now speaks real

@@ -115,7 +115,9 @@ file it created, and exits with status 0.
 **Unix socket files.** If the socket path exists from a previous run and
 nothing is listening on it, the stale file is replaced. A live socket or a
 non-socket file at that path is an error. Missing parent directories are
-created.
+created. A Unix stream server also holds an advisory lock on `<path>.lock`
+while it runs (removed on shutdown), so a second server never replaces the
+socket of a live one, even when that server is too busy to accept.
 
 **Socket activation.** When `LISTEN_PID`/`LISTEN_FDS` (systemd socket
 activation) are set for this process, the server uses an inherited socket

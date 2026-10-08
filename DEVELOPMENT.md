@@ -63,8 +63,18 @@ wrap the generic servers. They take Unix-specific configs, which have a
 file through `unix::socket_file::SocketFile`:
 
 - At bind time, `bind_with_stale_recovery` creates missing parent directories.
-  It replaces an existing path only if the path is a socket and connecting to
-  it is refused (a stale file). A live socket or a regular file is an error.
+  It replaces an existing path only if the path is a socket and a
+  non-blocking connect to it is refused (a stale file). A live socket or a
+  regular file is an error. The probe never blocks, so binding inside
+  `async fn bind` cannot stall a runtime thread on a full backlog.
+- Stream sockets also take an exclusive `flock` on the sidecar `<path>.lock`
+  and hold it in `SocketFile` until the socket file is removed. macOS and the
+  BSDs refuse a connect to a listener with a full backlog with the same
+  `ECONNREFUSED` as a dead socket, so the probe alone could unlink an
+  overloaded server's socket; the lock settles it, and also serializes
+  recovery between servers starting together. Listeners that do not take the
+  lock (other programs) are still judged by the probe alone. If the lock file
+  cannot be opened or locked, binding falls back to the probe with a warning.
 - On drop, the file is removed only if it still has the device and inode
   recorded at bind time. Inherited sockets are never unlinked.
 
