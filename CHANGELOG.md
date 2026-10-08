@@ -89,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HttpEchoClient` reads responses in chunks of `ClientConfig::buffer_size`
   (it used a fixed 8 KiB buffer).
 
+### Fixed
+
+- The benchmarks reuse their connections instead of connecting on every
+  iteration, so `cargo bench` opens a few dozen connections rather than tens
+  of thousands (which could exhaust the ephemeral port range with TIME_WAIT
+  sockets). `tcp_echo` and `tcp_raw` now measure the echo round trip only,
+  without connection setup.
+
 ## [0.4.0] - Unreleased
 
 This release makes the servers behave as documented. HTTP now speaks real

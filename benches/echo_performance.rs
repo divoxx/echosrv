@@ -2,7 +2,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use echosrv::{EchoClient, EchoServerTrait, TcpConfig, TcpEchoClient, TcpEchoServer};
 use std::hint::black_box;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
 /// A TCP echo server running in the background for the lifetime of a benchmark group.
@@ -46,6 +47,21 @@ impl BenchServer {
     }
 }
 
+/// Connects one client, outside any measured code.
+///
+/// Every benchmark reuses the clients it creates up front. Criterion runs a
+/// routine tens of thousands of times, so a connection per iteration would
+/// leave that many local ports in TIME_WAIT and could exhaust the ephemeral
+/// port range. A whole `cargo bench` run opens a few dozen connections.
+///
+/// Clients are created right before the benchmark that uses them (not once
+/// per group), so none sits idle long enough to hit the server's read
+/// timeout while other benchmarks of the group run.
+fn connect(rt: &Runtime, addr: SocketAddr) -> TcpEchoClient {
+    rt.block_on(TcpEchoClient::connect(addr))
+        .expect("failed to connect benchmark client")
+}
+
 fn bench_echo_throughput(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let server = rt.block_on(BenchServer::start());
@@ -54,14 +70,20 @@ fn bench_echo_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("echo_throughput");
 
     for size in [64usize, 256, 1024, 4096, 16384] {
+        let mut client = connect(&rt, addr);
+        let data = vec![b'x'; size];
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(BenchmarkId::new("tcp_echo", size), &size, |b, &size| {
-            let data = vec![b'x'; size];
-            b.to_async(&rt).iter(|| async {
-                let mut client = TcpEchoClient::connect(addr).await.unwrap();
-                let response = client.echo(black_box(&data)).await.unwrap();
-                assert_eq!(response.len(), data.len());
-                response
+        group.bench_with_input(BenchmarkId::new("tcp_echo", size), &size, |b, _| {
+            b.iter_custom(|iters| {
+                rt.block_on(async {
+                    let start = Instant::now();
+                    for _ in 0..iters {
+                        let response = client.echo(black_box(&data)).await.unwrap();
+                        assert_eq!(response.len(), data.len());
+                        black_box(response);
+                    }
+                    start.elapsed()
+                })
             });
         });
     }
@@ -78,26 +100,36 @@ fn bench_concurrent_clients(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_clients");
 
     for count in [1usize, 5, 10, 20] {
+        let mut clients: Vec<TcpEchoClient> = (0..count).map(|_| connect(&rt, addr)).collect();
+        let data = Arc::new(vec![b'x'; 1024]);
+        // One iteration is `count` echoes, one per client, in parallel. Each
+        // client runs on its own task for the whole sample and is handed back
+        // for the next one.
         group.bench_with_input(
             BenchmarkId::new("concurrent_echo", count),
             &count,
-            |b, &count| {
-                let data = vec![b'x'; 1024];
-                b.to_async(&rt).iter(|| async {
-                    let handles: Vec<_> = (0..count)
-                        .map(|_| {
-                            let data = data.clone();
-                            tokio::spawn(async move {
-                                let mut client = TcpEchoClient::connect(addr).await.unwrap();
-                                client.echo(black_box(&data)).await.unwrap()
+            |b, _| {
+                b.iter_custom(|iters| {
+                    rt.block_on(async {
+                        let start = Instant::now();
+                        let handles: Vec<_> = clients
+                            .drain(..)
+                            .map(|mut client| {
+                                let data = Arc::clone(&data);
+                                tokio::spawn(async move {
+                                    for _ in 0..iters {
+                                        let response = client.echo(black_box(&data)).await.unwrap();
+                                        assert_eq!(response.len(), data.len());
+                                    }
+                                    client
+                                })
                             })
-                        })
-                        .collect();
-
-                    let results = futures::future::join_all(handles).await;
-                    for result in results {
-                        assert_eq!(result.unwrap().len(), data.len());
-                    }
+                            .collect();
+                        for result in futures::future::join_all(handles).await {
+                            clients.push(result.unwrap());
+                        }
+                        start.elapsed()
+                    })
                 });
             },
         );
@@ -114,10 +146,16 @@ fn bench_protocol_overhead(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("protocol_overhead");
 
+    let mut client = connect(&rt, addr);
     group.bench_function("tcp_raw", |b| {
-        b.to_async(&rt).iter(|| async {
-            let mut client = TcpEchoClient::connect(addr).await.unwrap();
-            client.echo(black_box(b"Hello, World!")).await.unwrap()
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let start = Instant::now();
+                for _ in 0..iters {
+                    black_box(client.echo(black_box(b"Hello, World!")).await.unwrap());
+                }
+                start.elapsed()
+            })
         });
     });
 

@@ -269,6 +269,14 @@ cargo test --doc                     # doctests only
 TCP server on port 0 per group and measures echo throughput by payload size,
 concurrent clients, and per-round-trip overhead.
 
+Each benchmark connects its clients once, before measuring, and reuses them
+for every iteration (`iter_custom`), so the measurements exclude connection
+setup and a whole run opens a few dozen connections. Keep it that way:
+Criterion runs tens of thousands of iterations, and a connection per
+iteration leaves that many ports in TIME_WAIT, which can exhaust the
+ephemeral port range. Connection setup is not benchmarked, because
+Criterion's time-based warm-up cannot bound the number of connections.
+
 ```bash
 cargo bench                          # HTML reports in target/criterion/
 cargo bench --no-run                 # compile check only
