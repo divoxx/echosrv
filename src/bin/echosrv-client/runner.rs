@@ -17,6 +17,7 @@ use echosrv::{
 };
 use std::fmt;
 use std::net::SocketAddr;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -308,11 +309,40 @@ fn next_seq(counter: &AtomicU64, limit: Option<u64>) -> Option<u64> {
     }
 }
 
-/// Pause after `errors` consecutive errors (at least 1): `base`, doubled for
-/// each further error, capped at `max`.
-fn backoff(base: Duration, max: Duration, errors: u32) -> Duration {
-    let doublings = errors.saturating_sub(1).min(16);
-    base.saturating_mul(1 << doublings).min(max)
+/// Exponential backoff over a worker's consecutive errors. Every error drops
+/// the client, so without a pause a failing or rejecting server would be hit
+/// by a tight reconnect loop.
+#[derive(Debug, Clone, Copy)]
+struct Backoff {
+    /// Consecutive errors so far.
+    errors: u32,
+    /// Pause after the first error.
+    base: Duration,
+    /// Cap on the pause.
+    max: Duration,
+}
+
+impl Backoff {
+    fn new(base: Duration, max: Duration) -> Self {
+        Self {
+            errors: 0,
+            base,
+            max,
+        }
+    }
+
+    /// Records an error and returns the pause before the next attempt:
+    /// `base`, doubled for each further consecutive error, capped at `max`.
+    fn fail(&mut self) -> Duration {
+        self.errors = self.errors.saturating_add(1);
+        let doublings = (self.errors - 1).min(16);
+        self.base.saturating_mul(1 << doublings).min(self.max)
+    }
+
+    /// Records a success: the next error pauses for `base` again.
+    fn reset(&mut self) {
+        self.errors = 0;
+    }
 }
 
 /// Sleeps for `d` unless cancelled first. Returns `false` if cancelled.
@@ -325,6 +355,9 @@ async fn sleep_or_cancel(d: Duration, cancel: &CancellationToken) -> bool {
         () = tokio::time::sleep(d) => true,
     }
 }
+
+/// A connected client of any protocol.
+type Client = Box<dyn EchoClient + Send>;
 
 struct Worker {
     id: usize,
@@ -393,70 +426,117 @@ impl Worker {
         true
     }
 
+    /// Waits for a token from `bucket`, if there is one. Returns `false` if
+    /// the run is cancelled first.
+    async fn acquire(&self, bucket: Option<&TokenBucket>) -> bool {
+        let Some(bucket) = bucket else {
+            return true;
+        };
+        tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => false,
+            () = bucket.acquire() => true,
+        }
+    }
+
+    /// Connects a new client under the connection limiter. A failed connect
+    /// is recorded and backed off, then `Continue(None)` moves on to the next
+    /// attempt; `Break` stops the worker.
+    async fn connect(&self, seq: u64, backoff: &mut Backoff) -> ControlFlow<(), Option<Client>> {
+        if !self.acquire(self.conn_limiter.as_deref()).await {
+            return ControlFlow::Break(());
+        }
+        let config = &*self.config;
+        // Not cancellable: once an attempt has started, a stop lets it
+        // finish (bounded by the timeout) so it is recorded and its
+        // connection is closed cleanly instead of dropped mid-request.
+        let started = Instant::now();
+        let result = make_client(&config.transport, config.timeout, config.max_payload_len()).await;
+        match result {
+            Ok(c) => ControlFlow::Continue(Some(c)),
+            Err(e) => {
+                let kind = classify(Phase::Connect, &e);
+                debug!(worker = self.id, seq, error = %e, ?kind, "connect failed");
+                if !self.record(started, Outcome::Err(kind)).await
+                    || self.stop_if_ports_exhausted(kind)
+                    || !sleep_or_cancel(backoff.fail(), &self.cancel).await
+                {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(None)
+            }
+        }
+    }
+
+    /// Sends `payload` (request `seq`) over the connected `client` and
+    /// records the result. An error drops the client, as does per-request
+    /// mode. Returns the pause before the next attempt, or `Break` to stop
+    /// the worker.
+    async fn echo(
+        &self,
+        client: &mut Option<Client>,
+        seq: u64,
+        payload: &[u8],
+        backoff: &mut Backoff,
+    ) -> ControlFlow<(), Duration> {
+        let Some(c) = client.as_mut() else {
+            unreachable!("echo needs a connected client")
+        };
+        // Runs to completion even if the run is stopped meanwhile (see
+        // `connect`); every read and write is bounded by the timeout.
+        let started = Instant::now();
+        let result = c.echo(payload).await;
+
+        let (outcome, retry_after) = self.evaluate(seq, payload, result);
+        let pause = match outcome {
+            Outcome::Ok => {
+                backoff.reset();
+                Duration::ZERO
+            }
+            Outcome::Err(_) => {
+                *client = None;
+                let pause = backoff.fail();
+                retry_after.unwrap_or(pause)
+            }
+        };
+        if !self.record(started, outcome).await {
+            return ControlFlow::Break(());
+        }
+        if let Outcome::Err(kind) = outcome {
+            if self.stop_if_ports_exhausted(kind) {
+                return ControlFlow::Break(());
+            }
+        }
+        if self.config.conn_mode == ConnMode::PerRequest {
+            *client = None;
+        }
+        ControlFlow::Continue(pause)
+    }
+
     async fn run(self) {
         let config = &*self.config;
-        let cancel = &self.cancel;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() ^ (u64::from(d.subsec_nanos()) << 32));
         let mut rng = XorShift::new(nanos ^ (self.id as u64).rotate_left(48));
         let mut payload = Vec::new();
-        let mut client: Option<Box<dyn EchoClient + Send>> = None;
-        let max_payload = config.max_payload_len();
-        // Consecutive errors of this worker, for the backoff. Every error
-        // drops the client, so without a pause a failing or rejecting server
-        // would be hit by a tight reconnect loop.
-        let mut errors: u32 = 0;
+        let mut client: Option<Client> = None;
+        let mut backoff = Backoff::new(config.reconnect_delay, config.max_backoff);
 
-        while !cancel.is_cancelled() {
+        while !self.cancel.is_cancelled() {
             let Some(seq) = next_seq(&self.seq, config.requests) else {
                 break;
             };
-
-            if let Some(shaper) = &self.shaper {
-                tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => break,
-                    () = shaper.acquire() => {}
-                }
+            if !self.acquire(self.shaper.as_deref()).await {
+                break;
             }
-
             if client.is_none() {
-                if let Some(limiter) = &self.conn_limiter {
-                    tokio::select! {
-                        biased;
-                        () = cancel.cancelled() => break,
-                        () = limiter.acquire() => {}
-                    }
-                }
-                // Not cancellable: once an attempt has started, a stop lets it
-                // finish (bounded by the timeout) so it is recorded and its
-                // connection is closed cleanly instead of dropped mid-request.
-                let started = Instant::now();
-                let result = make_client(&config.transport, config.timeout, max_payload).await;
-                match result {
-                    Ok(c) => client = Some(c),
-                    Err(e) => {
-                        let kind = classify(Phase::Connect, &e);
-                        debug!(worker = self.id, seq, error = %e, ?kind, "connect failed");
-                        if !self.record(started, Outcome::Err(kind)).await
-                            || self.stop_if_ports_exhausted(kind)
-                        {
-                            break;
-                        }
-                        errors = errors.saturating_add(1);
-                        let pause = backoff(config.reconnect_delay, config.max_backoff, errors);
-                        if !sleep_or_cancel(pause, cancel).await {
-                            break;
-                        }
-                        continue;
-                    }
+                match self.connect(seq, &mut backoff).await {
+                    ControlFlow::Break(()) => break,
+                    ControlFlow::Continue(None) => continue,
+                    ControlFlow::Continue(Some(c)) => client = Some(c),
                 }
             }
-            let Some(c) = client.as_mut() else {
-                unreachable!("client was just connected")
-            };
-
             build_payload(
                 &mut payload,
                 self.id,
@@ -465,38 +545,12 @@ impl Worker {
                 &config.filler,
                 &mut rng,
             );
-            // Runs to completion even if the run is stopped meanwhile (see
-            // the connect above); every read and write is bounded by the
-            // timeout.
-            let started = Instant::now();
-            let result = c.echo(&payload).await;
-
-            let (outcome, retry_after) = self.evaluate(seq, &payload, result);
-            let pause = match outcome {
-                Outcome::Ok => {
-                    errors = 0;
-                    Duration::ZERO
-                }
-                Outcome::Err(_) => {
-                    client = None;
-                    errors = errors.saturating_add(1);
-                    retry_after.unwrap_or_else(|| {
-                        backoff(config.reconnect_delay, config.max_backoff, errors)
-                    })
-                }
-            };
-            if !self.record(started, outcome).await {
+            let ControlFlow::Continue(pause) =
+                self.echo(&mut client, seq, &payload, &mut backoff).await
+            else {
                 break;
-            }
-            if let Outcome::Err(kind) = outcome {
-                if self.stop_if_ports_exhausted(kind) {
-                    break;
-                }
-            }
-            if config.conn_mode == ConnMode::PerRequest {
-                client = None;
-            }
-            if !sleep_or_cancel(pause, cancel).await {
+            };
+            if !sleep_or_cancel(pause, &self.cancel).await {
                 break;
             }
         }

@@ -156,45 +156,66 @@ struct Cli {
     log_level: LogLevel,
 }
 
+/// A usage error found after clap parsed the command line.
+type UsageError = (ErrorKind, String);
+
+/// Rejects options that make no sense for `protocol`. `matches` tells
+/// explicit options from defaults.
+fn check_conflicts(
+    protocol: Protocol,
+    matches: &ArgMatches,
+) -> std::result::Result<(), UsageError> {
+    let explicit = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
+    if protocol.is_unix() && explicit("host") {
+        return Err((
+            ErrorKind::ArgumentConflict,
+            "--host cannot be used with Unix domain sockets".to_string(),
+        ));
+    }
+    if !protocol.is_datagram() {
+        return Ok(());
+    }
+    for (id, flag) in [
+        ("accept_rate", "--accept-rate"),
+        ("max_connections", "--max-connections"),
+    ] {
+        if explicit(id) {
+            return Err((
+                ErrorKind::ArgumentConflict,
+                format!("{flag} cannot be used with {protocol} (it has no connections)"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Splits the positional target into a port (tcp/udp/http, default
+/// [`DEFAULT_PORT`]) or a socket path (Unix protocols, the default one when
+/// omitted).
+fn parse_target(
+    protocol: Protocol,
+    target: Option<&OsString>,
+) -> std::result::Result<(u16, Option<PathBuf>), UsageError> {
+    let target = match target {
+        Some(value) => {
+            Target::parse_listen(protocol, value).map_err(|msg| (ErrorKind::InvalidValue, msg))?
+        }
+        None => Target::default_for(protocol),
+    };
+    Ok(match target {
+        Target::Net { port, .. } => (port, None),
+        Target::Unix(path) => (DEFAULT_PORT, Some(path)),
+    })
+}
+
 impl Cli {
     /// Checks the combinations clap cannot express and resolves the
     /// positional target. `matches` tells explicit options from defaults.
-    fn resolve(args: Args, matches: &ArgMatches) -> std::result::Result<Self, (ErrorKind, String)> {
-        let protocol = args.protocol;
-        let explicit = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
-
-        if protocol.is_unix() && explicit("host") {
-            return Err((
-                ErrorKind::ArgumentConflict,
-                "--host cannot be used with Unix domain sockets".to_string(),
-            ));
-        }
-        if protocol.is_datagram() {
-            for (id, flag) in [
-                ("accept_rate", "--accept-rate"),
-                ("max_connections", "--max-connections"),
-            ] {
-                if explicit(id) {
-                    return Err((
-                        ErrorKind::ArgumentConflict,
-                        format!("{flag} cannot be used with {protocol} (it has no connections)"),
-                    ));
-                }
-            }
-        }
-
-        let target = match &args.target {
-            Some(value) => Target::parse_listen(protocol, value)
-                .map_err(|msg| (ErrorKind::InvalidValue, msg))?,
-            None => Target::default_for(protocol),
-        };
-        let (port, socket_path) = match target {
-            Target::Net { port, .. } => (port, None),
-            Target::Unix(path) => (DEFAULT_PORT, Some(path)),
-        };
-
+    fn resolve(args: Args, matches: &ArgMatches) -> std::result::Result<Self, UsageError> {
+        check_conflicts(args.protocol, matches)?;
+        let (port, socket_path) = parse_target(args.protocol, args.target.as_ref())?;
         Ok(Self {
-            protocol,
+            protocol: args.protocol,
             host: args.host,
             port,
             socket_path,
@@ -207,6 +228,19 @@ impl Cli {
                 .map(|rate| RateLimitConfig::new(rate, args.accept_burst.unwrap_or(rate))),
             log_level: args.log_level,
         })
+    }
+
+    fn bind_addr(&self) -> SocketAddr {
+        SocketAddr::new(self.host, self.port)
+    }
+
+    /// The socket path of the Unix protocols (resolved, so never empty).
+    fn socket_path(&self) -> PathBuf {
+        self.socket_path.clone().unwrap_or_default()
+    }
+
+    fn service_name(&self) -> String {
+        self.protocol.service_name().to_string()
     }
 }
 
@@ -281,100 +315,119 @@ fn run(cli: Cli) -> Result<()> {
     runtime.block_on(start(cli))
 }
 
+fn tcp_config(cli: &Cli) -> TcpConfig {
+    TcpConfig {
+        bind_addr: cli.bind_addr(),
+        max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
+        rate_limit: cli.rate_limit,
+        accept_rate_limit: cli.accept_rate_limit,
+        ..Default::default()
+    }
+    .with_fd_inheritance(cli.service_name())
+}
+
+fn udp_config(cli: &Cli) -> UdpConfig {
+    UdpConfig {
+        bind_addr: cli.bind_addr(),
+        rate_limit: cli.rate_limit,
+        ..Default::default()
+    }
+    .with_fd_inheritance(cli.service_name())
+}
+
+fn http_config(cli: &Cli) -> HttpConfig {
+    HttpConfig {
+        bind_addr: cli.bind_addr(),
+        max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
+        rate_limit: cli.rate_limit,
+        accept_rate_limit: cli.accept_rate_limit,
+        ..Default::default()
+    }
+    .with_fd_inheritance(cli.service_name())
+}
+
+fn unix_stream_config(cli: &Cli, path: PathBuf) -> UnixStreamConfig {
+    let defaults = UnixStreamConfig::default();
+    UnixStreamConfig {
+        max_connections: cli.max_connections.unwrap_or(defaults.max_connections),
+        rate_limit: cli.rate_limit,
+        accept_rate_limit: cli.accept_rate_limit,
+        ..defaults
+    }
+    .with_fd_inheritance(cli.service_name(), path)
+}
+
+fn unix_dgram_config(cli: &Cli, path: PathBuf) -> UnixDatagramConfig {
+    UnixDatagramConfig {
+        rate_limit: cli.rate_limit,
+        ..Default::default()
+    }
+    .with_fd_inheritance(cli.service_name(), path)
+}
+
 async fn start(cli: Cli) -> Result<()> {
-    let bind_addr = SocketAddr::new(cli.host, cli.port);
-    let service_name = cli.protocol.service_name().to_string();
     let rate_limit = cli.rate_limit;
     let accept_rate_limit = cli.accept_rate_limit;
-
     match cli.protocol {
         Protocol::Tcp => {
-            let config = TcpConfig {
-                bind_addr,
-                max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
-                rate_limit,
-                accept_rate_limit,
-                ..Default::default()
-            }
-            .with_fd_inheritance(service_name);
+            let config = tcp_config(&cli);
             info!(address = %config.bind_addr, max_connections = config.max_connections, ?rate_limit, ?accept_rate_limit, "Starting TCP echo server");
-            serve(TcpEchoServer::new(config.into()))
-                .await
-                .wrap_err("Failed to run TCP echo server")
+            serve(TcpEchoServer::new(config.into()), "TCP echo server").await
         }
         Protocol::Udp => {
-            let config = UdpConfig {
-                bind_addr,
-                rate_limit,
-                ..Default::default()
-            }
-            .with_fd_inheritance(service_name);
+            let config = udp_config(&cli);
             info!(address = %config.bind_addr, ?rate_limit, "Starting UDP echo server");
-            serve(UdpEchoServer::new(config.into()))
-                .await
-                .wrap_err("Failed to run UDP echo server")
+            serve(UdpEchoServer::new(config.into()), "UDP echo server").await
         }
         Protocol::Http => {
-            let config = HttpConfig {
-                bind_addr,
-                max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
-                rate_limit,
-                accept_rate_limit,
-                ..Default::default()
-            }
-            .with_fd_inheritance(service_name);
+            let config = http_config(&cli);
             info!(address = %config.bind_addr, max_connections = config.max_connections, ?rate_limit, ?accept_rate_limit, "Starting HTTP echo server");
-            serve(HttpEchoServer::new(config))
-                .await
-                .wrap_err("Failed to run HTTP echo server")
+            serve(HttpEchoServer::new(config), "HTTP echo server").await
         }
         Protocol::UnixStream => {
-            let path = cli.socket_path.unwrap_or_default();
-            let defaults = UnixStreamConfig::default();
-            let config = UnixStreamConfig {
-                max_connections: cli.max_connections.unwrap_or(defaults.max_connections),
-                rate_limit,
-                accept_rate_limit,
-                ..defaults
-            }
-            .with_fd_inheritance(service_name, path.clone());
+            let path = cli.socket_path();
+            let config = unix_stream_config(&cli, path.clone());
             info!(socket_path = %path.display(), max_connections = config.max_connections, ?rate_limit, ?accept_rate_limit, "Starting Unix domain stream echo server");
-            serve(UnixStreamEchoServer::new(config))
-                .await
-                .wrap_err("Failed to run Unix domain stream echo server")
+            serve(
+                UnixStreamEchoServer::new(config),
+                "Unix domain stream echo server",
+            )
+            .await
         }
         Protocol::UnixDatagram => {
-            let path = cli.socket_path.unwrap_or_default();
-            let config = UnixDatagramConfig {
-                rate_limit,
-                ..Default::default()
-            }
-            .with_fd_inheritance(service_name, path.clone());
+            let path = cli.socket_path();
+            let config = unix_dgram_config(&cli, path.clone());
             info!(socket_path = %path.display(), ?rate_limit, "Starting Unix domain datagram echo server");
-            serve(UnixDatagramEchoServer::new(config))
-                .await
-                .wrap_err("Failed to run Unix domain datagram echo server")
+            serve(
+                UnixDatagramEchoServer::new(config),
+                "Unix domain datagram echo server",
+            )
+            .await
         }
     }
 }
 
-/// Runs `server` until SIGINT or SIGTERM triggers a graceful shutdown.
-async fn serve<S: EchoServerTrait>(server: S) -> echosrv::Result<()> {
+/// Runs `server` (`name` names it in errors) until SIGINT or SIGTERM
+/// triggers a graceful shutdown.
+async fn serve<S: EchoServerTrait>(server: S, name: &str) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigint = signal(SignalKind::interrupt()).map_err(echosrv::EchoError::Unix)?;
-    let mut sigterm = signal(SignalKind::terminate()).map_err(echosrv::EchoError::Unix)?;
-    let shutdown = server.shutdown_signal();
+    let run = async {
+        let mut sigint = signal(SignalKind::interrupt()).map_err(echosrv::EchoError::Unix)?;
+        let mut sigterm = signal(SignalKind::terminate()).map_err(echosrv::EchoError::Unix)?;
+        let shutdown = server.shutdown_signal();
 
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = sigint.recv() => info!("Received SIGINT, shutting down"),
-            _ = sigterm.recv() => info!("Received SIGTERM, shutting down"),
-        }
-        let _ = shutdown.send(());
-    });
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigint.recv() => info!("Received SIGINT, shutting down"),
+                _ = sigterm.recv() => info!("Received SIGTERM, shutting down"),
+            }
+            let _ = shutdown.send(());
+        });
 
-    server.run().await
+        server.run().await
+    };
+    run.await.wrap_err_with(|| format!("Failed to run {name}"))
 }
 
 #[cfg(test)]
@@ -382,34 +435,13 @@ mod tests {
     use super::*;
     use echosrv::defaults::{DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH};
 
-    /// Outcome of parsing, as the tests below expect it.
-    #[derive(Debug)]
-    enum Command {
-        Run(Cli),
-        Help,
-        Version,
-    }
-
-    /// [`parse_cli`] over `args` (without the program name), with help and
-    /// version mapped to [`Command`] variants.
-    fn parse_args(args: &[String]) -> std::result::Result<Command, clap::Error> {
-        match parse_cli(std::iter::once("echosrv".to_string()).chain(args.iter().cloned())) {
-            Ok(cli) => Ok(Command::Run(cli)),
-            Err(e) if e.kind() == ErrorKind::DisplayHelp => Ok(Command::Help),
-            Err(e) if e.kind() == ErrorKind::DisplayVersion => Ok(Command::Version),
-            Err(e) => Err(e),
-        }
-    }
-
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    /// [`parse_cli`] over `list` (without the program name).
+    fn parse(list: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        parse_cli(std::iter::once("echosrv").chain(list.iter().copied()))
     }
 
     fn run_cli(list: &[&str]) -> Cli {
-        match parse_args(&args(list)).unwrap() {
-            Command::Run(cli) => cli,
-            other => panic!("unexpected {other:?}"),
-        }
+        parse(list).unwrap()
     }
 
     #[test]
@@ -443,12 +475,24 @@ mod tests {
 
     #[test]
     fn rejects_bad_input() {
-        assert!(parse_args(&args(&["tcp", "notaport"])).is_err());
-        assert!(parse_args(&args(&["tcp", "70000"])).is_err());
-        assert!(parse_args(&args(&["gopher"])).is_err());
-        assert!(parse_args(&args(&["--host", "nope", "tcp"])).is_err());
-        assert!(parse_args(&args(&["--bogus"])).is_err());
-        assert!(parse_args(&args(&["--host", "::1", "unix-stream"])).is_err());
+        assert!(parse(&["tcp", "notaport"]).is_err());
+        assert!(parse(&["tcp", "70000"]).is_err());
+        assert!(parse(&["gopher"]).is_err());
+        assert!(parse(&["--host", "nope", "tcp"]).is_err());
+        assert!(parse(&["--bogus"]).is_err());
+        assert!(parse(&["--host", "::1", "unix-stream"]).is_err());
+
+        // Errors found after clap parsed carry the matching clap kind.
+        let kind = |list: &[&str]| parse(list).unwrap_err().kind();
+        assert_eq!(kind(&["tcp", "notaport"]), ErrorKind::InvalidValue);
+        assert_eq!(
+            kind(&["--host", "::1", "unix-stream"]),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            kind(&["udp", "--max-connections", "5"]),
+            ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]
@@ -469,14 +513,9 @@ mod tests {
 
     #[test]
     fn help_and_version() {
-        assert!(matches!(
-            parse_args(&args(&["tcp", "-h"])),
-            Ok(Command::Help)
-        ));
-        assert!(matches!(
-            parse_args(&args(&["--version"])),
-            Ok(Command::Version)
-        ));
+        let kind = |list: &[&str]| parse(list).unwrap_err().kind();
+        assert_eq!(kind(&["tcp", "-h"]), ErrorKind::DisplayHelp);
+        assert_eq!(kind(&["--version"]), ErrorKind::DisplayVersion);
     }
 
     #[test]
@@ -488,7 +527,7 @@ mod tests {
     fn protocol_names_are_case_insensitive_and_unknown_ones_are_named() {
         assert_eq!(run_cli(&["HTTP"]).protocol, Protocol::Http);
         assert_eq!(run_cli(&["Unix-Stream"]).protocol, Protocol::UnixStream);
-        let err = parse_args(&args(&["gopher"])).unwrap_err().to_string();
+        let err = parse(&["gopher"]).unwrap_err().to_string();
         assert!(err.contains("unknown protocol 'gopher'"), "{err}");
         assert!(err.contains("unix-dgram"), "{err}");
     }
@@ -501,7 +540,7 @@ mod tests {
             Some(PathBuf::from(DEFAULT_UNIX_STREAM_PATH))
         );
         assert_eq!(run_cli(&["tcp"]).socket_path, None);
-        assert!(parse_args(&args(&["unix-dgram", ""])).is_err());
+        assert!(parse(&["unix-dgram", ""]).is_err());
         let cli = run_cli(&["unix-dgram", "/tmp/x.sock"]);
         assert_eq!(cli.socket_path, Some(PathBuf::from("/tmp/x.sock")));
     }
@@ -535,7 +574,7 @@ mod tests {
             &["http", "--rate", "1", "--burst", "0"],
             &["http", "--accept-rate", "0"],
         ] {
-            assert!(parse_args(&args(bad)).is_err(), "{bad:?} was accepted");
+            assert!(parse(bad).is_err(), "{bad:?} was accepted");
         }
     }
 
@@ -543,7 +582,7 @@ mod tests {
     fn connection_flags_are_rejected_for_datagram_protocols() {
         for protocol in ["udp", "unix-dgram"] {
             for flag in [["--accept-rate", "5"], ["--max-connections", "5"]] {
-                let err = parse_args(&args(&[protocol, flag[0], flag[1]]))
+                let err = parse(&[protocol, flag[0], flag[1]])
                     .unwrap_err()
                     .to_string();
                 assert!(err.contains(flag[0]), "{err}");
@@ -567,8 +606,8 @@ mod tests {
         assert_eq!(cli.max_connections, Some(7));
         assert_eq!(cli.log_level, LogLevel::Warn);
 
-        assert!(parse_args(&args(&["--max-connections", "0"])).is_err());
-        assert!(parse_args(&args(&["--log-level", "loud"])).is_err());
+        assert!(parse(&["--max-connections", "0"]).is_err());
+        assert!(parse(&["--log-level", "loud"]).is_err());
     }
 
     #[test]

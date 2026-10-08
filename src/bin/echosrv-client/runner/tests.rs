@@ -285,12 +285,36 @@ async fn wrong_echo_is_a_mismatch() {
 #[test]
 fn backoff_doubles_up_to_the_cap() {
     let ms = Duration::from_millis;
-    let b = |n| backoff(ms(100), ms(1000), n);
-    assert_eq!(
-        [b(1), b(2), b(3), b(4), b(5), b(50)],
-        [ms(100), ms(200), ms(400), ms(800), ms(1000), ms(1000)]
-    );
-    assert_eq!(backoff(Duration::ZERO, ms(1000), 9), Duration::ZERO);
+    let mut b = Backoff::new(ms(100), ms(1000));
+    let pauses: Vec<_> = (0..50).map(|_| b.fail()).collect();
+    assert_eq!(pauses[..5], [ms(100), ms(200), ms(400), ms(800), ms(1000)]);
+    assert_eq!(pauses[49], ms(1000));
+
+    let mut zero = Backoff::new(Duration::ZERO, ms(1000));
+    assert!((0..9).all(|_| zero.fail() == Duration::ZERO));
+}
+
+#[test]
+fn backoff_reset_starts_over() {
+    let ms = Duration::from_millis;
+    let mut b = Backoff::new(ms(100), ms(1000));
+    b.fail();
+    b.fail();
+    assert_eq!(b.fail(), ms(400));
+    b.reset();
+    assert_eq!(b.errors, 0);
+    assert_eq!(b.fail(), ms(100));
+}
+
+#[test]
+fn backoff_saturates() {
+    let mut b = Backoff {
+        errors: u32::MAX,
+        base: Duration::from_millis(100),
+        max: Duration::from_secs(1),
+    };
+    assert_eq!(b.fail(), Duration::from_secs(1));
+    assert_eq!(b.errors, u32::MAX);
 }
 
 /// A server that drops every connection must not cause a reconnect
