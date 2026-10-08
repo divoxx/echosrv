@@ -9,11 +9,12 @@ mod common;
 use common::{
     WAIT, socket_dir, start_http, start_tcp, start_udp, start_unix_datagram, start_unix_stream,
 };
+use echosrv::datagram::DatagramClientConfig;
 use echosrv::http::HttpConfig;
 use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
 use echosrv::{
-    EchoClient, HttpEchoClient, RateLimitConfig, ServerStats, TcpConfig, TcpEchoClient, UdpConfig,
-    UdpEchoClient, UnixDatagramEchoClient, UnixStreamEchoClient,
+    EchoClient, EchoError, HttpEchoClient, RateLimitConfig, ServerStats, TcpConfig, TcpEchoClient,
+    UdpConfig, UdpEchoClient, UnixDatagramEchoClient, UnixStreamEchoClient,
 };
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -132,10 +133,15 @@ async fn http_request_over_limit_gets_429_with_retry_after() {
     let response = http_exchange(server.addr, &post("")).await;
     assert_too_many_requests(&response);
 
-    // The library client reports the 429 as an HTTP error.
+    // The library client reports the 429 with its Retry-After.
     let mut client = HttpEchoClient::connect(server.addr).await.unwrap();
     let err = client.echo(b"third").await.unwrap_err();
-    assert!(err.to_string().contains("429"), "{err}");
+    assert!(err.is_rate_limited(), "{err:?}");
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(1)));
+    assert!(
+        matches!(err, EchoError::HttpStatus { status: 429, ref body, .. } if !body.is_empty()),
+        "{err:?}"
+    );
 
     assert_eq!(server.stats.rejected_requests(), 3);
     assert_eq!(server.stats.rejected_connections(), 0);
@@ -169,7 +175,13 @@ async fn http_connection_over_accept_limit_gets_429() {
     let response = http_exchange(server.addr, &post("second")).await;
     assert_too_many_requests(&response);
 
-    assert_eq!(server.stats.rejected_connections(), 1);
+    // The library client sees the same 429.
+    let mut client = HttpEchoClient::connect(server.addr).await.unwrap();
+    let err = client.echo(b"third").await.unwrap_err();
+    assert!(err.is_rate_limited(), "{err:?}");
+    assert!(err.retry_after().is_some(), "{err:?}");
+
+    assert_eq!(server.stats.rejected_connections(), 2);
     assert_eq!(server.stats.rejected_requests(), 0);
     server.stop().await;
 }
@@ -219,6 +231,23 @@ async fn tcp_request_over_limit_resets_the_connection() {
     );
     assert_eq!(server.stats.rejected_requests(), 1);
     assert_eq!(server.stats.rejected_connections(), 0);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn tcp_client_sees_rejection_as_connection_reset() {
+    let server = start_tcp(TcpConfig::default().with_rate_limit(ONE_PER_SEC)).await;
+
+    let mut client = TcpEchoClient::connect(server.addr).await.unwrap();
+    assert_eq!(client.echo(b"one").await.unwrap(), b"one");
+    let err = client.echo(b"two").await.unwrap_err();
+    assert!(matches!(err, EchoError::Tcp(_)), "{err:?}");
+    assert_eq!(
+        err.io_error_kind(),
+        Some(ErrorKind::ConnectionReset),
+        "{err:?}"
+    );
+    assert!(!err.is_rate_limited());
     server.stop().await;
 }
 
@@ -275,6 +304,31 @@ async fn unix_stream_request_over_limit_closes_the_connection() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn unix_stream_client_sees_rejection_as_unexpected_eof() {
+    let dir = socket_dir();
+    let server = start_unix_stream(
+        UnixStreamConfig::default()
+            .with_socket_path(dir.path().join("s.sock"))
+            .with_rate_limit(ONE_PER_SEC),
+    )
+    .await;
+
+    let mut client = UnixStreamEchoClient::connect(server.addr.clone())
+        .await
+        .unwrap();
+    assert_eq!(client.echo(b"one").await.unwrap(), b"one");
+    // The close arrives before any echo: an error, not an empty "echo".
+    let err = client.echo(b"two").await.unwrap_err();
+    assert!(matches!(err, EchoError::Unix(_)), "{err:?}");
+    assert_eq!(
+        err.io_error_kind(),
+        Some(ErrorKind::UnexpectedEof),
+        "{err:?}"
+    );
+    server.stop().await;
+}
+
 // ---------------------------------------------------------------------------
 // Datagrams
 // ---------------------------------------------------------------------------
@@ -304,6 +358,19 @@ async fn udp_datagrams_over_limit_are_dropped_and_counted() {
         "a rate-limited datagram was echoed"
     );
     assert_eq!(server.stats.rejected_requests(), 0);
+
+    // The library client sees a dropped datagram as a receive timeout.
+    let config = DatagramClientConfig {
+        read_timeout: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let mut client = UdpEchoClient::connect_with_config(server.addr, config)
+        .await
+        .unwrap();
+    assert!(matches!(
+        client.echo(b"dropped").await,
+        Err(EchoError::Timeout(_))
+    ));
     server.stop().await;
 }
 

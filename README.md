@@ -350,6 +350,49 @@ The `rate_limit` module also has the primitives: `Gcra`, a lock-free policer
 that admits an event or returns how long to wait, and `TokenBucket`, an async
 shaper whose `acquire()` waits for a token.
 
+### Client errors
+
+Clients never return a partial echo as success. Every client has connect (stream
+clients), read and write timeouts and a buffer size: `ClientConfig` for TCP,
+HTTP and Unix stream, `DatagramClientConfig` for UDP and Unix datagram (both
+with `connect_with_config`). Failures are reported as:
+
+| Situation                                        | Error                                                    |
+|--------------------------------------------------|----------------------------------------------------------|
+| Nothing listening on the port                    | `Tcp` I/O error, kind `ConnectionRefused`                |
+| No Unix socket at the path / stale socket file   | `Unix` I/O error, kind `NotFound` / `ConnectionRefused`  |
+| Connection reset (e.g. TCP rate limit)           | I/O error, kind `ConnectionReset` (or `BrokenPipe`)      |
+| Connection closed before the whole echo arrived  | I/O error, kind `UnexpectedEof`                          |
+| Connect, read or write took too long             | `Timeout` (also a datagram that was dropped)             |
+| Reply larger than the client's limit             | `Config` (stream: `max_response_size`, datagram: `buffer_size`) |
+| HTTP response with a non-2xx status              | `HttpStatus { status, reason, retry_after, body }`       |
+
+`EchoError::io_error_kind()` returns the `std::io::ErrorKind` of the I/O
+variants (`Tcp`, `Udp`, `Unix`), `is_rate_limited()` is true for an HTTP `429`,
+and `retry_after()` returns its `Retry-After` delay:
+
+```rust
+use echosrv::{EchoClient, EchoServerTrait, HttpConfig, HttpEchoClient, HttpEchoServer};
+use echosrv::RateLimitConfig;
+
+#[tokio::main]
+async fn main() -> echosrv::Result<()> {
+    let config = HttpConfig::default().with_rate_limit(RateLimitConfig::new(1, 1));
+    let bound = HttpEchoServer::new(config).bind().await?;
+    let addr = *bound.local_addr().as_network().unwrap();
+    tokio::spawn(bound.serve());
+
+    let mut client = HttpEchoClient::connect(addr).await?;
+    client.echo(b"first").await?;
+    match client.echo(b"second").await {
+        Err(e) if e.is_rate_limited() => println!("429, retry in {:?}", e.retry_after()),
+        Err(e) => println!("failed: {e} (kind {:?})", e.io_error_kind()),
+        Ok(_) => println!("admitted"),
+    }
+    Ok(())
+}
+```
+
 ## HTTP semantics
 
 The HTTP server implements a small, strict subset of HTTP/1.1:

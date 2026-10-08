@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   states every default.
 - **`defaults` module** with the default protocol, host, port and Unix socket
   paths used by the binary and the Unix configs.
+- **Client error classification:** `EchoError::io_error_kind()` (the
+  `std::io::ErrorKind` of `Tcp`/`Udp`/`Unix` errors), `is_rate_limited()`
+  (HTTP `429`) and `retry_after()`.
+- **`EchoError::HttpStatus { status, reason, retry_after, body }`**, returned
+  by `HttpEchoClient` for a non-2xx response; `retry_after` is the parsed
+  `Retry-After` header (delay-seconds form).
 
 ### Changed
 
@@ -58,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration error at `bind()`.
 - HTTP: an invalid request now counts as one request for the rate limit; its
   error response is sent after the request has been admitted.
+- **Breaking:** clients no longer return a partial echo as success.
+  - The stream clients (`TcpEchoClient`, `UnixStreamEchoClient`) fail with an
+    `UnexpectedEof` I/O error when the server closes the connection before
+    the whole echo arrived (they used to return the bytes received so far).
+  - `HttpEchoClient` reports a non-2xx response as `EchoError::HttpStatus`
+    instead of `EchoError::Http(String)` (the message is unchanged), and a
+    connection closed before the response head or body is complete as an
+    `UnexpectedEof` `Tcp` error instead of `EchoError::Http`.
+  - The datagram clients (`UdpEchoClient`, `UnixDatagramEchoClient`) fail
+    with `EchoError::Config` when a reply is larger than
+    `DatagramClientConfig::buffer_size`, instead of truncating it.
+- `HttpEchoClient` reads responses in chunks of `ClientConfig::buffer_size`
+  (it used a fixed 8 KiB buffer).
 
 ## [0.4.0] - Unreleased
 

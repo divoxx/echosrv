@@ -590,10 +590,72 @@ async fn client_errors_on_non_2xx() {
         canned_server(b"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope").await;
     let mut client = HttpEchoClient::connect(addr).await.unwrap();
     let err = client.echo(b"x").await.unwrap_err();
-    assert!(matches!(err, crate::EchoError::Http(_)), "{err:?}");
-    let err = err.to_string();
-    assert!(err.contains("404") && err.contains("nope"), "{err}");
+    match &err {
+        crate::EchoError::HttpStatus {
+            status,
+            reason,
+            retry_after,
+            body,
+        } => {
+            assert_eq!(*status, 404);
+            assert_eq!(reason, "Not Found");
+            assert_eq!(*retry_after, None);
+            assert_eq!(body, "nope");
+        }
+        other => panic!("expected HttpStatus, got {other:?}"),
+    }
+    assert!(!err.is_rate_limited());
+    assert_eq!(err.to_string(), "HTTP error: HTTP 404 Not Found: nope");
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_reports_429_with_retry_after() {
+    let (addr, server) = canned_server(
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 4\r\n\r\nslow",
+    )
+    .await;
+    let mut client = HttpEchoClient::connect(addr).await.unwrap();
+    let err = client.echo(b"x").await.unwrap_err();
+    assert!(err.is_rate_limited(), "{err:?}");
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(7)));
+    assert!(matches!(err, crate::EchoError::HttpStatus { ref body, .. } if body == "slow"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_errors_on_close_before_response_head() {
+    for response in [&b""[..], b"HTTP/1.1 200 OK\r\nContent-Le"] {
+        let (addr, server) = canned_server(response).await;
+        let mut client = HttpEchoClient::connect(addr).await.unwrap();
+        let err = client.echo(b"x").await.unwrap_err();
+        assert!(matches!(err, crate::EchoError::Tcp(_)), "{err:?}");
+        assert_eq!(
+            err.io_error_kind(),
+            Some(std::io::ErrorKind::UnexpectedEof),
+            "{err:?}"
+        );
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn client_reads_in_buffer_size_chunks() {
+    let server = crate::HttpEchoServer::new(crate::HttpConfig::default());
+    let bound = server.bind().await.unwrap();
+    let addr = *bound.local_addr().as_network().unwrap();
+    let serving = tokio::spawn(bound.serve());
+
+    let config = crate::stream::ClientConfigBuilder::new()
+        .buffer_size(3)
+        .build();
+    let mut client = HttpEchoClient::connect_with_config(addr, config)
+        .await
+        .unwrap();
+    assert_eq!(client.config().buffer_size, 3);
+    let payload: Vec<u8> = (0..=255u8).cycle().take(10_000).collect();
+    assert_eq!(client.echo(&payload).await.unwrap(), payload);
+    serving.abort();
 }
 
 #[tokio::test]
@@ -601,7 +663,8 @@ async fn client_errors_on_truncated_body() {
     let (addr, server) = canned_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort").await;
     let mut client = HttpEchoClient::connect(addr).await.unwrap();
     let err = client.echo(b"x").await.unwrap_err();
-    assert!(matches!(err, crate::EchoError::Http(_)), "{err:?}");
+    assert!(matches!(err, crate::EchoError::Tcp(_)), "{err:?}");
+    assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::UnexpectedEof));
     let err = err.to_string();
     assert!(err.contains("truncated"), "{err}");
     server.await.unwrap();

@@ -170,10 +170,40 @@
 //! ([`FdInheritance`](EchoError::FdInheritance)), client timeouts
 //! ([`Timeout`](EchoError::Timeout)), invalid UTF-8 in
 //! [`EchoClient::echo_string`] ([`Utf8`](EchoError::Utf8)), unsupported
-//! operations ([`Unsupported`](EchoError::Unsupported)) and HTTP errors such
-//! as a non-2xx status seen by [`HttpEchoClient`] ([`Http`](EchoError::Http)).
+//! operations ([`Unsupported`](EchoError::Unsupported)), malformed HTTP
+//! ([`Http`](EchoError::Http)) and non-2xx HTTP responses seen by
+//! [`HttpEchoClient`] ([`HttpStatus`](EchoError::HttpStatus)).
 //! [`EchoError::into_io_error`] converts any of them into a
 //! [`std::io::Error`].
+//!
+//! Clients never return a partial echo as success: a connection closed early
+//! is an [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) I/O error, a
+//! reply that did not arrive in time is a [`Timeout`](EchoError::Timeout), and
+//! a reply larger than the client's limit is a [`Config`](EchoError::Config)
+//! error. To classify failures (for example in a load tester), use
+//! [`EchoError::io_error_kind`], [`EchoError::is_rate_limited`] and
+//! [`EchoError::retry_after`]:
+//!
+//! ```
+//! use echosrv::EchoError;
+//! use std::io::ErrorKind;
+//!
+//! fn describe(err: &EchoError) -> &'static str {
+//!     if err.is_rate_limited() {
+//!         return "rate limited";
+//!     }
+//!     match (err, err.io_error_kind()) {
+//!         (EchoError::Timeout(_), _) => "timeout",
+//!         (_, Some(ErrorKind::ConnectionRefused)) => "refused",
+//!         (_, Some(ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof)) => "reset",
+//!         (_, Some(ErrorKind::NotFound)) => "no such socket",
+//!         _ => "other",
+//!     }
+//! }
+//!
+//! let refused = EchoError::Tcp(ErrorKind::ConnectionRefused.into());
+//! assert_eq!(describe(&refused), "refused");
+//! ```
 
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -186,6 +216,7 @@ pub struct ReadmeDoctests;
 compile_error!("echosrv currently supports Unix-like platforms only (Linux, macOS, BSD)");
 
 use crate::http::protocol::HttpProtocolError;
+use std::time::Duration;
 use thiserror::Error;
 
 /// Error type for the echosrv library.
@@ -233,11 +264,27 @@ pub enum EchoError {
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
 
-    /// HTTP error: a non-2xx status or malformed response seen by
-    /// [`HttpEchoClient`], or a converted
-    /// [`HttpProtocolError`].
+    /// HTTP error: a malformed response seen by [`HttpEchoClient`], or a
+    /// converted [`HttpProtocolError`]. Non-2xx responses are
+    /// [`HttpStatus`](EchoError::HttpStatus).
     #[error("HTTP error: {0}")]
     Http(String),
+
+    /// A complete HTTP response with a non-2xx status, seen by
+    /// [`HttpEchoClient`]. The server is reachable; it declined the request
+    /// (for example `429 Too Many Requests` from a rate limit).
+    #[error("HTTP error: HTTP {status} {reason}: {body}")]
+    HttpStatus {
+        /// Status code, e.g. `429`.
+        status: u16,
+        /// Reason phrase, e.g. `Too Many Requests` (may be empty).
+        reason: String,
+        /// The `Retry-After` header in delay-seconds form, if present.
+        /// HTTP-date values are not parsed and give `None`.
+        retry_after: Option<Duration>,
+        /// Response body, decoded as UTF-8 (lossily).
+        body: String,
+    },
 }
 
 impl EchoError {
@@ -260,6 +307,82 @@ impl EchoError {
         match self {
             EchoError::Tcp(e) | EchoError::Udp(e) | EchoError::Unix(e) => e,
             other => std::io::Error::other(other.to_string()),
+        }
+    }
+
+    /// The [`std::io::ErrorKind`] of an I/O-backed error (`Tcp`, `Udp`,
+    /// `Unix`), or `None` for every other variant.
+    ///
+    /// Useful to classify client failures: `ConnectionRefused` (nothing
+    /// listening), `NotFound` (no Unix socket at the path),
+    /// `ConnectionReset`/`BrokenPipe` (connection dropped), and
+    /// `UnexpectedEof` (the server closed the connection before the whole
+    /// echo arrived). Timeouts are [`EchoError::Timeout`], not an I/O kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use echosrv::EchoError;
+    /// use std::io::ErrorKind;
+    ///
+    /// let err = EchoError::Unix(ErrorKind::NotFound.into());
+    /// assert_eq!(err.io_error_kind(), Some(ErrorKind::NotFound));
+    /// assert_eq!(EchoError::Timeout("read".into()).io_error_kind(), None);
+    /// ```
+    pub fn io_error_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            EchoError::Tcp(e) | EchoError::Udp(e) | EchoError::Unix(e) => Some(e.kind()),
+            _ => None,
+        }
+    }
+
+    /// Whether the server rejected the request because of a rate limit,
+    /// i.e. an HTTP `429 Too Many Requests` ([`EchoError::HttpStatus`]).
+    ///
+    /// The other servers signal rate limiting without a status: TCP resets
+    /// the connection, a Unix stream closes it and datagram servers drop the
+    /// datagram. Those surface as I/O errors or timeouts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use echosrv::EchoError;
+    /// use std::time::Duration;
+    ///
+    /// let err = EchoError::HttpStatus {
+    ///     status: 429,
+    ///     reason: "Too Many Requests".into(),
+    ///     retry_after: Some(Duration::from_secs(1)),
+    ///     body: String::new(),
+    /// };
+    /// assert!(err.is_rate_limited());
+    /// assert!(!EchoError::Http("bad".into()).is_rate_limited());
+    /// ```
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, EchoError::HttpStatus { status: 429, .. })
+    }
+
+    /// The server's `Retry-After` delay for an [`EchoError::HttpStatus`]
+    /// that carried one, otherwise `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use echosrv::EchoError;
+    /// use std::time::Duration;
+    ///
+    /// let err = EchoError::HttpStatus {
+    ///     status: 503,
+    ///     reason: "Service Unavailable".into(),
+    ///     retry_after: Some(Duration::from_secs(2)),
+    ///     body: String::new(),
+    /// };
+    /// assert_eq!(err.retry_after(), Some(Duration::from_secs(2)));
+    /// ```
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            EchoError::HttpStatus { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }
@@ -312,6 +435,49 @@ mod tests {
         io::Error::new(io::ErrorKind::ConnectionRefused, "refused")
     }
 
+    fn status_error(status: u16, retry_after: Option<Duration>) -> EchoError {
+        EchoError::HttpStatus {
+            status,
+            reason: String::new(),
+            retry_after,
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn io_error_kind_only_for_io_variants() {
+        for err in [
+            EchoError::Tcp(io_err()),
+            EchoError::Udp(io_err()),
+            EchoError::Unix(io_err()),
+        ] {
+            assert_eq!(err.io_error_kind(), Some(io::ErrorKind::ConnectionRefused));
+        }
+        for err in [
+            EchoError::Config("c".into()),
+            EchoError::Timeout("t".into()),
+            EchoError::Http("h".into()),
+            status_error(502, None),
+        ] {
+            assert_eq!(err.io_error_kind(), None, "{err:?}");
+        }
+    }
+
+    #[test]
+    fn rate_limited_and_retry_after() {
+        let secs = Some(Duration::from_secs(3));
+        assert!(status_error(429, None).is_rate_limited());
+        assert!(status_error(429, secs).is_rate_limited());
+        assert!(!status_error(503, secs).is_rate_limited());
+        assert!(!EchoError::Http("429".into()).is_rate_limited());
+        assert!(!EchoError::Tcp(io_err()).is_rate_limited());
+
+        assert_eq!(status_error(429, secs).retry_after(), secs);
+        assert_eq!(status_error(503, secs).retry_after(), secs);
+        assert_eq!(status_error(429, None).retry_after(), None);
+        assert_eq!(EchoError::Timeout("t".into()).retry_after(), None);
+    }
+
     #[test]
     fn display_every_variant() {
         let utf8 = String::from_utf8(vec![0xff]).unwrap_err();
@@ -341,6 +507,15 @@ mod tests {
                 "Unsupported operation: nope".to_string(),
             ),
             (EchoError::Http("400".into()), "HTTP error: 400".to_string()),
+            (
+                EchoError::HttpStatus {
+                    status: 429,
+                    reason: "Too Many Requests".into(),
+                    retry_after: None,
+                    body: "slow down".into(),
+                },
+                "HTTP error: HTTP 429 Too Many Requests: slow down".to_string(),
+            ),
         ];
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
@@ -430,6 +605,7 @@ mod tests {
             EchoError::Utf8(String::from_utf8(vec![0xff]).unwrap_err()),
             EchoError::Unsupported("u".into()),
             EchoError::Http("h".into()),
+            status_error(500, None),
         ];
         for err in cases {
             let message = err.to_string();

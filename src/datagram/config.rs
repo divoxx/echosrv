@@ -135,7 +135,9 @@ impl DatagramConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct DatagramClientConfig {
-    /// Receive buffer size; replies larger than this are truncated
+    /// Largest reply accepted, in bytes (must be non-zero). A larger reply
+    /// is not truncated: `echo` fails with
+    /// [`EchoError::Config`].
     pub buffer_size: usize,
     /// How long to wait for the echoed reply
     pub read_timeout: Duration,

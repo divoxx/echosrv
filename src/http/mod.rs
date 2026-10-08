@@ -57,7 +57,13 @@
 //! # Client
 //!
 //! [`HttpEchoClient`] sends `POST / HTTP/1.1` with `Content-Length`. It
-//! returns the response body and fails on any non-2xx status.
+//! returns the response body and fails on any non-2xx status with
+//! [`EchoError::HttpStatus`](crate::EchoError::HttpStatus), which carries the
+//! status, body and `Retry-After` delay (see
+//! [`EchoError::is_rate_limited`](crate::EchoError::is_rate_limited)). A
+//! response cut short by the server closing the connection is an
+//! [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) error, never a
+//! partial body.
 //!
 //! # Example
 //!
