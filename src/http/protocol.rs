@@ -96,6 +96,14 @@ pub enum HttpProtocolError {
     /// The peer closed the connection before a complete message arrived.
     #[error("Incomplete request")]
     IncompleteRequest,
+    /// Binding the listener failed. Carries the [`EchoError`](crate::EchoError)
+    /// from the TCP bind unchanged (e.g. [`EchoError::FdInheritance`] or
+    /// [`EchoError::Config`]), and converts back into it as is.
+    ///
+    /// [`EchoError::FdInheritance`]: crate::EchoError::FdInheritance
+    /// [`EchoError::Config`]: crate::EchoError::Config
+    #[error(transparent)]
+    Bind(crate::EchoError),
 }
 
 /// HTTP-specific settings carried by every accepted [`HttpStream`].
@@ -608,10 +616,11 @@ impl StreamProtocol for HttpProtocol {
     type Stream = HttpStream;
 
     async fn bind(config: &StreamConfig) -> std::result::Result<Self::Listener, Self::Error> {
-        // Delegate to TCP so HTTP gets the same bind strategy / FD inheritance.
+        // Delegate to TCP so HTTP gets the same bind strategy / FD inheritance,
+        // and the same bind errors.
         <crate::tcp::TcpProtocol as StreamProtocol>::bind(config)
             .await
-            .map_err(|e| HttpProtocolError::Io(e.into_io_error()))
+            .map_err(HttpProtocolError::Bind)
     }
 
     async fn bind_with_inheritance(
@@ -620,7 +629,7 @@ impl StreamProtocol for HttpProtocol {
     ) -> std::result::Result<Self::Listener, Self::Error> {
         <crate::tcp::TcpProtocol as StreamProtocol>::bind_with_inheritance(config, fd_config)
             .await
-            .map_err(|e| HttpProtocolError::Io(e.into_io_error()))
+            .map_err(HttpProtocolError::Bind)
     }
 
     async fn accept(
