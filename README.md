@@ -159,9 +159,15 @@ echosrv-client unix-datagram /tmp/echo_dgram.sock
 
 **Length.** `-n N` sends N requests in total and stops. Without `-n` the run is
 continuous until `-d`/`--duration` (`10s`, `500ms`, `2m`) runs out or you press
-Ctrl-C. With both, whichever comes first stops the run. The first Ctrl-C
-finishes gracefully and still prints the summary; a second one aborts with
-exit status 130. Requests in flight when the run stops are not counted.
+Ctrl-C. With both, whichever comes first stops the run.
+
+**Stopping.** The end of `--duration` and the first `SIGINT` (Ctrl-C) or
+`SIGTERM` all stop the run gracefully: no new requests start, requests already
+in flight finish (each bounded by `--timeout`) and are counted, their
+connections are closed cleanly, and the summary is printed. So a client
+stopped by a supervisor or `kill` never cuts a request off mid-flight, which
+the server would otherwise see as a reset. A second signal aborts immediately,
+with exit status 130 (`SIGINT`) or 143 (`SIGTERM`).
 
 **Workers.** `-c C` runs C workers in parallel (default 1). Each worker sends
 one request, waits for the echo, then sends the next.
@@ -402,8 +408,8 @@ In the summary, `latency` is `null` when nothing succeeded, and otherwise has
 still open at the end), `windows_truncated` (more than 100 outages) and
 `windows`, a list of `{start_s, duration_ms, errors, ongoing}`. An outage still
 open at the end has no `outage_end` line; it appears in `windows` with
-`ongoing: true`. `stop_reason` is `completed`, `duration`, `interrupt` or
-`ports_exhausted`. The verdict is not in the JSON; use the exit status.
+`ongoing: true`. `stop_reason` is `completed`, `duration`, `interrupt`
+(`SIGINT`), `terminated` (`SIGTERM`) or `ports_exhausted`. The verdict is not in the JSON; use the exit status.
 
 ### Exit status
 
@@ -412,7 +418,8 @@ open at the end has no `outage_end` line; it appears in `windows` with
 | 0      | No mismatches and the error rate is within `--max-error-rate` (default 0%)                   |
 | 1      | An echo mismatch, an error rate above `--max-error-rate`, or the machine ran out of ports     |
 | 2      | Usage or setup error (bad flags, unresolvable host, `--conn-mode persistent` with `http`)    |
-| 130    | Aborted by a second Ctrl-C                                                                   |
+| 130    | Aborted by a second `SIGINT` (Ctrl-C)                                                        |
+| 143    | Aborted by a second `SIGTERM`                                                                |
 | 141    | stdout was closed (for example by `\| head`); the run stops quietly                          |
 
 The error rate is errors divided by attempts, including failed connects and

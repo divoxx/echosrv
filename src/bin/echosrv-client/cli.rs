@@ -151,8 +151,10 @@ fn parse_pct(s: &str) -> Result<f64, String> {
         echosrv-client tcp 10.0.0.5:8080 -c 20 --rate 500 --burst 50 -d 10s\n  \
         echosrv-client http 8081 -c 16 -d 5s --honor-retry-after\n\n\
         Exit codes: 0 ok, 1 mismatch, error rate above --max-error-rate or local\n\
-        ports exhausted, 2 usage/setup error, 130 aborted by a second Ctrl-C,\n\
-        141 stdout closed."
+        ports exhausted, 2 usage/setup error, 130 / 143 aborted by a second\n\
+        SIGINT (Ctrl-C) / SIGTERM, 141 stdout closed.\n\n\
+        The first SIGINT or SIGTERM (and the end of --duration) stops gracefully:\n\
+        no new requests start, requests in flight finish and the summary is printed."
 )]
 pub struct Cli {
     /// Protocol to speak.

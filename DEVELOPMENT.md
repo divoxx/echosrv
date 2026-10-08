@@ -170,7 +170,8 @@ stats.rs    Aggregator ── interval Window (hdrhistogram) ──> LiveEvent::
                        ── OutageTracker ──────────────────> LiveEvent::Outage (start/end)
                        └─ on channel close ───────────────> Summary
 report.rs   text or JSON lines for each event; Verdict from the Summary
-main.rs     Ctrl-C/--duration cancel the run (CancellationToken); verdict -> exit code
+main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new attempts,
+            in-flight attempts finish); a second signal exits 130/143; verdict -> exit code
 ```
 
 - **Workers** take sequence numbers from a shared counter (so `-n` is exact

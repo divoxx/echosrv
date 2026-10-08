@@ -55,8 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can shape traffic (`--rate`/`--burst`), honor HTTP `Retry-After`, and caps
   new connections at 100/s by default (`--conn-rate`) with exponential
   backoff after errors, so by default it does not exhaust the machine's
-  ephemeral ports. Its exit status reflects the run (`--max-error-rate`).
-  See the README.
+  ephemeral ports. `SIGTERM`, Ctrl-C and the end of `--duration` stop it
+  gracefully: requests in flight finish and are counted. Its exit status
+  reflects the run (`--max-error-rate`). See the README.
 
 ### Changed
 

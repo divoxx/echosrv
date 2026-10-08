@@ -47,7 +47,7 @@ src/
 │   ├── stats.rs   error kinds + classify, Window histograms, OutageTracker, Aggregator, Summary
 │   ├── report.rs  text and JSON rendering (config, interval, outage, summary), Verdict
 │   ├── output.rs  --color/NO_COLOR/CLICOLOR_FORCE, Palette, [ok]/[fail] tagged lines
-│   └── main.rs    Ctrl-C (graceful, second aborts), --duration, exit codes 0/1/2/130/141
+│   └── main.rs    SIGINT/SIGTERM and --duration stop gracefully (in-flight requests finish), a second signal aborts; exit codes 0/1/2/130/141/143
 ├── common/      EchoServerTrait, EchoClient; lifecycle.rs (shutdown signal, ConnectionGuard)
 ├── stream/      StreamProtocol, StreamEchoServer<P>, BoundStreamServer, Client<P>, StreamConfig
 ├── datagram/    DatagramProtocol, DatagramEchoServer<P>, DatagramEchoClient<P>, DatagramConfig

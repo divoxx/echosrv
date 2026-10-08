@@ -564,3 +564,133 @@ async fn closed_stdout_ends_a_continuous_run() {
     assert_eq!(status.code(), Some(141));
     server.stop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Signals
+// ---------------------------------------------------------------------------
+
+/// A TCP echo server that waits `delay` before each reply, so requests are
+/// reliably in flight when a signal arrives. Every request it receives is
+/// announced on the returned channel.
+async fn slow_echo_server(
+    delay: Duration,
+) -> (
+    SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = tx.send(());
+                    tokio::time::sleep(delay).await;
+                    if stream.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, rx, handle)
+}
+
+/// The client with the color and logging env vars cleared.
+fn client_command(args: &[&str]) -> Command {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args)
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("RUST_LOG")
+        .kill_on_drop(true);
+    cmd
+}
+
+fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
+    let pid = libc::pid_t::try_from(child.id().expect("client already exited")).unwrap();
+    // SAFETY: kill(2) on our own child process.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+}
+
+#[tokio::test]
+async fn sigterm_lets_requests_in_flight_finish() {
+    let _serial = serial().await;
+    let delay = Duration::from_millis(300);
+    let (addr, mut requests, server) = slow_echo_server(delay).await;
+    let target = addr.to_string();
+    let child = client_command(&["tcp", &target, "-c", "2", "-i", "0", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(common::WAIT, requests.recv())
+        .await
+        .expect("no request reached the server");
+
+    let signalled = std::time::Instant::now();
+    send_signal(&child, libc::SIGTERM);
+    let out = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
+        .await
+        .expect("client did not stop")
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let summary = json_lines(&out).pop().unwrap();
+    assert_eq!(summary["type"], "summary");
+    assert_eq!(summary["stop_reason"], "terminated");
+    // The request in flight was answered and counted, not dropped.
+    assert_eq!(summary["errors"], 0, "{}", describe(&out));
+    assert!(summary["ok"].as_u64().unwrap() >= 1, "{}", describe(&out));
+    assert!(
+        signalled.elapsed() >= delay / 2,
+        "stopped after {:?}, before the reply",
+        signalled.elapsed()
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn second_sigterm_aborts() {
+    use tokio::io::AsyncBufReadExt;
+    let _serial = serial().await;
+    let (addr, mut requests, server) = slow_echo_server(Duration::from_secs(60)).await;
+    let target = addr.to_string();
+    let mut child = client_command(&["tcp", &target, "-i", "0", "-t", "120s"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(common::WAIT, requests.recv())
+        .await
+        .expect("no request reached the server");
+
+    send_signal(&child, libc::SIGTERM);
+    let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    tokio::time::timeout(common::WAIT, async {
+        while let Some(line) = stderr.next_line().await.unwrap() {
+            if line.contains("stopping") {
+                return;
+            }
+        }
+        panic!("stderr closed before the stop notice");
+    })
+    .await
+    .expect("first SIGTERM was not acknowledged");
+
+    // The request is still waiting for its reply; a second signal aborts.
+    send_signal(&child, libc::SIGTERM);
+    let status = tokio::time::timeout(common::WAIT, child.wait())
+        .await
+        .expect("second SIGTERM did not abort")
+        .unwrap();
+    assert_eq!(status.code(), Some(143));
+    server.abort();
+}

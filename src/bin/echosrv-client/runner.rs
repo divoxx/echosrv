@@ -406,12 +406,11 @@ impl Worker {
                         () = limiter.acquire() => {}
                     }
                 }
+                // Not cancellable: once an attempt has started, a stop lets it
+                // finish (bounded by the timeout) so it is recorded and its
+                // connection is closed cleanly instead of dropped mid-request.
                 let started = Instant::now();
-                let result = tokio::select! {
-                    biased;
-                    () = cancel.cancelled() => break,
-                    r = make_client(&config.transport, config.timeout, max_payload) => r,
-                };
+                let result = make_client(&config.transport, config.timeout, max_payload).await;
                 match result {
                     Ok(c) => client = Some(c),
                     Err(e) => {
@@ -443,13 +442,11 @@ impl Worker {
                 &config.filler,
                 &mut rng,
             );
+            // Runs to completion even if the run is stopped meanwhile (see
+            // the connect above); every read and write is bounded by the
+            // timeout.
             let started = Instant::now();
-            let result = tokio::select! {
-                biased;
-                // A request still in flight when cancelled is not recorded.
-                () = cancel.cancelled() => break,
-                r = c.echo(&payload) => r,
-            };
+            let result = c.echo(&payload).await;
 
             let (outcome, retry_after) = self.evaluate(seq, &payload, result);
             let pause = match outcome {
@@ -485,6 +482,10 @@ impl Worker {
 
 /// Runs the load test until `config.requests` attempts are done or `cancel`
 /// fires, calling `on_event` for live intervals and outage changes.
+///
+/// Cancelling is a graceful stop: no new attempts start, while attempts
+/// already in flight finish (each bounded by `config.timeout`) and are
+/// recorded. To abort in-flight requests, drop the future (or exit).
 ///
 /// The returned summary has run metadata filled in. `stop_reason` is
 /// [`STOP_PORTS_EXHAUSTED`] if the run stopped itself because the machine ran
@@ -1140,6 +1141,50 @@ mod tests {
         assert!(s.outages.longest_ms >= 200.0, "{s:#?}");
         // The removed socket file shows up as a missing path.
         assert!(s.errors_by_kind["connect_failed"] > 0, "{s:#?}");
+    }
+
+    /// A TCP echo server that waits `delay` before each reply.
+    async fn slow_echo_server(delay: Duration) -> (SocketAddr, JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(localhost()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        tokio::time::sleep(delay).await;
+                        if stream.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn stop_lets_requests_in_flight_finish() {
+        let delay = Duration::from_millis(300);
+        let (addr, server) = slow_echo_server(delay).await;
+        let mut config = RunConfig::new(Transport::Tcp(addr));
+        config.concurrency = 2;
+        let cancel = CancellationToken::new();
+        let started = Instant::now();
+        let run_task = tokio::spawn(run(config, cancel.clone(), |_| {}));
+        // Both workers' first requests are waiting for their replies.
+        tokio::time::sleep(delay / 3).await;
+        cancel.cancel();
+        let s = tokio::time::timeout(WAIT, run_task)
+            .await
+            .expect("run did not stop")
+            .unwrap();
+        assert_eq!((s.total, s.ok), (2, 2), "{s:#?}");
+        assert!(started.elapsed() >= delay, "{:?}", started.elapsed());
+        server.abort();
     }
 
     #[tokio::test]

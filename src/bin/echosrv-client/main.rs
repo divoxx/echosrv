@@ -1,7 +1,8 @@
 //! `echosrv-client`: load / stress-test client for echosrv servers.
 //!
 //! Exit codes: 0 ok, 1 mismatch, error rate above `--max-error-rate` or
-//! local ports exhausted, 2 usage or setup error, 130 aborted by a second Ctrl-C, 141 stdout closed
+//! local ports exhausted, 2 usage or setup error, 130 / 143 aborted by a
+//! second SIGINT / SIGTERM, 141 stdout closed
 //! (e.g. `| head`).
 
 mod cli;
@@ -19,12 +20,15 @@ use stats::LiveEvent;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
+/// 128 + SIGINT / SIGTERM, for a run aborted by a second signal.
 const EXIT_INTERRUPTED: i32 = 130;
+const EXIT_TERMINATED: i32 = 143;
 /// 128 + SIGPIPE, what a shell reports for a process killed by a closed pipe.
 const EXIT_BROKEN_PIPE: i32 = 141;
 
@@ -92,24 +96,35 @@ async fn main() -> ExitCode {
     let cancel = CancellationToken::new();
     let stop_reason: Arc<OnceLock<&'static str>> = Arc::new(OnceLock::new());
 
-    // First Ctrl-C stops gracefully; a second one aborts with 130.
+    // The first SIGINT (Ctrl-C) or SIGTERM stops gracefully: no new requests
+    // start, and the ones in flight finish and are reported. A second
+    // signal aborts at once with 130 / 143.
     {
         let cancel = cancel.clone();
         let stop_reason = stop_reason.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_err() {
+            let (Ok(mut int), Ok(mut term)) = (
+                signal(SignalKind::interrupt()),
+                signal(SignalKind::terminate()),
+            ) else {
                 return;
-            }
-            let _ = stop_reason.set("interrupt");
+            };
+            let reason = tokio::select! {
+                _ = int.recv() => "interrupt",
+                _ = term.recv() => "terminated",
+            };
+            let _ = stop_reason.set(reason);
             output::info(
                 err_palette,
-                "interrupted: finishing (press Ctrl-C again to abort)",
+                "stopping: letting requests in flight finish (signal again to abort)",
             );
             cancel.cancel();
-            if tokio::signal::ctrl_c().await.is_ok() {
-                output::fail(err_palette, "aborted");
-                std::process::exit(EXIT_INTERRUPTED);
-            }
+            let code = tokio::select! {
+                _ = int.recv() => EXIT_INTERRUPTED,
+                _ = term.recv() => EXIT_TERMINATED,
+            };
+            output::fail(err_palette, "aborted");
+            std::process::exit(code);
         });
     }
     if let Some(duration) = cli.duration {

@@ -429,9 +429,10 @@ pub struct Summary {
     /// Latency of successful requests.
     pub latency: Option<LatencySummary>,
     pub outages: OutageSummary,
-    /// Stopped (Ctrl-C or `--duration`) before `-n` attempts completed.
+    /// Stopped (a signal or `--duration`) before `-n` attempts completed.
     pub interrupted: bool,
-    /// `completed`, `duration` or `interrupt`.
+    /// `completed`, `duration`, `interrupt` (SIGINT), `terminated` (SIGTERM)
+    /// or `ports_exhausted`.
     pub stop_reason: &'static str,
 }
 
