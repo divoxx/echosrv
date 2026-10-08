@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Rate-limiting primitives** in the new `rate_limit` module (re-exported at
+  the crate root): `Gcra`, a lock-free GCRA policer (`check()` /
+  `check_at()` admit an event or return `RateLimited { retry_after }`), and
+  `TokenBucket`, a cancel-safe async shaper (`acquire()`), both configured by
+  `RateLimitConfig { rate_per_sec, burst }`. `RateLimitError` is the
+  matching error enum.
+
 ## [0.4.0] - Unreleased
 
 This release makes the servers behave as documented. HTTP now speaks real
