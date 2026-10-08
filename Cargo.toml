@@ -24,6 +24,7 @@ http = "1.0"
 httparse = "1.8"
 tokio-util = { version = "0.7", features = ["codec"] }
 libc = "0.2"
+clap = { version = "4", features = ["derive"] }
 
 [[bin]]
 name = "echosrv"

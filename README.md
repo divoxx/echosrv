@@ -40,24 +40,24 @@ Minimum supported Rust version: 1.85 (edition 2024).
 ## Command line
 
 ```text
-Usage: echosrv [OPTIONS] [PROTOCOL] [PORT | SOCKET_PATH]
+Async echo server for TCP, UDP, HTTP and Unix domain sockets
 
-Protocols:
-  tcp            TCP echo server (default)
-  udp            UDP echo server
-  http           HTTP echo server (echoes POST bodies)
-  unix-stream    Unix domain stream socket server
-  unix-dgram     Unix domain datagram socket server (alias: unix-datagram)
+Usage: echosrv [OPTIONS] [PROTOCOL] [PORT|SOCKET_PATH]
 
 Arguments:
-  PORT           Port for tcp/udp/http (default: 8080)
-  SOCKET_PATH    Socket path for unix-stream/unix-dgram
-                 (default: /tmp/echosrv_stream.sock / /tmp/echosrv_datagram.sock)
+  [PROTOCOL]          Protocol to serve [default: tcp] [possible values: tcp, udp, http, unix-stream, unix-dgram]
+  [PORT|SOCKET_PATH]  Port for tcp/udp/http, or socket path for unix-stream/unix-dgram [default: 8080 for tcp/udp/http, /tmp/echosrv_stream.sock for unix-stream, /tmp/echosrv_datagram.sock for unix-dgram]
 
 Options:
-  --host <ADDR>  IP address to bind for tcp/udp/http (default: 127.0.0.1)
-  -h, --help     Print this help and exit
-  -V, --version  Print version and exit
+      --host <ADDR>            IP address (IPv4 or IPv6) to bind for tcp/udp/http [default: 127.0.0.1]
+      --rate <PER_SEC>         Request rate limit in requests/s (datagrams/s for udp/unix-dgram); excess is rejected [default: unlimited]
+      --burst <N>              Request burst size [default: same as --rate]
+      --accept-rate <PER_SEC>  New-connection rate limit in connections/s (tcp, http, unix-stream); excess is rejected [default: unlimited]
+      --accept-burst <N>       New-connection burst size [default: same as --accept-rate]
+      --max-connections <N>    Maximum concurrent connections (tcp, http, unix-stream) [default: 1000 for tcp/http, 100 for unix-stream]
+      --log-level <LEVEL>      Log level (RUST_LOG overrides it) [default: info] [possible values: off, error, warn, info, debug, trace]
+  -h, --help                   Print help (see more with '--help')
+  -V, --version                Print version
 ```
 
 Examples:
@@ -79,6 +79,10 @@ echosrv http 8080
 curl --data-binary 'hello' http://127.0.0.1:8080/   # -> hello
 curl -i http://127.0.0.1:8080/                      # -> 405 Method Not Allowed
 
+# Rate limits: 100 requests/s (bursts of 10) and 20 new connections/s
+echosrv http 8080 --rate 100 --burst 10 --accept-rate 20
+curl -i --data-binary 'hi' http://127.0.0.1:8080/   # over the limit -> 429 + Retry-After
+
 # Unix domain sockets
 echosrv unix-stream /tmp/echo.sock
 echo hello | nc -U /tmp/echo.sock
@@ -88,9 +92,20 @@ echosrv unix-dgram /tmp/echo_dgram.sock
 From a checkout, run it with `cargo run -- <args>`, for example
 `cargo run -- http 8080`.
 
-**Logging.** Logs go to stderr through `tracing`. The `RUST_LOG` variable sets
-the filter. The default is `echosrv=info`. Use `RUST_LOG=echosrv=debug` to see
-connections, or `RUST_LOG=echosrv=trace` to see payloads.
+`echosrv --help` describes each option in more detail, with its default on a
+line of its own.
+
+**Rate limits.** `--rate`/`--burst` limit requests (datagrams for `udp` and
+`unix-dgram`) and `--accept-rate`/`--accept-burst` limit new connections, each
+for the whole server. Over-limit traffic is rejected, never delayed: see
+[Rate limiting](#rate-limiting). `--accept-rate` and `--max-connections` are
+errors for the datagram protocols, like `--host` for the Unix ones.
+
+**Logging.** Logs go to stderr through `tracing`. `--log-level` sets the level
+of echosrv's own logs (default `info`, so `echosrv=info`). `RUST_LOG`, when
+set, overrides it with a full filter: use `RUST_LOG=echosrv=debug` to see
+connections and rejections, or `RUST_LOG=echosrv=trace` to see payloads. Logs
+are colored only when stderr is a terminal and `NO_COLOR` is not set.
 
 **Signals.** `SIGINT` (Ctrl-C) and `SIGTERM` trigger a graceful shutdown. The
 server stops accepting, cancels in-flight connections, removes any Unix socket
@@ -522,7 +537,9 @@ Tests bind port `0` or a temporary socket path and get the real address from
 ```text
 src/
 ├── lib.rs        EchoError, Result, re-exports
-├── main.rs       echosrv binary (CLI, signals, socket activation)
+├── main.rs       echosrv binary (clap CLI, signals, socket activation)
+├── cli_help.rs   help layout for the binary (defaults on their own line in --help)
+├── defaults.rs   default protocol, host, port and Unix socket paths
 ├── rate_limit.rs Gcra, TokenBucket, RateLimitConfig
 ├── common/       EchoServerTrait, EchoClient, ServerStats, shared server lifecycle
 ├── stream/       StreamProtocol, StreamEchoServer<P>, Client<P>, StreamConfig

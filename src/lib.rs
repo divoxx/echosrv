@@ -278,6 +278,7 @@ pub type Result<T> = std::result::Result<T, EchoError>;
 
 pub mod common;
 pub mod datagram;
+pub mod defaults;
 pub mod http;
 pub mod network;
 pub mod rate_limit;

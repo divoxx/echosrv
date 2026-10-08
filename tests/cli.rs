@@ -88,7 +88,7 @@ fn unknown_option_and_bad_host_fail() {
         .arg("--bogus")
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("unknown option"));
+        .stderr(predicate::str::contains("unexpected argument '--bogus'"));
     Command::new(BIN)
         .args(["--host", "not-an-ip", "tcp"])
         .assert()
@@ -98,6 +98,84 @@ fn unknown_option_and_bad_host_fail() {
         .args(["--host", "127.0.0.1", "unix-stream"])
         .assert()
         .code(1);
+}
+
+#[test]
+fn help_states_every_default() {
+    let _serial = serial();
+    let defaults = [
+        "[default: tcp]",
+        "[default: 127.0.0.1]",
+        "[default: 8080 for tcp/udp/http",
+        "/tmp/echosrv_stream.sock for unix-stream",
+        "/tmp/echosrv_datagram.sock for unix-dgram]",
+        "[default: unlimited]",
+        "[default: same as --rate]",
+        "[default: same as --accept-rate]",
+        "[default: 1000 for tcp/http, 100 for unix-stream]",
+        "[default: info]",
+    ];
+    for flag in ["-h", "--help"] {
+        let output = Command::new(BIN).arg(flag).output().unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).unwrap();
+        for default in defaults {
+            assert!(help.contains(default), "{flag} lacks {default:?}:\n{help}");
+        }
+        for option in [
+            "--host",
+            "--rate",
+            "--burst",
+            "--accept-rate",
+            "--accept-burst",
+            "--max-connections",
+            "--log-level",
+        ] {
+            assert!(help.contains(option), "{flag} lacks {option}:\n{help}");
+        }
+        if flag == "--help" {
+            // Every default sits on its own line, like clap's built-in ones.
+            for line in help.lines() {
+                if let Some(at) = line.find("[default: ") {
+                    assert!(
+                        line[..at].trim().is_empty(),
+                        "default not on its own line: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_rate_limit_flags_fail() {
+    let _serial = serial();
+    for (args, message) in [
+        (&["--rate", "0"][..], "--rate"),
+        (&["--rate", "lots"], "--rate"),
+        (&["--burst", "5"], "--rate"),
+        (&["--rate", "5", "--burst", "0"], "--burst"),
+        (&["--accept-rate", "0"], "--accept-rate"),
+        (&["--accept-burst", "5"], "--accept-rate"),
+        (&["--max-connections", "0"], "--max-connections"),
+        (&["--log-level", "loud"], "--log-level"),
+        (
+            &["udp", "--accept-rate", "5"],
+            "--accept-rate cannot be used with udp",
+        ),
+        (
+            &["unix-dgram", "--max-connections", "5"],
+            "--max-connections cannot be used with unix-dgram",
+        ),
+    ] {
+        Command::new(BIN)
+            .args(args)
+            .assert()
+            .code(1)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("error:"))
+            .stderr(predicate::str::contains(message));
+    }
 }
 
 #[test]
@@ -132,12 +210,16 @@ impl Server {
 
     /// Spawns `command` with stdout/stderr captured to a log file (so a chatty
     /// child can never block on a full pipe).
+    /// `RUST_LOG` defaults to `echosrv=debug` unless `command` sets or
+    /// removes it.
     fn spawn_with(command: &mut std::process::Command) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("server.log");
         let out = File::create(&log).unwrap();
+        if !command.get_envs().any(|(name, _)| name == "RUST_LOG") {
+            command.env("RUST_LOG", "echosrv=debug");
+        }
         let child = command
-            .env("RUST_LOG", "echosrv=debug")
             .stdin(Stdio::null())
             .stdout(out.try_clone().unwrap())
             .stderr(out)
@@ -307,6 +389,139 @@ fn http_echoes_post_body() {
     assert!(response.ends_with("\r\n\r\nhello"), "{response}");
 
     server.stop_with(libc::SIGTERM);
+}
+
+/// Sends one HTTP POST on a new connection and returns the raw response.
+fn http_post(addr: SocketAddr, body: &str) -> String {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    write!(
+        stream,
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[test]
+fn http_rate_flags_reject_with_429() {
+    let _serial = serial();
+    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    let mut server = Server::spawn(&[
+        "http",
+        &addr.port().to_string(),
+        "--rate",
+        "1",
+        "--burst",
+        "2",
+    ]);
+    // The readiness probe connects without sending a request, so it does not
+    // use up the burst.
+    drop(server.wait_until("HTTP listener", || TcpStream::connect(addr).ok()));
+
+    for body in ["one", "two"] {
+        let response = http_post(addr, body);
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    }
+    let response = http_post(addr, "three");
+    assert!(
+        response.starts_with("HTTP/1.1 429 Too Many Requests\r\n"),
+        "{response}"
+    );
+    assert!(response.contains("\r\nRetry-After: 1\r\n"), "{response}");
+    assert!(
+        server
+            .log()
+            .contains("rate_limit=Some(RateLimitConfig { rate_per_sec: 1, burst: 2 })"),
+        "{}",
+        server.log()
+    );
+
+    server.stop_with(libc::SIGTERM);
+}
+
+#[test]
+fn tcp_accept_rate_and_max_connections_flags_apply() {
+    let _serial = serial();
+    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    let mut server = Server::spawn(&[
+        "tcp",
+        &addr.port().to_string(),
+        "--max-connections",
+        "1",
+        "--accept-rate",
+        "1000",
+        "--accept-burst",
+        "1000",
+    ]);
+    let mut first = server.wait_until("TCP listener", || {
+        let mut stream = TcpStream::connect(addr).ok()?;
+        stream.set_read_timeout(Some(IO_TIMEOUT)).ok()?;
+        stream.write_all(b"x").ok()?;
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).ok()?;
+        Some(stream)
+    });
+
+    // With the only slot taken, another connection is closed right away.
+    let mut second = TcpStream::connect(addr).unwrap();
+    second.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    let mut buf = [0u8; 1];
+    assert!(
+        matches!(second.read(&mut buf), Ok(0) | Err(_)),
+        "second connection was served despite --max-connections 1"
+    );
+    first.write_all(b"y").unwrap();
+    first.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"y");
+    drop(first);
+    assert!(
+        server.log().contains("max_connections=1"),
+        "{}",
+        server.log()
+    );
+
+    server.stop_with(libc::SIGTERM);
+}
+
+#[test]
+fn log_level_flag_and_rust_log_override() {
+    let _serial = serial();
+
+    // --log-level warn hides the info lines (RUST_LOG unset).
+    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    let mut server = Server::spawn_with(
+        std::process::Command::new(BIN)
+            .args(["--log-level", "warn", "tcp", &addr.port().to_string()])
+            .env_remove("RUST_LOG")
+            .env_remove("NO_COLOR"),
+    );
+    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    assert_eq!(tcp_echo(addr, b"quiet"), b"quiet");
+    server.stop_with(libc::SIGTERM);
+    let log = server.log();
+    assert!(
+        !log.contains("INFO"),
+        "info logged at --log-level warn:\n{log}"
+    );
+
+    // RUST_LOG wins over --log-level.
+    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    let mut server = Server::spawn_with(
+        std::process::Command::new(BIN)
+            .args(["--log-level", "error", "tcp", &addr.port().to_string()])
+            .env("RUST_LOG", "echosrv=debug"),
+    );
+    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    assert_eq!(tcp_echo(addr, b"loud"), b"loud");
+    server.stop_with(libc::SIGTERM);
+    let log = server.log();
+    assert!(log.contains("DEBUG"), "RUST_LOG did not override:\n{log}");
+    // stderr is a file, not a terminal: no color escapes.
+    assert!(!log.contains('\x1b'), "ANSI escapes in a non-terminal log");
 }
 
 fn wait_for_unix_stream(server: &mut Server, path: &Path) -> UnixStream {

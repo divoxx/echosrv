@@ -168,8 +168,13 @@ the process has one thread, so changing the environment is safe.
    `HttpEchoServer`). Re-export them from `lib.rs`.
 5. Add unit tests in `src/<proto>/tests.rs` and an integration suite
    `tests/<proto>.rs` with a `start_<proto>` helper in `tests/common/mod.rs`.
-6. If the binary should serve it, add it to `Protocol` in `src/main.rs`, then
-   update the usage text, the README and `tests/cli.rs`.
+6. If the binary should serve it, add a variant to the clap `Protocol` enum in
+   `src/main.rs` (its doc comment is the help text) and a branch in `start()`,
+   then update the README and `tests/cli.rs`. Options with a literal default
+   use clap's `default_value`; optional or computed defaults are written at
+   the end of the doc comment as ` [default: …]`, which `src/cli_help.rs`
+   moves onto its own line in `--help`. Shared default endpoints live in
+   `src/defaults.rs`.
 
 ## Testing conventions
 

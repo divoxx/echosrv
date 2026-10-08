@@ -1,6 +1,7 @@
 //! Unix domain stream and datagram server configuration.
 
 use crate::datagram::DatagramConfig;
+use crate::defaults::{DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH};
 use crate::network::fd_inheritance::{BindStrategy, BindTarget};
 use crate::rate_limit::RateLimitConfig;
 use crate::stream::StreamConfig;
@@ -59,7 +60,7 @@ pub struct UnixStreamConfig {
 impl Default for UnixStreamConfig {
     fn default() -> Self {
         Self {
-            bind_strategy: BindStrategy::Bind(BindTarget::Unix("/tmp/echosrv_stream.sock".into())),
+            bind_strategy: BindStrategy::Bind(BindTarget::Unix(DEFAULT_UNIX_STREAM_PATH.into())),
             service_name: "unix-stream".to_string(),
             max_connections: 100,
             buffer_size: 1024,
@@ -170,9 +171,7 @@ pub struct UnixDatagramConfig {
 impl Default for UnixDatagramConfig {
     fn default() -> Self {
         Self {
-            bind_strategy: BindStrategy::Bind(BindTarget::Unix(
-                "/tmp/echosrv_datagram.sock".into(),
-            )),
+            bind_strategy: BindStrategy::Bind(BindTarget::Unix(DEFAULT_UNIX_DGRAM_PATH.into())),
             service_name: "unix-datagram".to_string(),
             buffer_size: crate::datagram::DEFAULT_DATAGRAM_BUFFER_SIZE,
             read_timeout: Duration::from_secs(30),

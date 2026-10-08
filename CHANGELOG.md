@@ -34,8 +34,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`StreamProtocol` hooks** with default implementations: `reject(stream,
   RejectReason, retry_after)`, `FRAMED_REQUESTS` and `begin_request`.
 
+- **CLI rate-limit and logging flags:** `--rate`, `--burst` (default: the
+  rate), `--accept-rate`, `--accept-burst` (default: the accept rate),
+  `--max-connections` (default 1000 for tcp/http, 100 for unix-stream) and
+  `--log-level` (default `info`; `RUST_LOG` still overrides it). The help
+  states every default.
+- **`defaults` module** with the default protocol, host, port and Unix socket
+  paths used by the binary and the Unix configs.
+
 ### Changed
 
+- **CLI:** the argument parser is now clap. Arguments and behavior are the
+  same (positional `[PROTOCOL] [PORT|SOCKET_PATH]`, `--host`, exit status 1 on
+  usage errors), but error messages use clap's wording, for example
+  "unexpected argument '--bogus'" instead of "unknown option '--bogus'".
+  `--accept-rate` and `--max-connections` are rejected for `udp` and
+  `unix-dgram`. Logs are colored only when stderr is a terminal and
+  `NO_COLOR` is unset.
 - **Breaking:** the server config structs gained `rate_limit` (and, for
   stream configs, `accept_rate_limit`). Struct literals without
   `..Default::default()` must add them.
