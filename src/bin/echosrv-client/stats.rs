@@ -1,6 +1,8 @@
 //! Pure statistics: error classification, latency windows, outage tracking
-//! and the aggregator task that turns worker samples into reports.
+//! and the aggregator task that turns worker samples into reports, plus the
+//! [`Summary`] that pairs the run's statistics with its [`RunInfo`].
 
+use crate::header::RunInfo;
 use echosrv::EchoError;
 use hdrhistogram::Histogram;
 use serde::Serialize;
@@ -445,18 +447,9 @@ impl fmt::Display for StopReason {
     }
 }
 
-/// Final report of a run.
+/// Statistics of a whole run, as computed by the [`Aggregator`].
 #[derive(Debug, Clone, Serialize)]
-pub struct Summary {
-    /// Always `"summary"`.
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub protocol: &'static str,
-    pub target: String,
-    pub concurrency: usize,
-    pub conn_mode: &'static str,
-    /// Requested number of attempts (`None` = continuous).
-    pub requests: Option<u64>,
+pub struct RunStats {
     pub elapsed_s: f64,
     /// Attempts recorded (including connect failures).
     pub total: u64,
@@ -474,6 +467,27 @@ pub struct Summary {
     /// Latency of successful requests.
     pub latency: Option<LatencySummary>,
     pub outages: OutageSummary,
+}
+
+impl RunStats {
+    pub fn mismatches(&self) -> u64 {
+        self.errors_by_kind
+            .get(ErrorKind::Mismatch.as_str())
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Final report of a run: what was run, its statistics and how it ended.
+#[derive(Debug, Clone, Serialize)]
+pub struct Summary {
+    /// Always `"summary"`.
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    #[serde(flatten)]
+    pub info: RunInfo,
+    #[serde(flatten)]
+    pub stats: RunStats,
     /// Stopped (a signal or `--duration`) before `-n` attempts completed.
     pub interrupted: bool,
     /// Why the run stopped (`completed`, `duration`, `interrupt`,
@@ -482,11 +496,14 @@ pub struct Summary {
 }
 
 impl Summary {
-    pub fn mismatches(&self) -> u64 {
-        self.errors_by_kind
-            .get(ErrorKind::Mismatch.as_str())
-            .copied()
-            .unwrap_or(0)
+    pub fn new(info: RunInfo, stats: RunStats, stop_reason: StopReason) -> Self {
+        Self {
+            kind: "summary",
+            interrupted: info.requests.is_some_and(|n| stats.total < n),
+            info,
+            stats,
+            stop_reason,
+        }
     }
 }
 
@@ -566,14 +583,13 @@ impl Aggregator {
     }
 
     /// Runs until every sender is dropped, emitting live events, and returns
-    /// the summary. Run metadata (protocol, target, ...) and `interrupted` /
-    /// `stop_reason` are left for the caller to fill in.
+    /// the statistics of the whole run.
     pub async fn run(
         mut self,
         mut rx: mpsc::Receiver<Sample>,
         interval: Option<Duration>,
         mut on_event: impl FnMut(LiveEvent),
-    ) -> Summary {
+    ) -> RunStats {
         // `interval_at` skips the immediate first tick of `interval`.
         let period = interval.unwrap_or(Duration::from_secs(3600));
         let mut ticker = tokio::time::interval_at(self.start + period, period);
@@ -594,18 +610,12 @@ impl Aggregator {
         self.finish(Instant::now())
     }
 
-    pub fn finish(mut self, end: Instant) -> Summary {
+    pub fn finish(mut self, end: Instant) -> RunStats {
         let elapsed = end.saturating_duration_since(self.start);
         self.total.merge(&self.interval);
         let total = self.total;
         let errors = total.error_count();
-        Summary {
-            kind: "summary",
-            protocol: "",
-            target: String::new(),
-            concurrency: 0,
-            conn_mode: "",
-            requests: None,
+        RunStats {
             elapsed_s: elapsed.as_secs_f64(),
             total: total.count,
             ok: total.ok,
@@ -623,8 +633,6 @@ impl Aggregator {
             ok_per_sec: per_sec(total.ok, elapsed),
             latency: total.latency_summary(),
             outages: self.outages.finish(end),
-            interrupted: false,
-            stop_reason: StopReason::Completed,
         }
     }
 }
@@ -967,21 +975,20 @@ mod tests {
             .unwrap();
         drop(tx);
         let mut events = Vec::new();
-        let summary = Aggregator::new(start)
+        let stats = Aggregator::new(start)
             .run(rx, Some(Duration::from_secs(60)), |e| events.push(e))
             .await;
-        assert_eq!(summary.total, 10);
-        assert_eq!(summary.ok, 8);
-        assert_eq!(summary.errors, 2);
-        assert_eq!(summary.mismatches(), 1);
-        assert!((summary.error_rate_pct - 20.0).abs() < 1e-9);
-        assert_eq!(summary.errors_by_kind.len(), ErrorKind::COUNT);
-        assert_eq!(summary.outages.count, 0); // neither kind is an outage
-        assert!(summary.latency.is_some());
+        assert_eq!(stats.total, 10);
+        assert_eq!(stats.ok, 8);
+        assert_eq!(stats.errors, 2);
+        assert_eq!(stats.mismatches(), 1);
+        assert!((stats.error_rate_pct - 20.0).abs() < 1e-9);
+        assert_eq!(stats.errors_by_kind.len(), ErrorKind::COUNT);
+        assert_eq!(stats.outages.count, 0); // neither kind is an outage
+        assert!(stats.latency.is_some());
         // No interval elapsed, and the first tick is not immediate.
         assert!(events.iter().all(|e| !matches!(e, LiveEvent::Interval(_))));
-        let json = serde_json::to_value(&summary).unwrap();
-        assert_eq!(json["type"], "summary");
+        let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["errors_by_kind"]["rate_limited"], 1);
     }
 
@@ -996,7 +1003,7 @@ mod tests {
             }
         });
         let mut intervals = Vec::new();
-        let summary = Aggregator::new(start)
+        let stats = Aggregator::new(start)
             .run(rx, Some(Duration::from_millis(1000)), |e| {
                 if let LiveEvent::Interval(r) = e {
                     intervals.push(r);
@@ -1004,7 +1011,7 @@ mod tests {
             })
             .await;
         producer.await.unwrap();
-        assert_eq!(summary.ok, 3);
+        assert_eq!(stats.ok, 3);
         assert!(intervals.len() >= 2, "got {} intervals", intervals.len());
         assert!((intervals[0].elapsed_s - 1.0).abs() < 0.01);
         assert!(intervals.iter().map(|r| r.window.count).sum::<u64>() <= 3);

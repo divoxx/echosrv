@@ -6,6 +6,7 @@
 //! (e.g. `| head`).
 
 mod cli;
+mod header;
 mod output;
 mod report;
 mod runner;
@@ -17,6 +18,7 @@ mod test_common;
 use cli::Cli;
 use echosrv::cli::color::{ColorEnv, resolve_color};
 use echosrv::cli::{help, init_logging};
+use header::RunHeader;
 use output::Palette;
 use report::Verdict;
 use stats::{LiveEvent, StopReason};
@@ -96,7 +98,11 @@ async fn main() -> ExitCode {
     };
 
     // The resolved configuration goes first, even with `-i 0`.
-    let header = cli.header(&matches, &validated.config);
+    let header = RunHeader::new(
+        &validated.config,
+        cli.max_error_rate,
+        header::defaulted(&matches),
+    );
     if cli.json {
         emit(&report::header_json(&header));
     } else {

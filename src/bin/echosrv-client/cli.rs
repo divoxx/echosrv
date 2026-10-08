@@ -1,11 +1,9 @@
 //! Command-line interface: flags, validation and target resolution.
 
-use crate::report::RunHeader;
 use crate::runner::{
     ConnMode, DEFAULT_CONN_RATE, DEFAULT_PAYLOAD_SIZE, Filler, RunConfig, SAFE_CONN_RATE, Transport,
 };
-use clap::parser::ValueSource;
-use clap::{ArgMatches, Parser};
+use clap::Parser;
 use echosrv::RateLimitConfig;
 use echosrv::cli::color::ColorChoice;
 use echosrv::cli::{Protocol, Target};
@@ -370,69 +368,6 @@ async fn resolve_addr(target: &Target) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("{target:?} resolved to no addresses"))
 }
 
-/// Whether the argument `id` was left at its default (not given on the
-/// command line).
-fn is_default(matches: &ArgMatches, id: &str) -> bool {
-    matches.value_source(id) != Some(ValueSource::CommandLine)
-}
-
-impl Cli {
-    /// The configuration header for a resolved run. `matches` must come
-    /// from the same parse as `self`; it tells given values from defaults.
-    pub fn header(&self, matches: &ArgMatches, config: &RunConfig) -> RunHeader {
-        // (argument id, header field) pairs.
-        const FIELDS: [(&str, &str); 15] = [
-            ("protocol", "protocol"),
-            ("target", "target"),
-            ("concurrency", "concurrency"),
-            ("conn_mode", "conn_mode"),
-            ("requests", "requests"),
-            ("duration", "duration_s"),
-            ("rate", "rate"),
-            ("burst", "burst"),
-            ("payload_size", "payload_size"),
-            ("timeout", "timeout_s"),
-            ("conn_rate", "conn_rate"),
-            ("reconnect_delay", "reconnect_delay_s"),
-            ("max_backoff", "max_backoff_s"),
-            ("honor_retry_after", "honor_retry_after"),
-            ("interval", "interval_s"),
-        ];
-        let mut defaults: Vec<&'static str> = FIELDS
-            .iter()
-            .filter(|(id, _)| is_default(matches, id))
-            .map(|(_, field)| *field)
-            .collect();
-        if is_default(matches, "payload") && is_default(matches, "random") {
-            defaults.push("filler");
-        }
-        if is_default(matches, "max_error_rate") {
-            defaults.push("max_error_rate_pct");
-        }
-        RunHeader {
-            kind: "config",
-            protocol: config.transport.protocol().as_str(),
-            target: config.transport.to_string(),
-            concurrency: config.concurrency,
-            conn_mode: config.conn_mode.as_str(),
-            requests: config.requests,
-            duration_s: self.duration,
-            rate: config.rate.map(|r| r.rate_per_sec),
-            burst: config.rate.map(|r| r.burst),
-            conn_rate: config.conn_rate.map(|r| r.rate_per_sec),
-            payload_size: config.payload_size,
-            filler: config.filler.as_str(),
-            timeout_s: config.timeout,
-            reconnect_delay_s: config.reconnect_delay,
-            max_backoff_s: config.max_backoff,
-            honor_retry_after: config.honor_retry_after,
-            interval_s: config.interval,
-            max_error_rate_pct: self.max_error_rate,
-            defaults,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,7 +375,7 @@ mod tests {
         DEFAULT_HOST, DEFAULT_PORT, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
     };
 
-    fn parse_with_matches(args: &[&str]) -> Result<(Cli, ArgMatches), clap::Error> {
+    fn parse_with_matches(args: &[&str]) -> Result<(Cli, clap::ArgMatches), clap::Error> {
         echosrv::cli::help::try_parse_from::<Cli, _, _>(
             std::iter::once("echosrv-client").chain(args.iter().copied()),
         )
@@ -662,93 +597,6 @@ mod tests {
         assert_eq!(conn_mode(&cli), Ok(ConnMode::Persistent));
         let cli = parse(&["unix-dgram", "relative.sock"]).unwrap();
         assert!(cli.check().is_ok());
-    }
-
-    async fn header_for(args: &[&str]) -> RunHeader {
-        let (cli, matches) = parse_with_matches(args).unwrap();
-        let config = cli.resolve().await.unwrap().config;
-        cli.header(&matches, &config)
-    }
-
-    #[tokio::test]
-    async fn header_marks_defaults() {
-        let h = header_for(&[]).await;
-        assert_eq!(h.kind, "config");
-        assert_eq!((h.protocol, h.target.as_str()), ("tcp", "127.0.0.1:8080"));
-        assert_eq!((h.concurrency, h.conn_mode), (1, "persistent"));
-        assert_eq!(h.payload_size, Some(64));
-        assert_eq!(h.interval_s, Some(Duration::from_secs(1)));
-        assert_eq!(
-            h.defaults,
-            [
-                "protocol",
-                "target",
-                "concurrency",
-                "conn_mode",
-                "requests",
-                "duration_s",
-                "rate",
-                "burst",
-                "payload_size",
-                "timeout_s",
-                "conn_rate",
-                "reconnect_delay_s",
-                "max_backoff_s",
-                "honor_retry_after",
-                "interval_s",
-                "filler",
-                "max_error_rate_pct",
-            ]
-        );
-
-        // Explicit values are not defaults, even when equal to the default.
-        let h = header_for(&[
-            "tcp",
-            "9090",
-            "-c",
-            "1",
-            "-n",
-            "10",
-            "-d",
-            "30s",
-            "-r",
-            "500",
-            "-s",
-            "64",
-            "--random",
-            "-t",
-            "5s",
-            "-i",
-            "0",
-            "--max-error-rate",
-            "0",
-        ])
-        .await;
-        assert_eq!(h.target, "127.0.0.1:9090");
-        assert_eq!(
-            (h.requests, h.duration_s),
-            (Some(10), Some(Duration::from_secs(30)))
-        );
-        assert_eq!((h.rate, h.burst), (Some(500), Some(1)));
-        assert_eq!((h.filler, h.interval_s), ("random", None));
-        assert_eq!(
-            h.defaults,
-            [
-                "conn_mode",
-                "burst",
-                "conn_rate",
-                "reconnect_delay_s",
-                "max_backoff_s",
-                "honor_retry_after"
-            ]
-        );
-
-        let h = header_for(&["http", "--payload", "hi", "--honor-retry-after"]).await;
-        assert_eq!((h.protocol, h.conn_mode), ("http", "per-request"));
-        assert_eq!((h.payload_size, h.filler), (None, "text"));
-        assert!(h.honor_retry_after);
-        assert!(h.is_default("target") && h.is_default("conn_mode"));
-        assert!(!h.is_default("filler") && !h.is_default("protocol"));
     }
 
     #[tokio::test]

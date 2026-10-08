@@ -43,10 +43,11 @@ src/
 ├── defaults.rs  default protocol, host, port, Unix socket paths (server and client)
 ├── rate_limit.rs Gcra (server policing), TokenBucket (client shaping), RateLimitConfig
 ├── bin/echosrv-client/   load-testing client binary
-│   ├── cli.rs     clap flags, validation and warnings, target resolution, config header
+│   ├── cli.rs     clap flags, validation and warnings, target resolution
+│   ├── header.rs  RunInfo (shared by header and summary), RunHeader, HeaderField defaults
 │   ├── runner.rs  workers, payload build/compare, shaper (--rate), conn limiter (--conn-rate), backoff
 │   ├── runner/tests.rs  runner unit tests (in-process servers)
-│   ├── stats.rs   error kinds + classify, Window histograms, OutageTracker, Aggregator, Summary
+│   ├── stats.rs   error kinds + classify, Window histograms, OutageTracker, Aggregator (RunStats), Summary
 │   ├── report.rs  text and JSON rendering (config, interval, outage, summary), Verdict
 │   ├── output.rs  --color/NO_COLOR/CLICOLOR_FORCE, Palette, [ok]/[fail] tagged lines
 │   └── main.rs    SIGINT/SIGTERM and --duration stop gracefully (in-flight requests finish), a second signal aborts; exit codes 0/1/2/130/141/143
@@ -83,8 +84,9 @@ benches/         echo_performance.rs
 - `echosrv-client` uses only the public library API (the `EchoClient`
   clients, `TokenBucket`, `EchoError::io_error_kind()`/`is_rate_limited()`/
   `retry_after()`). Workers send `Sample`s over an mpsc channel to one
-  `Aggregator`, which emits interval/outage events and the `Summary`. Its
-  user docs are the README section "Load testing client".
+  `Aggregator`, which emits interval/outage events and the run's `RunStats`;
+  the runner combines them with `RunInfo` and the stop reason into the
+  `Summary`. Its user docs are the README section "Load testing client".
 
 ## Testing Conventions
 
