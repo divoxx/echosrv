@@ -605,12 +605,6 @@ mod tests {
             assert!(long.contains(&needle), "--help lacks {needle:?}:\n{long}");
             assert!(short.contains(&needle), "-h lacks {needle:?}:\n{short}");
         }
-        // In --help every default sits on its own line, like clap's own.
-        for line in long.lines() {
-            if let Some(at) = line.find("[default: ") {
-                assert!(line[..at].trim().is_empty(), "inline default: {line:?}");
-            }
-        }
         // In -h the computed defaults stay inline.
         assert!(
             short

@@ -1,7 +1,10 @@
 //! Tests for the `echosrv` binary: argument handling, serving, signal-driven
 //! shutdown and systemd-style socket activation.
 
+mod common;
+
 use assert_cmd::Command;
+use common::socket_dir;
 use predicates::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -321,10 +324,6 @@ fn tcp_echo(addr: SocketAddr, msg: &[u8]) -> Vec<u8> {
     let mut buf = vec![0; msg.len()];
     stream.read_exact(&mut buf).unwrap();
     buf
-}
-
-fn socket_dir() -> tempfile::TempDir {
-    tempfile::Builder::new().prefix("es").tempdir().unwrap()
 }
 
 #[test]

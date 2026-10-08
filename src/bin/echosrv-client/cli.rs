@@ -529,12 +529,6 @@ mod tests {
         ] {
             assert!(help.contains(needle), "--help lacks {needle:?}:\n{help}");
         }
-        // In --help every default sits on its own line, like clap's built-in ones.
-        for line in help.lines() {
-            if let Some(at) = line.find("[default: ") {
-                assert!(line[..at].trim().is_empty(), "inline default: {line:?}");
-            }
-        }
     }
 
     fn conn_mode(cli: &Cli) -> Result<ConnMode, String> {

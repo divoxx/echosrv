@@ -13,12 +13,12 @@ mod common;
 
 use assert_cmd::Command as SyncCommand;
 use common::{
-    socket_dir, start_http, start_tcp, start_udp, start_unix_datagram_at, start_unix_stream_at,
+    refused_addr, slow_echo_server, socket_dir, start_http, start_tcp, start_udp,
+    start_unix_datagram_at, start_unix_stream_at,
 };
 use echosrv::http::HttpConfig;
 use echosrv::{RateLimitConfig, TcpConfig, UdpConfig};
 use predicates::prelude::*;
-use std::net::SocketAddr;
 use std::process::Output;
 use std::time::Duration;
 use tokio::process::Command;
@@ -40,16 +40,15 @@ fn serial_blocking() -> tokio::sync::MutexGuard<'static, ()> {
     SERIAL.blocking_lock()
 }
 
-/// An address nothing listens on (see the module docs).
-fn refused_addr() -> SocketAddr {
-    let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-    let probe = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1));
-    assert_eq!(
-        probe.err().map(|e| e.kind()),
-        Some(std::io::ErrorKind::ConnectionRefused),
-        "something listens on {addr}"
-    );
-    addr
+/// The client with the color and logging env vars cleared.
+fn client_command(args: &[&str]) -> Command {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args)
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("RUST_LOG")
+        .kill_on_drop(true);
+    cmd
 }
 
 async fn run_client(args: &[&str]) -> Output {
@@ -59,13 +58,8 @@ async fn run_client(args: &[&str]) -> Output {
 /// Runs the client with stdout/stderr piped, the color env vars cleared and
 /// `env` applied on top.
 async fn run_client_env(args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(BIN);
-    cmd.args(args)
-        .env_remove("NO_COLOR")
-        .env_remove("CLICOLOR_FORCE")
-        .env_remove("RUST_LOG")
-        .envs(env.iter().copied())
-        .kill_on_drop(true);
+    let mut cmd = client_command(args);
+    cmd.envs(env.iter().copied());
     tokio::time::timeout(RUN_TIMEOUT, cmd.output())
         .await
         .expect("echosrv-client timed out")
@@ -568,52 +562,6 @@ async fn closed_stdout_ends_a_continuous_run() {
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
-
-/// A TCP echo server that waits `delay` before each reply, so requests are
-/// reliably in flight when a signal arrives. Every request it receives is
-/// announced on the returned channel.
-async fn slow_echo_server(
-    delay: Duration,
-) -> (
-    SocketAddr,
-    tokio::sync::mpsc::UnboundedReceiver<()>,
-    tokio::task::JoinHandle<()>,
-) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let handle = tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 4096];
-                while let Ok(n) = stream.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    let _ = tx.send(());
-                    tokio::time::sleep(delay).await;
-                    if stream.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    });
-    (addr, rx, handle)
-}
-
-/// The client with the color and logging env vars cleared.
-fn client_command(args: &[&str]) -> Command {
-    let mut cmd = Command::new(BIN);
-    cmd.args(args)
-        .env_remove("NO_COLOR")
-        .env_remove("CLICOLOR_FORCE")
-        .env_remove("RUST_LOG")
-        .kill_on_drop(true);
-    cmd
-}
 
 fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
     let pid = libc::pid_t::try_from(child.id().expect("client already exited")).unwrap();

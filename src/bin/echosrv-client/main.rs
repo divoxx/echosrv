@@ -10,6 +10,9 @@ mod output;
 mod report;
 mod runner;
 mod stats;
+#[cfg(test)]
+#[path = "../../../tests/common/mod.rs"]
+mod test_common;
 
 use cli::Cli;
 use echosrv::cli::color::{ColorEnv, resolve_color};

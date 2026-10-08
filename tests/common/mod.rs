@@ -17,7 +17,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 /// Upper bound for anything a test waits on; generous so slow CI does not
@@ -180,6 +181,51 @@ pub async fn try_start_unix_datagram(config: UnixDatagramConfig) -> Result<TestS
 /// Starts a Unix datagram echo server on `path` with default settings.
 pub async fn start_unix_datagram_at(path: &Path) -> TestServer<PathBuf> {
     start_unix_datagram(UnixDatagramConfig::default().with_socket_path(path.to_path_buf())).await
+}
+
+/// An address nothing listens on. Port 1 is privileged (tests never bind it)
+/// and outside the ephemeral range, so a client can neither race another test
+/// for it nor connect to itself. (A bound but not listening socket would not
+/// do: macOS drops SYNs to it instead of refusing.)
+pub fn refused_addr() -> SocketAddr {
+    let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+    let probe = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1));
+    assert_eq!(
+        probe.err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::ConnectionRefused),
+        "something listens on {addr}"
+    );
+    addr
+}
+
+/// A TCP echo server on `127.0.0.1:0` that waits `delay` before each reply,
+/// so requests are reliably in flight when a test acts. Every request it
+/// receives is announced on the returned channel. Stop it with `abort()`.
+pub async fn slow_echo_server(
+    delay: Duration,
+) -> (SocketAddr, mpsc::UnboundedReceiver<()>, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = tx.send(());
+                    tokio::time::sleep(delay).await;
+                    if stream.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, rx, handle)
 }
 
 /// A fresh temporary directory for socket files. Kept short because Unix

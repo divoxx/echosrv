@@ -565,15 +565,12 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::stats::OutageEvent;
-    use echosrv::unix::{UnixDatagramConfig, UnixStreamConfig};
-    use echosrv::{
-        EchoServerTrait, HttpConfig, HttpEchoServer, TcpConfig, TcpEchoServer, UdpConfig,
-        UdpEchoServer, UnixDatagramEchoServer, UnixStreamEchoServer,
+    use crate::test_common::{
+        refused_addr, slow_echo_server, socket_dir, start_http, start_tcp, start_udp,
+        start_unix_datagram_at, start_unix_stream_at,
     };
-    use std::future::Future;
-    use std::path::Path;
+    use echosrv::{HttpConfig, TcpConfig, UdpConfig};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::sync::broadcast;
     use tokio::task::JoinHandle;
 
     /// Upper bound for anything a test waits on.
@@ -669,103 +666,8 @@ mod tests {
     //
     // Servers are bound (port 0 or a fresh temp path) before the run starts,
     // so the address is real and already accepting: no port picking, no
-    // readiness probes and no serialization between tests.
-
-    /// A server serving in a background task.
-    struct Running {
-        shutdown: broadcast::Sender<()>,
-        handle: JoinHandle<echosrv::Result<()>>,
-    }
-
-    impl Running {
-        fn spawn(
-            shutdown: broadcast::Sender<()>,
-            serve: impl Future<Output = echosrv::Result<()>> + Send + 'static,
-        ) -> Self {
-            Self {
-                shutdown,
-                handle: tokio::spawn(serve),
-            }
-        }
-
-        /// Graceful shutdown: the listener is closed and open connections
-        /// are cancelled before this returns.
-        async fn stop(self) {
-            self.shutdown.send(()).unwrap();
-            tokio::time::timeout(WAIT, self.handle)
-                .await
-                .expect("server did not stop")
-                .unwrap()
-                .unwrap();
-        }
-    }
-
-    fn localhost() -> SocketAddr {
-        "127.0.0.1:0".parse().unwrap()
-    }
-
-    async fn tcp_server(bind_addr: SocketAddr) -> (SocketAddr, Running) {
-        let server = TcpEchoServer::new(
-            TcpConfig {
-                bind_addr,
-                ..Default::default()
-            }
-            .into(),
-        );
-        let shutdown = server.shutdown_signal();
-        let bound = server.bind().await.unwrap();
-        let addr = *bound.local_addr().as_network().unwrap();
-        (addr, Running::spawn(shutdown, bound.serve()))
-    }
-
-    async fn http_server(rate_limit: Option<RateLimitConfig>) -> (SocketAddr, Running) {
-        let server = HttpEchoServer::new(HttpConfig {
-            rate_limit,
-            ..Default::default()
-        });
-        let shutdown = server.shutdown_signal();
-        let bound = server.bind().await.unwrap();
-        let addr = *bound.local_addr().as_network().unwrap();
-        (addr, Running::spawn(shutdown, bound.serve()))
-    }
-
-    async fn udp_server() -> (SocketAddr, Running) {
-        let server = UdpEchoServer::new(UdpConfig::default().into());
-        let shutdown = server.shutdown_signal();
-        let bound = server.bind().await.unwrap();
-        let addr = *bound.local_addr().as_network().unwrap();
-        (addr, Running::spawn(shutdown, bound.serve()))
-    }
-
-    async fn unix_stream_server(path: &Path) -> Running {
-        let server =
-            UnixStreamEchoServer::new(UnixStreamConfig::default().with_socket_path(path.into()));
-        let shutdown = server.shutdown_signal();
-        Running::spawn(shutdown, server.bind().await.unwrap().serve())
-    }
-
-    async fn unix_dgram_server(path: &Path) -> Running {
-        let server = UnixDatagramEchoServer::new(
-            UnixDatagramConfig::default().with_socket_path(path.into()),
-        );
-        let shutdown = server.shutdown_signal();
-        Running::spawn(shutdown, server.bind().await.unwrap().serve())
-    }
-
-    /// An address nothing listens on. Port 1 is privileged (tests never bind
-    /// it) and outside the ephemeral range, so a client can neither race
-    /// another test for it nor connect to itself. (A bound but not listening
-    /// socket would not do: macOS drops SYNs to it instead of refusing.)
-    fn refused_addr() -> SocketAddr {
-        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let probe = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1));
-        assert_eq!(
-            probe.err().map(|e| e.kind()),
-            Some(std::io::ErrorKind::ConnectionRefused),
-            "something listens on {addr}"
-        );
-        addr
-    }
+    // readiness probes and no serialization between tests. The helpers are
+    // shared with the integration tests (`tests/common/mod.rs`).
 
     async fn run_n(config: RunConfig) -> Summary {
         tokio::time::timeout(WAIT * 3, run(config, CancellationToken::new(), |_| {}))
@@ -792,7 +694,8 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_fixed_n() {
-        let (addr, server) = tcp_server(localhost()).await;
+        let server = start_tcp(TcpConfig::default()).await;
+        let addr = server.addr;
         let s = run_n(fixed(Transport::Tcp(addr), 50, 4)).await;
         assert_all_ok(&s, 50);
         assert_eq!(s.protocol, "tcp");
@@ -814,7 +717,8 @@ mod tests {
 
     #[tokio::test]
     async fn udp_fixed_n() {
-        let (addr, server) = udp_server().await;
+        let server = start_udp(UdpConfig::default()).await;
+        let addr = server.addr;
         assert_all_ok(&run_n(fixed(Transport::Udp(addr), 50, 4)).await, 50);
         let mut config = fixed(Transport::Udp(addr), 10, 2);
         config.conn_mode = ConnMode::PerRequest;
@@ -824,7 +728,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_fixed_n() {
-        let (addr, server) = http_server(None).await;
+        let server = start_http(HttpConfig::default()).await;
+        let addr = server.addr;
         let s = run_n(fixed(Transport::Http(addr), 50, 4)).await;
         assert_all_ok(&s, 50);
         assert_eq!(s.conn_mode, "per-request");
@@ -839,18 +744,18 @@ mod tests {
 
     #[tokio::test]
     async fn unix_stream_fixed_n() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_dir();
         let path = dir.path().join("stream.sock");
-        let server = unix_stream_server(&path).await;
+        let server = start_unix_stream_at(&path).await;
         assert_all_ok(&run_n(fixed(Transport::UnixStream(path), 50, 4)).await, 50);
         server.stop().await;
     }
 
     #[tokio::test]
     async fn unix_dgram_fixed_n() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_dir();
         let path = dir.path().join("dgram.sock");
-        let server = unix_dgram_server(&path).await;
+        let server = start_unix_datagram_at(&path).await;
         let s = run_n(fixed(Transport::UnixDgram(path.clone()), 50, 4)).await;
         assert_all_ok(&s, 50);
         let mut config = fixed(Transport::UnixDgram(path), 10, 2);
@@ -879,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_unix_socket_is_connect_failed() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_dir();
         let missing = dir.path().join("none.sock");
         for transport in [
             Transport::UnixStream(missing.clone()),
@@ -899,7 +804,7 @@ mod tests {
     async fn bad_echo_server(
         reply: fn(&[u8]) -> Vec<u8>,
     ) -> (SocketAddr, JoinHandle<std::io::Result<()>>) {
-        let listener = tokio::net::TcpListener::bind(localhost()).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             loop {
@@ -968,7 +873,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_connections_are_capped() {
-        let (addr, server) = tcp_server(localhost()).await;
+        let server = start_tcp(TcpConfig::default()).await;
+        let addr = server.addr;
         let mut config = fixed(Transport::Tcp(addr), 30, 4);
         config.conn_mode = ConnMode::PerRequest;
         config.conn_rate = Some(RateLimitConfig::new(100, 1));
@@ -1040,7 +946,8 @@ mod tests {
     /// exactly one outage covering the downtime.
     async fn restart_produces_one_outage(conn_mode: ConnMode) {
         const DOWNTIME: Duration = Duration::from_millis(300);
-        let (addr, server) = tcp_server(localhost()).await;
+        let server = start_tcp(TcpConfig::default()).await;
+        let addr = server.addr;
 
         let config = RunConfig {
             concurrency: 2,
@@ -1072,8 +979,12 @@ mod tests {
         })
         .await;
         tokio::time::sleep(DOWNTIME).await;
-        let (rebound, server) = tcp_server(addr).await;
-        assert_eq!(rebound, addr);
+        let server = start_tcp(TcpConfig {
+            bind_addr: addr,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(server.addr, addr);
         wait_for_event(&mut rx, &mut events, "outage end", |e| {
             matches!(e, LiveEvent::Outage(OutageEvent::Ended { .. }))
         })
@@ -1122,9 +1033,9 @@ mod tests {
 
     #[tokio::test]
     async fn unix_stream_restart_persistent_mode() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_dir();
         let path = dir.path().join("restart.sock");
-        let server = unix_stream_server(&path).await;
+        let server = start_unix_stream_at(&path).await;
         let config = RunConfig {
             rate: Some(RateLimitConfig::new(200, 1)),
             reconnect_delay: Duration::from_millis(10),
@@ -1150,7 +1061,7 @@ mod tests {
         })
         .await;
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let server = unix_stream_server(&path).await;
+        let server = start_unix_stream_at(&path).await;
         wait_for_event(&mut rx, &mut events, "outage end", |e| {
             matches!(e, LiveEvent::Outage(OutageEvent::Ended { .. }))
         })
@@ -1165,35 +1076,6 @@ mod tests {
         assert!(s.errors_by_kind["connect_failed"] > 0, "{s:#?}");
     }
 
-    /// A TCP echo server that waits `delay` before each reply. It sends `()`
-    /// on the returned channel as each request arrives.
-    async fn slow_echo_server(
-        delay: Duration,
-    ) -> (SocketAddr, mpsc::UnboundedReceiver<()>, JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind(localhost()).await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handle = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    while let Ok(n) = stream.read(&mut buf).await {
-                        if n == 0 {
-                            break;
-                        }
-                        let _ = tx.send(());
-                        tokio::time::sleep(delay).await;
-                        if stream.write_all(&buf[..n]).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
-        });
-        (addr, rx, handle)
-    }
-
     #[tokio::test]
     async fn stop_lets_requests_in_flight_finish() {
         let delay = Duration::from_millis(300);
@@ -1203,15 +1085,12 @@ mod tests {
         let cancel = CancellationToken::new();
         let started = Instant::now();
         let run_task = tokio::spawn(run(config, cancel.clone(), |_| {}));
-        // Cancel once both workers' first requests are waiting for their
-        // replies.
-        tokio::time::timeout(WAIT, async {
-            for _ in 0..2 {
-                requests.recv().await.unwrap();
-            }
-        })
-        .await
-        .expect("both requests did not reach the server");
+        // Both workers' first requests are waiting for their replies.
+        for _ in 0..2 {
+            tokio::time::timeout(WAIT, requests.recv())
+                .await
+                .expect("a request did not reach the server");
+        }
         cancel.cancel();
         let s = tokio::time::timeout(WAIT, run_task)
             .await
@@ -1224,7 +1103,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_before_n_marks_interrupted() {
-        let (addr, server) = tcp_server(localhost()).await;
+        let server = start_tcp(TcpConfig::default()).await;
+        let addr = server.addr;
         let config = RunConfig {
             rate: Some(RateLimitConfig::new(20, 1)),
             ..fixed(Transport::Tcp(addr), 1000, 2)
@@ -1259,7 +1139,8 @@ mod tests {
 
     #[tokio::test]
     async fn shaper_paces_requests() {
-        let (addr, server) = tcp_server(localhost()).await;
+        let server = start_tcp(TcpConfig::default()).await;
+        let addr = server.addr;
         let config = RunConfig {
             rate: Some(RateLimitConfig::new(100, 1)),
             ..fixed(Transport::Tcp(addr), 50, 4)
@@ -1278,7 +1159,9 @@ mod tests {
 
     #[tokio::test]
     async fn server_rate_limit_is_not_an_outage() {
-        let (addr, server) = http_server(Some(RateLimitConfig::new(10, 10))).await;
+        let server =
+            start_http(HttpConfig::default().with_rate_limit(RateLimitConfig::new(10, 10))).await;
+        let addr = server.addr;
         // 60 requests at 100/s against a server admitting 10/s plus a burst
         // of 10: the excess gets 429. (Shaped rather than unbounded: every
         // HTTP request is a new connection; see `SAFE_CONN_RATE`.)
@@ -1296,7 +1179,9 @@ mod tests {
 
     #[tokio::test]
     async fn honor_retry_after_waits() {
-        let (addr, server) = http_server(Some(RateLimitConfig::new(1, 1))).await;
+        let server =
+            start_http(HttpConfig::default().with_rate_limit(RateLimitConfig::new(1, 1))).await;
+        let addr = server.addr;
         // Retry-After is rounded up to 1s, so with one worker the 429 on the
         // second request delays the third by about a second, which the
         // server then admits.
