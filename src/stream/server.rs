@@ -5,7 +5,7 @@ use crate::common::lifecycle::{
     ACCEPT_ERROR_BACKOFF, ConnectionGuard, MAX_PENDING_REJECTIONS, REJECT_TIMEOUT, RateLimiters,
     ShutdownSignal, wait_for_shutdown,
 };
-use crate::common::{EchoServerTrait, ServerStats};
+use crate::common::{EchoServerTrait, ServerStats, payload_preview};
 use crate::network::{Address, FdInheritanceConfig, LocalAddress};
 use crate::{EchoError, Result};
 use async_trait::async_trait;
@@ -394,7 +394,7 @@ where
             break;
         }
 
-        trace!(%addr, size = n, preview = %String::from_utf8_lossy(&buffer[..n]), "Received data");
+        trace!(%addr, size = n, preview = %payload_preview(&buffer[..n]), "Received data");
 
         let write = async {
             P::write(&mut stream, &buffer[..n]).await?;

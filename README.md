@@ -639,10 +639,11 @@ async fn main() -> echosrv::Result<()> {
 | `UnixDatagramConfig` | `bind_strategy` (bind `/tmp/echosrv_datagram.sock`), `buffer_size` (64 KiB), timeouts (30 s), `service_name` ("unix-datagram"), `rate_limit` (None) |
 
 Build configs with `..Default::default()` so new fields do not break your
-code. `read_timeout` closes idle stream connections. When `max_connections`
-connections are active, a new stream connection is accepted and rejected right
-away: TCP resets it, HTTP answers `503 Service Unavailable` (after reading the
-request head) with `Connection: close`, and Unix stream closes it.
+code. `read_timeout` closes idle stream connections; it and `write_timeout`
+must be non-zero. When `max_connections` connections are active, a new stream
+connection is accepted and rejected right away: TCP resets it, HTTP answers
+`503 Service Unavailable` (after reading the request head) with
+`Connection: close`, and Unix stream closes it.
 `ServerStats::rejected_over_capacity` counts these. Rejections (over capacity
 or over `accept_rate_limit`) do not take `max_connections` slots: they run in a
 small pool of their own (32 at a time), and connections beyond that are closed

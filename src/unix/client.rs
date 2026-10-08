@@ -8,7 +8,8 @@ use crate::unix::datagram_protocol::{ManagedUnixDatagram, UnixDatagramExt, UnixD
 use crate::unix::stream_protocol::UnixStreamProtocol;
 use crate::{EchoError, stream::Client};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use tokio::time::timeout;
 
 /// Unix domain stream echo client.
@@ -43,8 +44,9 @@ pub type UnixStreamEchoClient = Client<UnixStreamProtocol>;
 /// Binds a temporary socket path in [`std::env::temp_dir`] (so the server can
 /// reply), which is removed when the client is dropped. Each
 /// [`echo`](EchoClient::echo) sends one datagram and returns the next datagram
-/// received (default timeouts 5 s, 64 KiB receive buffer; see
-/// [`DatagramClientConfig`]).
+/// received from the server's socket (default timeouts 5 s, 64 KiB receive
+/// buffer; see [`DatagramClientConfig`]). Datagrams from any other sender are
+/// ignored while waiting for the reply.
 ///
 /// Errors: a missing server socket is an [`EchoError::Unix`] with
 /// [`NotFound`](std::io::ErrorKind::NotFound) (a stale socket file with no
@@ -108,6 +110,22 @@ impl UnixDatagramEchoClient {
     }
 }
 
+/// Whether a reply's sender path `from` names the server socket at
+/// `server_path`.
+///
+/// The kernel reports the path the server bound, which may be spelled
+/// differently from the one the client was given (relative vs absolute, a
+/// symlink), so a textual mismatch falls back to comparing the files.
+fn is_same_socket(from: &Path, server_path: &Path) -> bool {
+    if from == server_path {
+        return true;
+    }
+    match (std::fs::metadata(from), std::fs::metadata(server_path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
 #[async_trait]
 impl EchoClient for UnixDatagramEchoClient {
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
@@ -120,13 +138,21 @@ impl EchoClient for UnixDatagramEchoClient {
         .map_err(EchoError::Unix)?;
 
         let mut buffer = reply_buffer(self.config.buffer_size);
-        let (len, _) = timeout(
-            self.config.read_timeout,
-            self.socket.get_ref().recv_from(&mut buffer),
-        )
-        .await
-        .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
-        .map_err(EchoError::Unix)?;
+        let receive = async {
+            loop {
+                let (n, from) = self.socket.get_ref().recv_from(&mut buffer).await?;
+                if from
+                    .as_pathname()
+                    .is_some_and(|from| is_same_socket(from, &self.server_path))
+                {
+                    return Ok::<usize, std::io::Error>(n);
+                }
+            }
+        };
+        let len = timeout(self.config.read_timeout, receive)
+            .await
+            .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
+            .map_err(EchoError::Unix)?;
 
         finish_reply(buffer, len, self.config.buffer_size)
     }

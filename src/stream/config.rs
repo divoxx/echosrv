@@ -42,9 +42,11 @@ pub struct StreamConfig {
     pub max_connections: usize,
     /// Per-connection read/echo buffer size (must be non-zero).
     pub buffer_size: usize,
-    /// How long a connection may be idle (no data) before it is closed.
+    /// How long a connection may be idle (no data) before it is closed
+    /// (must be non-zero).
     pub read_timeout: Duration,
-    /// Timeout for echoing each chunk back; the connection is closed on expiry.
+    /// Timeout for echoing each chunk back; the connection is closed on
+    /// expiry (must be non-zero).
     pub write_timeout: Duration,
     /// How to obtain the listening socket.
     ///
@@ -131,8 +133,9 @@ impl StreamConfig {
 
     /// Checks the configuration for values that cannot work.
     ///
-    /// Returns [`EchoError::Config`] if `buffer_size` or `max_connections` is
-    /// zero, or if a rate limit has a zero `rate_per_sec` or `burst`.
+    /// Returns [`EchoError::Config`] if `buffer_size`, `max_connections`,
+    /// `read_timeout` or `write_timeout` is zero, or if a rate limit has a
+    /// zero `rate_per_sec` or `burst`.
     pub fn validate(&self) -> Result<()> {
         RateLimitConfig::validate_field(self.rate_limit.as_ref(), "rate_limit")?;
         RateLimitConfig::validate_field(self.accept_rate_limit.as_ref(), "accept_rate_limit")?;
@@ -146,7 +149,7 @@ impl StreamConfig {
                 "max_connections must be greater than 0".into(),
             ));
         }
-        Ok(())
+        crate::common::validate_timeouts(self.read_timeout, self.write_timeout)
     }
 }
 
@@ -225,12 +228,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_zero_timeouts() {
+        let cases = [
+            (
+                StreamConfig {
+                    read_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                "read_timeout",
+            ),
+            (
+                StreamConfig {
+                    write_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                "write_timeout",
+            ),
+        ];
+        for (config, needle) in cases {
+            match config.validate() {
+                Err(EchoError::Config(msg)) => assert!(msg.contains(needle), "{msg}"),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn accepts_minimal_values() {
         let config = StreamConfig {
             buffer_size: 1,
             max_connections: 1,
-            read_timeout: Duration::ZERO,
-            write_timeout: Duration::ZERO,
+            read_timeout: Duration::from_nanos(1),
+            write_timeout: Duration::from_nanos(1),
             ..Default::default()
         };
         config.validate().unwrap();

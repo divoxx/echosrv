@@ -164,6 +164,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HOST:PORT` target with a non-numeric or empty part as a usage error
   instead of failing to resolve it. `echosrv` rejects an empty socket path
   as a usage error instead of failing to bind it.
+- A zero `read_timeout` or `write_timeout` in a server config
+  (`StreamConfig`, `DatagramConfig` and the protocol configs that convert
+  into them) is now a configuration error at `bind()`, naming the field. A
+  zero stream timeout used to close every connection at once.
+- Trace-level logs of received data show at most the first 64 bytes of each
+  chunk or datagram (they formatted the whole buffer, up to 64 KiB).
+- `UnixDatagramEchoClient::echo` ignores datagrams from senders other than
+  the server socket while it waits for the reply, like `UdpEchoClient`. It
+  used to return the first datagram from anyone.
 
 ## [0.4.0] - Unreleased
 

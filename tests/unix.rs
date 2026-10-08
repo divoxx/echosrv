@@ -458,3 +458,73 @@ async fn datagram_unnamed_sender_does_not_break_server() {
     drop(client);
     server.stop().await;
 }
+
+#[tokio::test]
+async fn datagram_client_ignores_datagrams_from_other_senders() {
+    // A hand-rolled "server" that lets a third party reply first.
+    let dir = socket_dir();
+    let server_path = dir.path().join("d.sock");
+    let intruder_path = dir.path().join("i.sock");
+    let server = tokio::net::UnixDatagram::bind(&server_path).unwrap();
+    let mut client = UnixDatagramEchoClient::connect(server_path).await.unwrap();
+    let responder = tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+        let (n, peer) = server.recv_from(&mut buf).await.unwrap();
+        let peer = peer.as_pathname().unwrap().to_path_buf();
+        let intruder = tokio::net::UnixDatagram::bind(&intruder_path).unwrap();
+        intruder.send_to(b"intruder", &peer).await.unwrap();
+        let unnamed = tokio::net::UnixDatagram::unbound().unwrap();
+        unnamed.send_to(b"unnamed", &peer).await.unwrap();
+        server.send_to(&buf[..n], &peer).await.unwrap();
+    });
+    assert_eq!(client.echo(b"genuine").await.unwrap(), b"genuine");
+    tokio::time::timeout(WAIT, responder)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn datagram_client_times_out_when_only_others_reply() {
+    let dir = socket_dir();
+    let server_path = dir.path().join("d.sock");
+    let intruder_path = dir.path().join("i.sock");
+    let server = tokio::net::UnixDatagram::bind(&server_path).unwrap();
+    let mut client = UnixDatagramEchoClient::connect_with_config(
+        server_path,
+        DatagramClientConfig {
+            read_timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let responder = tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+        let (_, peer) = server.recv_from(&mut buf).await.unwrap();
+        let peer = peer.as_pathname().unwrap().to_path_buf();
+        let intruder = tokio::net::UnixDatagram::bind(&intruder_path).unwrap();
+        intruder.send_to(b"intruder", &peer).await.unwrap();
+        server // keep the server socket open, silent
+    });
+    let err = client.echo(b"anyone?").await.unwrap_err();
+    assert!(matches!(err, EchoError::Timeout(_)), "{err:?}");
+    tokio::time::timeout(WAIT, responder)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn datagram_client_accepts_replies_via_symlinked_path() {
+    // The server reports its bound path, not the symlink the client used.
+    let dir = socket_dir();
+    let server = start_unix_datagram_at(&dir.path().join("d.sock")).await;
+    let link = dir.path().join("link.sock");
+    std::os::unix::fs::symlink(&server.addr, &link).unwrap();
+
+    let mut client = UnixDatagramEchoClient::connect(link).await.unwrap();
+    assert_eq!(client.echo_string("via link").await.unwrap(), "via link");
+    drop(client);
+    server.stop().await;
+}
