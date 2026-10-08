@@ -211,13 +211,17 @@ impl Server {
     /// Spawns `command` with stdout/stderr captured to a log file (so a chatty
     /// child can never block on a full pipe).
     /// `RUST_LOG` defaults to `echosrv=debug` unless `command` sets or
-    /// removes it.
+    /// removes it. `CLICOLOR_FORCE` is removed unless `command` sets it, so
+    /// the log is plain text.
     fn spawn_with(command: &mut std::process::Command) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("server.log");
         let out = File::create(&log).unwrap();
         if !command.get_envs().any(|(name, _)| name == "RUST_LOG") {
             command.env("RUST_LOG", "echosrv=debug");
+        }
+        if !command.get_envs().any(|(name, _)| name == "CLICOLOR_FORCE") {
+            command.env_remove("CLICOLOR_FORCE");
         }
         let child = command
             .stdin(Stdio::null())
@@ -522,6 +526,25 @@ fn log_level_flag_and_rust_log_override() {
     assert!(log.contains("DEBUG"), "RUST_LOG did not override:\n{log}");
     // stderr is a file, not a terminal: no color escapes.
     assert!(!log.contains('\x1b'), "ANSI escapes in a non-terminal log");
+}
+
+#[test]
+fn clicolor_force_colors_non_terminal_log() {
+    let _serial = serial();
+    let addr: SocketAddr = ([127, 0, 0, 1], free_tcp_port()).into();
+    let mut server = Server::spawn_with(
+        std::process::Command::new(BIN)
+            .args(["tcp", &addr.port().to_string()])
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", "1"),
+    );
+    server.wait_until("TCP listener", || TcpStream::connect(addr).ok());
+    server.stop_with(libc::SIGTERM);
+    let log = server.log();
+    assert!(
+        log.contains('\x1b'),
+        "no ANSI escapes with CLICOLOR_FORCE:\n{log}"
+    );
 }
 
 fn wait_for_unix_stream(server: &mut Server, path: &Path) -> UnixStream {

@@ -14,9 +14,27 @@ categories = ["network-programming", "asynchronous", "command-line-utilities"]
 authors = ["Rodrigo Rafael Monti Kochenburger <rk@divoxx.me>"]
 default-run = "echosrv"
 
+[features]
+default = ["cli"]
+# The `echosrv` and `echosrv-client` binaries and the code they share
+# (`echosrv::cli`). Library-only users can turn it off with
+# `default-features = false`.
+cli = [
+    "dep:clap",
+    "dep:color-eyre",
+    "dep:tracing-subscriber",
+    "dep:colored",
+    "dep:hdrhistogram",
+    "dep:serde",
+    "dep:serde_json",
+    "tokio/rt-multi-thread",
+    "tokio/signal",
+]
+
 [dependencies]
-# The library needs net, io-util, time, sync, rt and macros. The binaries add
-# rt-multi-thread (multi-threaded runtime) and signal (SIGINT/SIGTERM handling).
+# The library needs net, io-util, time, sync, rt and macros. The `cli` feature
+# adds rt-multi-thread (multi-threaded runtime) and signal (SIGINT/SIGTERM
+# handling) for the binaries.
 tokio = { version = "1.41.0", features = [
     "net",
     "io-util",
@@ -24,35 +42,45 @@ tokio = { version = "1.41.0", features = [
     "sync",
     "rt",
     "macros",
-    "rt-multi-thread",
-    "signal",
 ] }
 tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 thiserror = "2"
-color-eyre = "0.6.2"
 async-trait = "0.1.88"
 httparse = "1.8"
 tokio-util = "0.7"
 libc = "0.2"
-clap = { version = "4", features = ["derive"] }
-# Used by the echosrv-client binary.
-colored = "2"
-hdrhistogram = { version = "7", default-features = false }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Only with the `cli` feature (the binaries).
+clap = { version = "4", features = ["derive"], optional = true }
+color-eyre = { version = "0.6.2", optional = true }
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"], optional = true }
+colored = { version = "2", optional = true }
+hdrhistogram = { version = "7", default-features = false, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [[bin]]
 name = "echosrv"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [[bin]]
 name = "echosrv-client"
 path = "src/bin/echosrv-client/main.rs"
+required-features = ["cli"]
+
+# These suites spawn the binaries.
+[[test]]
+name = "cli"
+required-features = ["cli"]
+
+[[test]]
+name = "client_cli"
+required-features = ["cli"]
 
 [dev-dependencies]
-# process: tests/cli.rs spawns the binaries; test-util: paused-clock tests.
-tokio = { version = "1.32.0", features = ["process", "test-util"] }
+# process: tests/cli.rs spawns the binaries; test-util: paused-clock tests;
+# rt-multi-thread: `#[tokio::main]` and multi-threaded tests without `cli`.
+tokio = { version = "1.32.0", features = ["process", "test-util", "rt-multi-thread"] }
 tempfile = "3.8"
 proptest = "1.0"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }

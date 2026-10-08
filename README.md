@@ -32,9 +32,15 @@ Library:
 
 ```toml
 [dependencies]
-echosrv = "0.4"
+echosrv = { version = "0.4", default-features = false }
 tokio = { version = "1", features = ["full"] }
 ```
+
+The default `cli` feature builds the two binaries and pulls in their
+dependencies (clap, color-eyre, tracing-subscriber, colored, hdrhistogram,
+serde, serde_json, and Tokio's multi-threaded runtime and signal handling).
+The library does not need any of them, so library users should set
+`default-features = false`.
 
 Minimum supported Rust version: 1.85 (edition 2024).
 
@@ -106,7 +112,8 @@ errors for the datagram protocols, like `--host` for the Unix ones.
 of echosrv's own logs (default `info`, so `echosrv=info`). `RUST_LOG`, when
 set, overrides it with a full filter: use `RUST_LOG=echosrv=debug` to see
 connections and rejections, or `RUST_LOG=echosrv=trace` to see payloads. Logs
-are colored only when stderr is a terminal and `NO_COLOR` is not set.
+are colored only when stderr is a terminal and `NO_COLOR` is not set;
+`CLICOLOR_FORCE` colors them even when stderr is not a terminal.
 
 **Signals.** `SIGINT` (Ctrl-C) and `SIGTERM` trigger a graceful shutdown. The
 server stops accepting, cancels in-flight connections, removes any Unix socket
@@ -915,7 +922,7 @@ src/
 ├── lib.rs        EchoError, Result, re-exports
 ├── main.rs       echosrv binary (clap CLI, signals, socket activation)
 ├── bin/echosrv-client/  echosrv-client binary (load testing, see above)
-├── cli_help.rs   help layout shared by both binaries (defaults on their own line in --help)
+├── cli/          code shared by both binaries (`cli` feature): help layout, color resolution
 ├── defaults.rs   default protocol, host, port and Unix socket paths
 ├── rate_limit.rs Gcra, TokenBucket, RateLimitConfig
 ├── common/       EchoServerTrait, EchoClient, ServerStats, shared server lifecycle

@@ -5,9 +5,6 @@
 //! `... [default: X]`. That keeps them in the compact `-h` summary. For
 //! `--help` they are moved onto their own line, matching how clap renders
 //! the `[default: X]` of a `default_value`.
-//!
-//! This file is a module of each binary rather than of the library, so the
-//! library does not depend on clap. Each binary uses a subset of it.
 
 use clap::{ArgMatches, Command, CommandFactory, FromArgMatches};
 use std::ffi::OsString;
@@ -31,14 +28,12 @@ pub fn command<T: CommandFactory>() -> Command {
 
 /// Drop-in for `T::parse()` that uses [`command`]. On `--help`,
 /// `--version` or a usage error it prints and exits like clap (status 0 or 2).
-#[allow(dead_code)] // Not every binary uses every entry point.
 pub fn parse<T: CommandFactory + FromArgMatches>() -> T {
     parse_with_matches::<T>().0
 }
 
 /// Like [`parse`], but also returns the [`ArgMatches`], e.g. to tell values
 /// given on the command line from defaults via `ArgMatches::value_source`.
-#[allow(dead_code)] // Not every binary uses every entry point.
 pub fn parse_with_matches<T: CommandFactory + FromArgMatches>() -> (T, ArgMatches) {
     let mut cmd = command::<T>();
     let matches = cmd.get_matches_mut();
@@ -53,7 +48,6 @@ pub fn parse_with_matches<T: CommandFactory + FromArgMatches>() -> (T, ArgMatche
 /// [`DisplayHelp`](clap::error::ErrorKind::DisplayHelp) /
 /// [`DisplayVersion`](clap::error::ErrorKind::DisplayVersion) that carry the
 /// rendered text; `print()` them to show it.
-#[allow(dead_code)] // Not every binary uses every entry point.
 pub fn try_parse_from<T, I, A>(args: I) -> Result<(T, ArgMatches), clap::Error>
 where
     T: CommandFactory + FromArgMatches,

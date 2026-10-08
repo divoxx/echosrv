@@ -1,11 +1,11 @@
 //! Command-line interface: flags, validation and target resolution.
 
-use crate::output::ColorChoice;
 use crate::report::RunHeader;
 use crate::runner::{ConnMode, DEFAULT_CONN_RATE, Filler, RunConfig, Transport};
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Parser, ValueEnum};
 use echosrv::RateLimitConfig;
+use echosrv::cli::color::ColorChoice;
 use echosrv::defaults::{
     DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
 };
@@ -495,7 +495,7 @@ mod tests {
     use super::*;
 
     fn parse_with_matches(args: &[&str]) -> Result<(Cli, ArgMatches), clap::Error> {
-        crate::cli_help::try_parse_from::<Cli, _, _>(
+        echosrv::cli::help::try_parse_from::<Cli, _, _>(
             std::iter::once("echosrv-client").chain(args.iter().copied()),
         )
     }
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn help_states_defaults() {
-        let help = crate::cli_help::command::<Cli>()
+        let help = echosrv::cli::help::command::<Cli>()
             .render_long_help()
             .to_string();
         let default_addr = SocketAddr::new(DEFAULT_HOST, DEFAULT_PORT).to_string();
