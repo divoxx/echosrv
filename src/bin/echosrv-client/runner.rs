@@ -33,6 +33,8 @@ const STREAM_BUFFER_SIZE: usize = 16 * 1024;
 const DATAGRAM_BUFFER_SIZE: usize = 65_536;
 /// Upper bound on the `echosrv:<worker>:<seq>:` header length.
 const MAX_HEADER_LEN: usize = 64;
+/// Payload size without `--payload-size` or `--payload`, header included.
+pub const DEFAULT_PAYLOAD_SIZE: usize = 64;
 /// Default cap on new connections per second, across all workers.
 ///
 /// Every closed TCP connection holds a local port in TIME_WAIT for 30-60s,
@@ -163,7 +165,7 @@ impl RunConfig {
             requests: None,
             concurrency: 1,
             rate: None,
-            payload_size: Some(64),
+            payload_size: Some(DEFAULT_PAYLOAD_SIZE),
             filler: Filler::Pattern,
             timeout: Duration::from_secs(5),
             conn_mode,
@@ -271,7 +273,7 @@ pub fn build_payload(
     let total = match (size, filler) {
         (Some(size), _) => size.max(header),
         (None, Filler::Text(text)) => header + text.len(),
-        (None, _) => header.max(64),
+        (None, _) => header.max(DEFAULT_PAYLOAD_SIZE),
     };
     match filler {
         Filler::Pattern => buf.extend(PATTERN.iter().cycle().take(total - header)),
@@ -540,10 +542,10 @@ pub async fn run(
         }
     }
 
-    summary.protocol = config.transport.protocol().as_str().to_string();
+    summary.protocol = config.transport.protocol().as_str();
     summary.target = config.transport.to_string();
     summary.concurrency = config.concurrency;
-    summary.conn_mode = config.conn_mode.as_str().to_string();
+    summary.conn_mode = config.conn_mode.as_str();
     summary.requests = config.requests;
     summary.interrupted = config.requests.is_some_and(|n| summary.total < n);
     if ports_exhausted.load(Ordering::Relaxed) {

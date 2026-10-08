@@ -26,14 +26,10 @@ pub fn command<T: CommandFactory>() -> Command {
     })
 }
 
-/// Drop-in for `T::parse()` that uses [`command`]. On `--help`,
-/// `--version` or a usage error it prints and exits like clap (status 0 or 2).
-pub fn parse<T: CommandFactory + FromArgMatches>() -> T {
-    parse_with_matches::<T>().0
-}
-
-/// Like [`parse`], but also returns the [`ArgMatches`], e.g. to tell values
-/// given on the command line from defaults via `ArgMatches::value_source`.
+/// Drop-in for `T::parse()` that uses [`command`] and also returns the
+/// [`ArgMatches`], e.g. to tell values given on the command line from
+/// defaults via `ArgMatches::value_source`. On `--help`, `--version` or a
+/// usage error it prints and exits like clap (status 0 or 2).
 pub fn parse_with_matches<T: CommandFactory + FromArgMatches>() -> (T, ArgMatches) {
     let mut cmd = command::<T>();
     let matches = cmd.get_matches_mut();

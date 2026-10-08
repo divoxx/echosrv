@@ -23,4 +23,5 @@ Thumbs.db
 
 # Coverage reports
 coverage/
-*.profraw .claude/worktrees/
+*.profraw
+.claude/worktrees/

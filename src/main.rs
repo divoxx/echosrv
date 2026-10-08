@@ -8,7 +8,7 @@ use echosrv::cli::color::{ColorChoice, ColorEnv, resolve_color};
 use echosrv::cli::target::parse_host;
 use echosrv::cli::{Protocol, Target, help, init_logging};
 use echosrv::defaults::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL};
-use echosrv::http::{DEFAULT_MAX_BODY_SIZE, HttpConfig, HttpEchoServer};
+use echosrv::http::{HttpConfig, HttpEchoServer};
 use echosrv::network::FdInheritanceConfig;
 use echosrv::tcp::TcpConfig;
 use echosrv::udp::UdpConfig;
@@ -23,7 +23,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 use tracing::info;
 
 /// Connection limit of the tcp and http servers started by the CLI. The Unix
@@ -55,14 +54,23 @@ impl LogLevel {
     }
 }
 
-const AFTER_HELP: &str = "\
+/// The usage examples, shown at the end of both `-h` and `--help`. A macro
+/// so that it can be `concat!`ed into [`AFTER_LONG_HELP`].
+macro_rules! examples {
+    () => {
+        "\
 Examples:
   echosrv                              TCP on 127.0.0.1:8080
   echosrv --host 0.0.0.0 udp 9090      UDP on all interfaces, port 9090
   echosrv http --rate 100 --burst 10   HTTP limited to 100 requests/s
-  echosrv unix-stream /tmp/echo.sock   Unix stream socket at a custom path";
+  echosrv unix-stream /tmp/echo.sock   Unix stream socket at a custom path"
+    };
+}
 
-const AFTER_LONG_HELP: &str = "\
+const AFTER_HELP: &str = examples!();
+
+const AFTER_LONG_HELP: &str = concat!(
+    "\
 Environment:
   RUST_LOG       Log filter; overrides --log-level when set (e.g. echosrv=debug)
   NO_COLOR       Disables colored logs (they are only colored on a terminal)
@@ -78,11 +86,9 @@ udp/unix-dgram drop the datagram.
 
 The server stops gracefully on SIGINT (Ctrl-C) or SIGTERM. Logs go to stderr.
 
-Examples:
-  echosrv                              TCP on 127.0.0.1:8080
-  echosrv --host 0.0.0.0 udp 9090      UDP on all interfaces, port 9090
-  echosrv http --rate 100 --burst 10   HTTP limited to 100 requests/s
-  echosrv unix-stream /tmp/echo.sock   Unix stream socket at a custom path";
+",
+    examples!()
+);
 
 /// Async echo server for TCP, UDP, HTTP and Unix domain sockets.
 #[derive(Debug, Parser)]
@@ -289,9 +295,6 @@ async fn start(cli: Cli) -> Result<()> {
             let config = TcpConfig {
                 bind_addr,
                 max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
-                buffer_size: 1024,
-                read_timeout: Duration::from_secs(30),
-                write_timeout: Duration::from_secs(30),
                 rate_limit,
                 accept_rate_limit,
                 ..Default::default()
@@ -318,10 +321,6 @@ async fn start(cli: Cli) -> Result<()> {
             let config = HttpConfig {
                 bind_addr,
                 max_connections: cli.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
-                buffer_size: 8192,
-                read_timeout: Duration::from_secs(30),
-                write_timeout: Duration::from_secs(30),
-                max_body_size: DEFAULT_MAX_BODY_SIZE,
                 rate_limit,
                 accept_rate_limit,
                 ..Default::default()
@@ -557,6 +556,18 @@ mod tests {
 
         assert!(parse_args(&args(&["--max-connections", "0"])).is_err());
         assert!(parse_args(&args(&["--log-level", "loud"])).is_err());
+    }
+
+    #[test]
+    fn both_helps_end_with_the_examples_once() {
+        let long = help::command::<Args>().render_long_help().to_string();
+        let short = help::command::<Args>().render_help().to_string();
+        for help in [&long, &short] {
+            assert_eq!(help.matches("Examples:").count(), 1, "{help}");
+            assert!(help.trim_end().ends_with(AFTER_HELP), "{help}");
+        }
+        assert!(long.contains("Environment:"), "{long}");
+        assert!(long.contains("Logs go to stderr.\n\nExamples:"), "{long}");
     }
 
     #[test]

@@ -414,10 +414,10 @@ pub struct Summary {
     /// Always `"summary"`.
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub protocol: String,
+    pub protocol: &'static str,
     pub target: String,
     pub concurrency: usize,
-    pub conn_mode: String,
+    pub conn_mode: &'static str,
     /// Requested number of attempts (`None` = continuous).
     pub requests: Option<u64>,
     pub elapsed_s: f64,
@@ -564,10 +564,10 @@ impl Aggregator {
         let errors = total.error_count();
         Summary {
             kind: "summary",
-            protocol: String::new(),
+            protocol: "",
             target: String::new(),
             concurrency: 0,
-            conn_mode: String::new(),
+            conn_mode: "",
             requests: None,
             elapsed_s: elapsed.as_secs_f64(),
             total: total.count,

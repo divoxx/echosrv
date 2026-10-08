@@ -1,7 +1,9 @@
 //! Command-line interface: flags, validation and target resolution.
 
 use crate::report::RunHeader;
-use crate::runner::{ConnMode, DEFAULT_CONN_RATE, Filler, RunConfig, Transport};
+use crate::runner::{
+    ConnMode, DEFAULT_CONN_RATE, DEFAULT_PAYLOAD_SIZE, Filler, RunConfig, Transport,
+};
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Parser};
 use echosrv::RateLimitConfig;
@@ -13,6 +15,10 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
+
+/// Token bucket capacity without `--burst`: smooth pacing.
+pub const DEFAULT_BURST: u32 = 1;
+
 /// Above this rate a tiny bucket can't keep up: each wait is close to the
 /// ~1ms timer resolution and wake-up overshoot is lost to the capacity cap.
 const SMOOTH_PACING_MAX_RATE: u32 = 500;
@@ -131,8 +137,14 @@ pub struct Cli {
     pub requests: Option<u64>,
 
     /// Number of concurrent workers.
-    #[arg(short, long, value_name = "C", default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..10_000))]
-    pub concurrency: u64,
+    #[arg(
+        short,
+        long,
+        value_name = "C",
+        default_value_t = 1,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..10_000)
+    )]
+    pub concurrency: usize,
 
     /// Stop after this long (e.g. 10s, 500ms, 2m); with -n, whichever comes
     /// first [default: none].
@@ -230,25 +242,26 @@ pub struct Validated {
 
 impl Cli {
     /// Checks flag combinations that clap cannot express and returns the
-    /// effective connection mode.
-    pub fn check(&self) -> Result<ConnMode, String> {
+    /// effective connection mode and [target](Self::target).
+    pub fn check(&self) -> Result<(ConnMode, Target), String> {
         if self.protocol == Protocol::Http && self.conn_mode == Some(ConnMode::Persistent) {
             return Err(
                 "--conn-mode persistent is not supported for http (the server closes every connection after one response)"
                     .into(),
             );
         }
-        self.target()?;
+        let target = self.target()?;
         if self.payload.as_deref() == Some("") {
             return Err("--payload must not be empty".into());
         }
-        Ok(self
+        let conn_mode = self
             .conn_mode
             .unwrap_or(if self.protocol == Protocol::Http {
                 ConnMode::PerRequest
             } else {
                 ConnMode::Persistent
-            }))
+            });
+        Ok((conn_mode, target))
     }
 
     /// The effective target: the per-protocol default when omitted, and a
@@ -270,8 +283,7 @@ impl Cli {
 
     /// Validates the flags and resolves the target into a [`RunConfig`].
     pub async fn resolve(&self) -> Result<Validated, String> {
-        let conn_mode = self.check()?;
-        let target = self.target()?;
+        let (conn_mode, target) = self.check()?;
         let mut warnings = Vec::new();
 
         let transport = match self.protocol {
@@ -288,37 +300,31 @@ impl Cli {
         let payload_size = match (self.payload_size, &filler) {
             (Some(size), _) => Some(size),
             (None, Filler::Text(_)) => None,
-            (None, _) => Some(64),
+            (None, _) => Some(DEFAULT_PAYLOAD_SIZE),
         };
 
-        // (No let chains: the crate's MSRV is 1.85.)
-        match payload_size {
-            Some(size) if self.protocol == Protocol::Http && size > DEFAULT_MAX_BODY_SIZE => {
-                warnings.push(format!(
-                    "http payload of {size} bytes is over the echosrv server's {DEFAULT_MAX_BODY_SIZE}-byte body limit; it answers 413 to larger bodies"
-                ));
-            }
-            _ => {}
+        let is_http = self.protocol == Protocol::Http;
+        if let Some(size) = payload_size.filter(|&size| is_http && size > DEFAULT_MAX_BODY_SIZE) {
+            warnings.push(format!(
+                "http payload of {size} bytes is over the echosrv server's {DEFAULT_MAX_BODY_SIZE}-byte body limit; it answers 413 to larger bodies"
+            ));
         }
-        let burst = self.burst.unwrap_or(1);
-        match self.rate {
-            Some(rate) if rate > SMOOTH_PACING_MAX_RATE && burst < rate / 100 => {
-                warnings.push(format!(
-                    "--rate {rate} with --burst {burst}: the ~1ms timer resolution caps smooth pacing well below the target; use --burst {} or more",
-                    rate / 100
-                ));
-            }
-            _ => {}
+        let burst = self.burst.unwrap_or(DEFAULT_BURST);
+        if let Some(rate) = self
+            .rate
+            .filter(|&rate| rate > SMOOTH_PACING_MAX_RATE && burst < rate / 100)
+        {
+            warnings.push(format!(
+                "--rate {rate} with --burst {burst}: the ~1ms timer resolution caps smooth pacing well below the target; use --burst {} or more",
+                rate / 100
+            ));
         }
         let uses_tcp = matches!(self.protocol, Protocol::Tcp | Protocol::Http);
-        match self.conn_rate.0 {
-            None if uses_tcp => warnings.push(format!(
-                "--conn-rate unlimited: closed connections hold a local port for 30-60s; above ~{SAFE_CONN_RATE} new connections/s this machine can run out of ports, which stalls networking for every application (the run stops if that happens)"
-            )),
-            Some(n) if uses_tcp && n > SAFE_CONN_RATE => warnings.push(format!(
-                "--conn-rate {n}: closed connections hold a local port for 30-60s; above ~{SAFE_CONN_RATE} new connections/s this machine can run out of ports, which stalls networking for every application (the run stops if that happens)"
-            )),
-            _ => {}
+        if uses_tcp && self.conn_rate.0.is_none_or(|n| n > SAFE_CONN_RATE) {
+            warnings.push(format!(
+                "--conn-rate {}: closed connections hold a local port for 30-60s; above ~{SAFE_CONN_RATE} new connections/s this machine can run out of ports, which stalls networking for every application (the run stops if that happens)",
+                self.conn_rate
+            ));
         }
         if self.reconnect_delay > self.max_backoff {
             warnings.push(format!(
@@ -334,10 +340,8 @@ impl Cli {
             config: RunConfig {
                 transport,
                 requests: self.requests,
-                concurrency: usize::try_from(self.concurrency).unwrap_or(1),
-                rate: self
-                    .rate
-                    .map(|rate| RateLimitConfig::new(rate, self.burst.unwrap_or(1))),
+                concurrency: self.concurrency,
+                rate: self.rate.map(|rate| RateLimitConfig::new(rate, burst)),
                 payload_size,
                 filler,
                 timeout: self.timeout,
@@ -520,6 +524,7 @@ mod tests {
             "[default: unlimited",
             "[default: none]",
             "[default: unshaped]",
+            &format!("[default: {DEFAULT_PAYLOAD_SIZE},"),
         ] {
             assert!(help.contains(needle), "--help lacks {needle:?}:\n{help}");
         }
@@ -529,6 +534,10 @@ mod tests {
                 assert!(line[..at].trim().is_empty(), "inline default: {line:?}");
             }
         }
+    }
+
+    fn conn_mode(cli: &Cli) -> Result<ConnMode, String> {
+        cli.check().map(|(mode, _)| mode)
     }
 
     #[test]
@@ -542,7 +551,7 @@ mod tests {
         assert_eq!(cli.interval, Duration::from_secs(1));
         assert_eq!(cli.reconnect_delay, Duration::from_millis(100));
         assert_eq!(cli.max_error_rate, 0.0);
-        assert_eq!(cli.check(), Ok(ConnMode::Persistent));
+        assert_eq!(conn_mode(&cli), Ok(ConnMode::Persistent));
     }
 
     #[test]
@@ -587,7 +596,7 @@ mod tests {
         assert_eq!(cli.interval, Duration::ZERO);
         assert_eq!(cli.max_error_rate, 2.5);
         assert_eq!(cli.color, ColorChoice::Never);
-        assert_eq!(cli.check(), Ok(ConnMode::PerRequest));
+        assert_eq!(conn_mode(&cli), Ok(ConnMode::PerRequest));
     }
 
     #[test]
@@ -625,7 +634,7 @@ mod tests {
         assert!(cli.check().unwrap_err().contains("persistent"));
 
         let cli = parse(&["tcp", "127.0.0.1:1", "--conn-mode", "per-request"]).unwrap();
-        assert_eq!(cli.check(), Ok(ConnMode::PerRequest));
+        assert_eq!(conn_mode(&cli), Ok(ConnMode::PerRequest));
 
         let cli = parse(&["tcp", "/tmp/echo.sock"]).unwrap();
         assert!(cli.check().unwrap_err().contains("HOST:PORT"));
@@ -641,7 +650,7 @@ mod tests {
         assert!(cli.check().unwrap_err().contains("empty"));
 
         let cli = parse(&["unix-stream", "/tmp/echo.sock"]).unwrap();
-        assert_eq!(cli.check(), Ok(ConnMode::Persistent));
+        assert_eq!(conn_mode(&cli), Ok(ConnMode::Persistent));
         let cli = parse(&["unix-dgram", "relative.sock"]).unwrap();
         assert!(cli.check().is_ok());
     }
@@ -750,7 +759,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v.config.conn_rate, None);
-        assert!(v.warnings.iter().any(|w| w.contains("run out of ports")));
+        assert!(
+            v.warnings
+                .iter()
+                .any(|w| w.starts_with("--conn-rate unlimited:") && w.contains("run out of ports")),
+            "{:?}",
+            v.warnings
+        );
 
         let v = parse(&["tcp", "--conn-rate", "1000", "-c", "2000"])
             .unwrap()

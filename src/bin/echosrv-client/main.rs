@@ -26,10 +26,10 @@ use tokio_util::sync::CancellationToken;
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 /// 128 + SIGINT / SIGTERM, for a run aborted by a second signal.
-const EXIT_INTERRUPTED: i32 = 130;
-const EXIT_TERMINATED: i32 = 143;
+const EXIT_INTERRUPTED: u8 = 130;
+const EXIT_TERMINATED: u8 = 143;
 /// 128 + SIGPIPE, what a shell reports for a process killed by a closed pipe.
-const EXIT_BROKEN_PIPE: i32 = 141;
+const EXIT_BROKEN_PIPE: u8 = 141;
 
 /// Writes one line to stdout. If stdout was closed (e.g. `| head` has
 /// exited), nobody reads the report any more: exit quietly, like a process
@@ -38,7 +38,7 @@ fn emit(line: &str) {
     let mut out = std::io::stdout().lock();
     let result = writeln!(out, "{line}").and_then(|()| out.flush());
     if result.is_err_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe) {
-        std::process::exit(EXIT_BROKEN_PIPE);
+        std::process::exit(i32::from(EXIT_BROKEN_PIPE));
     }
 }
 
@@ -56,7 +56,6 @@ fn palettes(cli: &Cli) -> (Palette, Palette) {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let _ = color_eyre::install();
     // clap exits with 2 on usage errors and 0 for --help/--version.
     let (cli, matches) = help::parse_with_matches::<Cli>();
     let (out_palette, err_palette) = palettes(&cli);
@@ -128,7 +127,7 @@ async fn main() -> ExitCode {
                 _ = term.recv() => EXIT_TERMINATED,
             };
             output::fail(err_palette, "aborted");
-            std::process::exit(code);
+            std::process::exit(i32::from(code));
         });
     }
     if let Some(duration) = cli.duration {
