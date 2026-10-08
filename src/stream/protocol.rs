@@ -18,6 +18,11 @@ pub enum RejectReason {
     /// ([`StreamConfig::accept_rate_limit`]). Nothing has been read from the
     /// stream yet.
     ConnectionRateLimited,
+    /// A newly accepted connection arrived while
+    /// [`StreamConfig::max_connections`] connections were active. Nothing has
+    /// been read from the stream yet, and `retry_after` is zero (the server
+    /// cannot tell when a slot frees up).
+    TooManyConnections,
 }
 
 /// A connection-oriented transport usable by [`StreamEchoServer`] and
@@ -129,18 +134,24 @@ pub trait StreamProtocol: Send + Sync + 'static {
         Ok(true)
     }
 
-    /// Tells the peer it was rejected by a rate limit; the server closes the
-    /// stream right after this returns (server side).
+    /// Tells the peer it was rejected by a rate limit or by the connection
+    /// limit; the server closes the stream right after this returns (server
+    /// side).
     ///
     /// `retry_after` is the earliest time at which the request would have
-    /// been admitted. The server bounds the call with a timeout, counts the
-    /// rejection in [`ServerStats`](crate::ServerStats) and logs it at
-    /// `debug` level, so implementations need not do either.
+    /// been admitted (zero for [`RejectReason::TooManyConnections`]). The
+    /// server bounds the call with a timeout, counts the rejection in
+    /// [`ServerStats`](crate::ServerStats) and logs it at `debug` level, so
+    /// implementations need not do either. Connection rejections run in
+    /// their own small pool of tasks, so they do not take
+    /// `max_connections` slots; when that pool is full the server closes the
+    /// connection without calling `reject`.
     ///
     /// The default implementation does nothing, so the connection is simply
     /// closed. [`TcpProtocol`](crate::tcp::TcpProtocol) resets the
     /// connection, and [`HttpProtocol`](crate::http::HttpProtocol) answers
-    /// `429 Too Many Requests`.
+    /// `429 Too Many Requests` for the rate limits and
+    /// `503 Service Unavailable` for the connection limit.
     async fn reject(
         _stream: &mut Self::Stream,
         _reason: RejectReason,

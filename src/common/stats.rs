@@ -19,12 +19,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// let stats = server.stats();
 /// assert_eq!(stats.rejected_requests(), 0);
 /// assert_eq!(stats.rejected_connections(), 0);
+/// assert_eq!(stats.rejected_over_capacity(), 0);
 /// assert_eq!(stats.dropped_rate_limited(), 0);
 /// ```
 #[derive(Debug, Default)]
 pub struct ServerStats {
     rejected_requests: AtomicU64,
     rejected_connections: AtomicU64,
+    rejected_over_capacity: AtomicU64,
     dropped_rate_limited: AtomicU64,
 }
 
@@ -38,10 +40,17 @@ impl ServerStats {
     /// Connections rejected by the new-connection rate limit
     /// (`accept_rate_limit`) on stream servers.
     ///
-    /// Connections closed because `max_connections` was reached are not
-    /// counted here.
+    /// Connections rejected because `max_connections` was reached are
+    /// counted in [`rejected_over_capacity`](Self::rejected_over_capacity)
+    /// instead.
     pub fn rejected_connections(&self) -> u64 {
         self.rejected_connections.load(Ordering::Relaxed)
+    }
+
+    /// Connections rejected on stream servers because `max_connections`
+    /// connections were already active.
+    pub fn rejected_over_capacity(&self) -> u64 {
+        self.rejected_over_capacity.load(Ordering::Relaxed)
     }
 
     /// Datagrams dropped by the request rate limit (`rate_limit`) on datagram
@@ -62,6 +71,12 @@ impl ServerStats {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    /// Increments [`rejected_over_capacity`](Self::rejected_over_capacity)
+    /// and returns the new total.
+    pub(crate) fn inc_rejected_over_capacity(&self) -> u64 {
+        self.rejected_over_capacity.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     /// Increments [`dropped_rate_limited`](Self::dropped_rate_limited) and
     /// returns the new total.
     pub(crate) fn inc_dropped_rate_limited(&self) -> u64 {
@@ -79,9 +94,11 @@ mod tests {
         assert_eq!(stats.inc_rejected_requests(), 1);
         assert_eq!(stats.inc_rejected_requests(), 2);
         assert_eq!(stats.inc_rejected_connections(), 1);
+        assert_eq!(stats.inc_rejected_over_capacity(), 1);
         assert_eq!(stats.inc_dropped_rate_limited(), 1);
         assert_eq!(stats.rejected_requests(), 2);
         assert_eq!(stats.rejected_connections(), 1);
+        assert_eq!(stats.rejected_over_capacity(), 1);
         assert_eq!(stats.dropped_rate_limited(), 1);
     }
 }

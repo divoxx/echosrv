@@ -446,7 +446,7 @@ async fn reject_one(
             RejectReason::RateLimited => {
                 Some(HttpProtocol::begin_request(&mut stream).await.unwrap())
             }
-            RejectReason::ConnectionRateLimited => None,
+            RejectReason::ConnectionRateLimited | RejectReason::TooManyConnections => None,
         };
         HttpProtocol::reject(&mut stream, reason, retry_after)
             .await
@@ -510,6 +510,32 @@ async fn connection_rejected_before_request_reads_head_then_429() {
     )
     .await;
     assert_429(&raw, 1);
+    assert_eq!(server.await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn connection_over_capacity_reads_head_then_503() {
+    let (addr, server) = reject_one(RejectReason::TooManyConnections, Duration::ZERO).await;
+    let raw = exchange(
+        addr,
+        &[
+            b"POST / HTTP/1.1\r\nHost: a\r\n",
+            b"Content-Length: 4\r\n\r\nbody",
+        ],
+    )
+    .await;
+    let (head, body) = split_response(&raw);
+    assert!(
+        head.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+        "{head}"
+    );
+    assert!(head.contains("Connection: close\r\n"), "{head}");
+    assert!(!head.contains("Retry-After"), "{head}");
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("Too many connections")
+    );
     assert_eq!(server.await.unwrap(), None);
 }
 

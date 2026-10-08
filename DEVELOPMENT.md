@@ -37,7 +37,7 @@ implementing a trait:
   Rate limiting adds three items with defaults: `reject(stream, reason,
   retry_after)` signals a rejection before the server closes the stream
   (default: nothing, so a plain close; TCP sets `SO_LINGER` 0 to send an RST;
-  HTTP answers `429`), and `FRAMED_REQUESTS` / `begin_request` let a protocol
+  HTTP answers `429`, or `503` for `RejectReason::TooManyConnections`), and `FRAMED_REQUESTS` / `begin_request` let a protocol
   define what one request is (default: every non-empty read; HTTP: the
   request head).
 - **`DatagramProtocol`** declares `Socket`, `PeerAddr` and `Error` types. Its
@@ -120,15 +120,20 @@ loops:
 3. **`serve()`** runs a `select!` loop (biased toward shutdown) over the
    shutdown signal, finished connection tasks and `accept`. Each connection
    takes a `ConnectionGuard`, an RAII slot that is released even if the task
-   panics. Connections over `max_connections` are closed immediately. Tasks
+   panics. A connection over `max_connections` is rejected with
+   `RejectReason::TooManyConnections` and counted in
+   `ServerStats::rejected_over_capacity`. Tasks
    live in a `JoinSet`. A failed `accept` (for example `EMFILE`) is followed
    by a 100 ms backoff. The datagram loop backs off the same way after a
    failed `recv_from`, selecting on shutdown during the wait, and logs the
    first and every 100th consecutive failure at `error`.
    **Rate limits.** Each server builds its `Gcra` limiters (`RateLimiters`)
    once in `new()`, so a limit is global to the server. A connection over
-   `accept_rate_limit` keeps its `ConnectionGuard` while a spawned task runs
-   `P::reject` (bounded by `REJECT_TIMEOUT`). The connection task checks
+   `accept_rate_limit` (or over `max_connections`) is handed to a spawned task
+   that runs `P::reject` (bounded by `REJECT_TIMEOUT`). These tasks do not
+   hold a `max_connections` slot; they take one of `MAX_PENDING_REJECTIONS`
+   (32) slots of their own, and a connection rejected while all are busy is
+   closed without `P::reject`, so a flood cannot lock out admitted clients. The connection task checks
    `rate_limit` per request and calls `P::reject` before closing. The datagram
    loop drops over-limit datagrams. All of these increment the shared
    `ServerStats` and log at `debug` only.

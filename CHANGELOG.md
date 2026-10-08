@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unix stream closes the connection.
   - UDP and Unix datagram drop the datagram.
 - **`ServerStats`** (`rejected_requests`, `rejected_connections`,
-  `dropped_rate_limited`), available from `stats()` on every server and bound
+  `rejected_over_capacity`, `dropped_rate_limited`), available from `stats()` on every server and bound
   server.
 - **`StreamProtocol` hooks** with default implementations: `reject(stream,
   RejectReason, retry_after)`, `FRAMED_REQUESTS` and `begin_request`.
@@ -103,9 +103,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AddrNotAvailable`: `local_addr()` reports it as `Address::UnixAbstract` or
   `Address::UnixUnnamed`. Inherited sockets are never unlinked, so an
   abstract socket is never mistaken for a socket file.
-
-### Fixed
-
 - The benchmarks reuse their connections instead of connecting on every
   iteration, so `cargo bench` opens a few dozen connections rather than tens
   of thousands (which could exhaust the ephemeral port range with TIME_WAIT
@@ -121,9 +118,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when `recv_from` keeps failing. They wait 100 ms after each failed receive
   (shutdown still interrupts the wait) and log the first failure and then
   every 100th at `error`, the others at `debug`.
-
-### Fixed
-
 - **Stale Unix socket detection no longer removes a live server's socket.**
   The probe connect is non-blocking, so it no longer stalls a runtime thread
   on Linux when the listener's backlog is full (that answer, `EAGAIN`, now
@@ -131,6 +125,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<path>.lock` while bound, because macOS and the BSDs report a full backlog
   as `ECONNREFUSED`, the same as a dead socket. A server finding the lock
   held reports `AddrInUse` without touching the socket file.
+- Stream connections over `max_connections` are rejected through
+  `StreamProtocol::reject` with the new `RejectReason::TooManyConnections`
+  instead of being dropped silently: HTTP answers `503 Service Unavailable`
+  with `Connection: close`, TCP resets the connection and Unix stream closes
+  it. They are counted in `ServerStats::rejected_over_capacity`.
+- Connection rejections (over `accept_rate_limit` or `max_connections`) no
+  longer take `max_connections` slots. They run in a separate pool of at most
+  32, and connections rejected while it is full are closed at once, so a
+  flood of rejected connections cannot lock out admitted clients.
+- **Breaking (minor):** `RejectReason` has the new variant
+  `TooManyConnections`. Exhaustive matches on it must handle it.
 
 ## [0.4.0] - Unreleased
 

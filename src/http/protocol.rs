@@ -184,6 +184,17 @@ impl Rejection {
         }
     }
 
+    /// `503 Service Unavailable`, for a connection over `max_connections`.
+    /// There is no `Retry-After`: the server cannot tell when a slot frees
+    /// up.
+    pub(crate) fn service_unavailable() -> Self {
+        Self::new(
+            503,
+            "Service Unavailable",
+            "Too many connections. Try again later.",
+        )
+    }
+
     /// The headers this rejection adds to the response head.
     fn extra_headers(&self) -> Vec<(&'static str, String)> {
         let mut headers = Vec::new();
@@ -549,14 +560,14 @@ impl HttpStream {
         self.finish().await;
     }
 
-    /// Answers `429 Too Many Requests`, then closes gracefully.
+    /// Answers with `rejection` (`429` or `503`), then closes gracefully.
     ///
     /// If the request head has not been read yet (a connection rejected by
-    /// the accept rate limit), it is read first, for at most
-    /// [`REJECT_HEAD_TIMEOUT`]. Otherwise the client could still be sending
-    /// it when we close, and the resulting RST could discard the response.
-    /// Any body is drained by the linger in [`finish`](Self::finish).
-    async fn reject_rate_limited(&mut self, retry_after: Duration) {
+    /// the accept rate limit or the connection limit), it is read first, for
+    /// at most [`REJECT_HEAD_TIMEOUT`]. Otherwise the client could still be
+    /// sending it when we close, and the resulting RST could discard the
+    /// response. Any body is drained by the linger in [`finish`](Self::finish).
+    async fn reject_admission(&mut self, rejection: &Rejection) {
         if matches!(self.state, State::Done) {
             // A response was already sent.
             return;
@@ -565,8 +576,7 @@ impl HttpStream {
             let _ = tokio::time::timeout(REJECT_HEAD_TIMEOUT, self.read_head_unchecked()).await;
         }
         self.invalid = None;
-        self.reject(&Rejection::too_many_requests(retry_after))
-            .await;
+        self.reject(rejection).await;
     }
 
     /// Reads into `buf` until it holds a complete (or unparsable) request
@@ -730,19 +740,26 @@ impl StreamProtocol for HttpProtocol {
     }
 
     /// Answers `429 Too Many Requests` with `Retry-After` (whole seconds,
-    /// rounded up, at least 1) and `Connection: close`, then closes
-    /// gracefully.
+    /// rounded up, at least 1) for the rate limits, or
+    /// `503 Service Unavailable` for the connection limit, with
+    /// `Connection: close`, then closes gracefully.
     ///
-    /// For a connection rejected by the accept rate limit the request head is
-    /// read first (bounded by a short timeout), and any body is drained
-    /// briefly after the response, so the client is not sent an RST that
-    /// would discard the `429`.
+    /// For a connection rejected before any request was read (accept rate
+    /// limit, connection limit) the request head is read first (bounded by a
+    /// short timeout), and any body is drained briefly after the response, so
+    /// the client is not sent an RST that would discard the response.
     async fn reject(
         stream: &mut Self::Stream,
-        _reason: RejectReason,
+        reason: RejectReason,
         retry_after: Duration,
     ) -> std::result::Result<(), Self::Error> {
-        stream.reject_rate_limited(retry_after).await;
+        let rejection = match reason {
+            RejectReason::RateLimited | RejectReason::ConnectionRateLimited => {
+                Rejection::too_many_requests(retry_after)
+            }
+            RejectReason::TooManyConnections => Rejection::service_unavailable(),
+        };
+        stream.reject_admission(&rejection).await;
         Ok(())
     }
 }

@@ -48,6 +48,9 @@
 //!   [`HttpConfig::accept_rate_limit`], a connection over the limit has its
 //!   request head read and then gets the same `429`. The response carries
 //!   `Retry-After: <seconds>` (rounded up, at least 1).
+//! * **Connection limit.** A connection accepted while
+//!   [`HttpConfig::max_connections`] connections are active has its request
+//!   head read and then gets `503 Service Unavailable` (no `Retry-After`).
 //! * **Error responses** use `Content-Type: text/plain; charset=utf-8` and a
 //!   short explanation as the body. They also carry `Server` and
 //!   `Connection: close`.

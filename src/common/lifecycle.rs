@@ -17,6 +17,12 @@ pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 /// a rate limit (see `StreamProtocol::reject`) before closing the connection.
 pub(crate) const REJECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Maximum number of connection rejections a stream server runs at once
+/// (see `StreamProtocol::reject`). These do not take `max_connections`
+/// slots, so a flood of rejected connections cannot lock out admitted ones.
+/// Connections rejected while this many are in flight are closed right away.
+pub(crate) const MAX_PENDING_REJECTIONS: usize = 32;
+
 /// The rate limiters of one server, shared by all its connections.
 ///
 /// Each limiter is created once per server (in `new()`), so the limit is

@@ -621,8 +621,13 @@ async fn main() -> echosrv::Result<()> {
 
 Build configs with `..Default::default()` so new fields do not break your
 code. `read_timeout` closes idle stream connections. When `max_connections`
-connections are active, new stream connections are accepted and closed right
-away.
+connections are active, a new stream connection is accepted and rejected right
+away: TCP resets it, HTTP answers `503 Service Unavailable` (after reading the
+request head) with `Connection: close`, and Unix stream closes it.
+`ServerStats::rejected_over_capacity` counts these. Rejections (over capacity
+or over `accept_rate_limit`) do not take `max_connections` slots: they run in a
+small pool of their own (32 at a time), and connections beyond that are closed
+without a response, so a flood cannot lock out admitted clients.
 
 ### Rate limiting
 
@@ -734,6 +739,7 @@ The HTTP server implements a small, strict subset of HTTP/1.1:
   | 405    | Method other than `POST`                                                         |
   | 413    | `Content-Length` greater than `max_body_size` (default 1 MiB)                    |
   | 429    | Over the server's `rate_limit` or `accept_rate_limit` (with `Retry-After`)      |
+  | 503    | `max_connections` connections already active                                     |
   | 431    | Request line plus headers larger than 8 KiB                                      |
   | 501    | Any `Transfer-Encoding` header (chunked bodies are not supported)                |
 
@@ -887,7 +893,7 @@ The integration suites are in `tests/`:
 | `tests/udp.rs`             | UDP server and client                                                 |
 | `tests/unix.rs`            | Unix stream and datagram servers, socket file handling                |
 | `tests/http.rs`            | HTTP framing, status codes, `HttpEchoClient`                          |
-| `tests/rate_limit.rs`      | Request and connection rate limits: 429, resets, drops, counters      |
+| `tests/rate_limit.rs`      | Rate and connection limits: 429, 503, resets, drops, counters         |
 | `tests/fd_inheritance.rs`  | End-to-end socket inheritance for every protocol                      |
 | `tests/cli.rs`             | The `echosrv` binary: arguments, signals, socket activation           |
 | `tests/client_cli.rs`      | The `echosrv-client` binary: flags, output, outages, exit codes       |
