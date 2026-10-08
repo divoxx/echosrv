@@ -9,12 +9,33 @@ use async_trait::async_trait;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::time::timeout;
 
+/// A receive buffer one byte larger than `buffer_size`, so that a reply
+/// larger than the limit is detected instead of silently truncated.
+pub(crate) fn reply_buffer(buffer_size: usize) -> Vec<u8> {
+    vec![0; buffer_size.saturating_add(1)]
+}
+
+/// Truncates `buffer` to the `n` bytes received, or fails with
+/// [`EchoError::Config`] if the reply did not fit in `buffer_size`.
+pub(crate) fn finish_reply(mut buffer: Vec<u8>, n: usize, buffer_size: usize) -> Result<Vec<u8>> {
+    if n > buffer_size {
+        return Err(EchoError::Config(format!(
+            "Response too large: datagram exceeds buffer_size of {buffer_size} bytes"
+        )));
+    }
+    buffer.truncate(n);
+    Ok(buffer)
+}
+
 /// Generic datagram-based echo client for protocols addressed by [`SocketAddr`]
 /// (e.g. UDP).
 ///
 /// The client binds an ephemeral wildcard address of the same family as the
 /// server (IPv4 or IPv6), sends each payload as one datagram and waits for the
-/// reply.
+/// reply. Send and receive are bounded by the
+/// [`DatagramClientConfig`] timeouts ([`EchoError::Timeout`]), and a reply
+/// larger than [`DatagramClientConfig::buffer_size`] is an error rather than
+/// a truncated echo.
 ///
 /// # Examples
 ///
@@ -74,6 +95,7 @@ where
             write_timeout: config.write_timeout,
             bind_strategy: Some(BindStrategy::Bind(BindTarget::Network(wildcard))),
             service_name: "datagram-client".to_string(),
+            rate_limit: None,
         };
 
         let socket = P::bind(&bind_config).await.map_err(Into::into)?;
@@ -99,7 +121,9 @@ where
 {
     /// Sends `data` as one datagram and returns the echoed reply.
     ///
-    /// Replies from addresses other than the server are ignored.
+    /// Replies from addresses other than the server are ignored. Fails with
+    /// [`EchoError::Timeout`] if no reply arrives within `read_timeout`, and
+    /// with [`EchoError::Config`] if the reply exceeds `buffer_size`.
     async fn echo(&mut self, data: &[u8]) -> Result<Vec<u8>> {
         timeout(
             self.config.write_timeout,
@@ -109,7 +133,7 @@ where
         .map_err(|_| EchoError::Timeout("Datagram send timeout".to_string()))?
         .map_err(Into::into)?;
 
-        let mut buffer = vec![0; self.config.buffer_size];
+        let mut buffer = reply_buffer(self.config.buffer_size);
         let receive = async {
             loop {
                 let (n, from) = P::recv_from(&self.socket, &mut buffer).await?;
@@ -123,8 +147,7 @@ where
             .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
             .map_err(Into::<EchoError>::into)?;
 
-        buffer.truncate(n);
-        Ok(buffer)
+        finish_reply(buffer, n, self.config.buffer_size)
     }
 }
 
@@ -253,7 +276,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reply_larger_than_buffer_is_truncated() {
+    async fn reply_larger_than_buffer_is_an_error_not_truncated() {
         let (server, server_addr) = peer("127.0.0.1:0").await.unwrap();
         let config = DatagramClientConfig {
             buffer_size: 4,
@@ -264,10 +287,29 @@ mod tests {
             .unwrap();
         let reply = tokio::spawn(async move {
             let mut buf = [0u8; 64];
-            let (n, from) = server.recv_from(&mut buf).await.unwrap();
-            server.send_to(&buf[..n], from).await.unwrap();
+            for _ in 0..2 {
+                let (n, from) = server.recv_from(&mut buf).await.unwrap();
+                server.send_to(&buf[..n], from).await.unwrap();
+            }
         });
-        assert_eq!(client.echo(b"0123456789").await.unwrap(), b"0123");
+        match client.echo(b"01234").await {
+            Err(EchoError::Config(msg)) => assert!(msg.contains("buffer_size of 4"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+        // A reply of exactly buffer_size bytes fits.
+        assert_eq!(client.echo(b"0123").await.unwrap(), b"0123");
         reply.await.unwrap();
+    }
+
+    #[test]
+    fn reply_buffer_and_finish() {
+        let buffer = reply_buffer(4);
+        assert_eq!(buffer.len(), 5);
+        assert_eq!(finish_reply(buffer.clone(), 4, 4).unwrap().len(), 4);
+        assert_eq!(finish_reply(buffer.clone(), 0, 4).unwrap(), b"");
+        assert!(matches!(
+            finish_reply(buffer, 5, 4),
+            Err(EchoError::Config(_))
+        ));
     }
 }

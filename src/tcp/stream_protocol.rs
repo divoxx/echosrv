@@ -3,16 +3,18 @@
 use super::socket_builder::TcpSocketBuilder;
 use crate::EchoError;
 use crate::network::{BuildSocket, FdInheritanceConfig};
-use crate::stream::{StreamConfig, StreamProtocol};
+use crate::stream::{RejectReason, StreamConfig, StreamProtocol};
 use async_trait::async_trait;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 /// TCP protocol implementation
 ///
 /// Binding honors [`StreamConfig::bind_strategy`], so TCP listeners can be
-/// inherited from systemd or another parent process.
+/// inherited from systemd or another parent process. Connections rejected by
+/// a rate limit are reset (see [`reject`](StreamProtocol::reject)).
 pub struct TcpProtocol;
 
 #[async_trait]
@@ -65,5 +67,19 @@ impl StreamProtocol for TcpProtocol {
 
     fn map_io_error(err: std::io::Error) -> EchoError {
         EchoError::Tcp(err)
+    }
+
+    /// Raw TCP cannot signal a rejection in-band, so the connection is
+    /// aborted instead: with `SO_LINGER` set to zero, closing it sends an RST.
+    /// Clients see "connection reset", which they can tell apart from the
+    /// orderly close (FIN) of an idle timeout or a server shutdown.
+    async fn reject(
+        stream: &mut TcpStream,
+        _reason: RejectReason,
+        _retry_after: Duration,
+    ) -> std::result::Result<(), EchoError> {
+        stream
+            .set_linger(Some(Duration::ZERO))
+            .map_err(EchoError::Tcp)
     }
 }

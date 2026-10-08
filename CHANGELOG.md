@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Rate-limiting primitives** in the new `rate_limit` module (re-exported at
+  the crate root): `Gcra`, a lock-free GCRA policer (`check()` /
+  `check_at()` admit an event or return `RateLimited { retry_after }`), and
+  `TokenBucket`, a cancel-safe async shaper (`acquire()`), both configured by
+  `RateLimitConfig { rate_per_sec, burst }`. `RateLimitError` is the
+  matching error enum.
+- **Server rate limits.** `rate_limit: Option<RateLimitConfig>` on every
+  server config (`StreamConfig`, `DatagramConfig`, `TcpConfig`, `UdpConfig`,
+  `HttpConfig`, `UnixStreamConfig`, `UnixDatagramConfig`) limits the request
+  rate of the whole server, and `accept_rate_limit` on the stream configs
+  limits new connections. Set them with `with_rate_limit` /
+  `with_accept_rate_limit`. Over-limit traffic is rejected, not delayed:
+  - TCP resets the connection (`SO_LINGER` 0).
+  - HTTP answers `429 Too Many Requests` with `Retry-After` (whole seconds,
+    rounded up, at least 1) and `Connection: close`. A connection over the
+    accept limit has its request head read first, so the `429` is not lost
+    to a reset.
+  - Unix stream closes the connection.
+  - UDP and Unix datagram drop the datagram.
+- **`ServerStats`** (`rejected_requests`, `rejected_connections`,
+  `dropped_rate_limited`), available from `stats()` on every server and bound
+  server.
+- **`StreamProtocol` hooks** with default implementations: `reject(stream,
+  RejectReason, retry_after)`, `FRAMED_REQUESTS` and `begin_request`.
+
+- **CLI rate-limit and logging flags:** `--rate`, `--burst` (default: the
+  rate), `--accept-rate`, `--accept-burst` (default: the accept rate),
+  `--max-connections` (default 1000 for tcp/http, 100 for unix-stream) and
+  `--log-level` (default `info`; `RUST_LOG` still overrides it). The help
+  states every default.
+- **`defaults` module** with the default protocol, host, port and Unix socket
+  paths used by the binary and the Unix configs.
+- **Client error classification:** `EchoError::io_error_kind()` (the
+  `std::io::ErrorKind` of `Tcp`/`Udp`/`Unix` errors), `is_rate_limited()`
+  (HTTP `429`) and `retry_after()`.
+- **`EchoError::HttpStatus { status, reason, retry_after, body }`**, returned
+  by `HttpEchoClient` for a non-2xx response; `retry_after` is the parsed
+  `Retry-After` header (delay-seconds form).
+- **`echosrv-client`**, a load-testing binary for the echo servers. It runs
+  `-n` requests or continuously (`-d`, Ctrl-C) over `-c` workers, with
+  persistent or per-request connections, checks every echo byte for byte, and
+  reports live intervals, outage start/end events and a summary (latency
+  percentiles, errors by kind, outages) as text or JSON lines (`--json`). It
+  can shape traffic (`--rate`/`--burst`), honor HTTP `Retry-After`, and caps
+  new connections at 100/s by default (`--conn-rate`) with exponential
+  backoff after errors, so by default it does not exhaust the machine's
+  ephemeral ports. `SIGTERM`, Ctrl-C and the end of `--duration` stop it
+  gracefully: requests in flight finish and are counted. Its exit status
+  reflects the run (`--max-error-rate`). See the README.
+
+### Changed
+
+- **CLI:** the argument parser is now clap. Arguments and behavior are the
+  same (positional `[PROTOCOL] [PORT|SOCKET_PATH]`, `--host`, exit status 1 on
+  usage errors), but error messages use clap's wording, for example
+  "unexpected argument '--bogus'" instead of "unknown option '--bogus'".
+  `--accept-rate` and `--max-connections` are rejected for `udp` and
+  `unix-dgram`. Logs are colored only when stderr is a terminal and
+  `NO_COLOR` is unset.
+- **Breaking:** the server config structs gained `rate_limit` (and, for
+  stream configs, `accept_rate_limit`). Struct literals without
+  `..Default::default()` must add them.
+- A zero `rate_per_sec` or `burst` in a server's rate limit is a
+  configuration error at `bind()`.
+- HTTP: an invalid request now counts as one request for the rate limit; its
+  error response is sent after the request has been admitted.
+- **Breaking:** clients no longer return a partial echo as success.
+  - The stream clients (`TcpEchoClient`, `UnixStreamEchoClient`) fail with an
+    `UnexpectedEof` I/O error when the server closes the connection before
+    the whole echo arrived (they used to return the bytes received so far).
+  - `HttpEchoClient` reports a non-2xx response as `EchoError::HttpStatus`
+    instead of `EchoError::Http(String)` (the message is unchanged), and a
+    connection closed before the response head or body is complete as an
+    `UnexpectedEof` `Tcp` error instead of `EchoError::Http`.
+  - The datagram clients (`UdpEchoClient`, `UnixDatagramEchoClient`) fail
+    with `EchoError::Config` when a reply is larger than
+    `DatagramClientConfig::buffer_size`, instead of truncating it.
+- `HttpEchoClient` reads responses in chunks of `ClientConfig::buffer_size`
+  (it used a fixed 8 KiB buffer).
+
 ## [0.4.0] - Unreleased
 
 This release makes the servers behave as documented. HTTP now speaks real

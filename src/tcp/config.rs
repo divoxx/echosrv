@@ -1,6 +1,7 @@
 //! TCP server configuration.
 
 use crate::network::BindStrategy;
+use crate::rate_limit::RateLimitConfig;
 use crate::stream::StreamConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -47,6 +48,12 @@ pub struct TcpConfig {
     pub bind_strategy: Option<BindStrategy>,
     /// Service name for inherited-descriptor lookup (default `"tcp"`).
     pub service_name: String,
+    /// Request rate limit (`None`, the default, means unlimited).
+    /// See [`StreamConfig::rate_limit`].
+    pub rate_limit: Option<RateLimitConfig>,
+    /// New-connection rate limit (`None`, the default, means unlimited).
+    /// See [`StreamConfig::accept_rate_limit`].
+    pub accept_rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for TcpConfig {
@@ -59,6 +66,8 @@ impl Default for TcpConfig {
             write_timeout: Duration::from_secs(30),
             bind_strategy: None,
             service_name: "tcp".to_string(),
+            rate_limit: None,
+            accept_rate_limit: None,
         }
     }
 }
@@ -84,6 +93,19 @@ impl TcpConfig {
         });
         self
     }
+
+    /// Limits the request rate (see [`StreamConfig::rate_limit`]).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Limits the new-connection rate (see
+    /// [`StreamConfig::accept_rate_limit`]).
+    pub fn with_accept_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.accept_rate_limit = Some(limit);
+        self
+    }
 }
 
 impl From<TcpConfig> for StreamConfig {
@@ -96,6 +118,8 @@ impl From<TcpConfig> for StreamConfig {
             write_timeout: config.write_timeout,
             bind_strategy: config.bind_strategy,
             service_name: config.service_name,
+            rate_limit: config.rate_limit,
+            accept_rate_limit: config.accept_rate_limit,
         }
     }
 }
@@ -117,6 +141,8 @@ mod tests {
                 "127.0.0.1:7001".parse().unwrap(),
             ))),
             service_name: "custom".into(),
+            rate_limit: Some(RateLimitConfig::new(5, 6)),
+            accept_rate_limit: Some(RateLimitConfig::new(7, 8)),
         };
         let stream: StreamConfig = config.into();
         assert_eq!(stream.bind_addr, "0.0.0.0:7000".parse().unwrap());
@@ -125,6 +151,8 @@ mod tests {
         assert_eq!(stream.read_timeout, Duration::from_millis(123));
         assert_eq!(stream.write_timeout, Duration::from_millis(456));
         assert_eq!(stream.service_name, "custom");
+        assert_eq!(stream.rate_limit, Some(RateLimitConfig::new(5, 6)));
+        assert_eq!(stream.accept_rate_limit, Some(RateLimitConfig::new(7, 8)));
         match stream.bind_strategy {
             Some(BindStrategy::Bind(BindTarget::Network(addr))) => {
                 assert_eq!(addr, "127.0.0.1:7001".parse().unwrap())

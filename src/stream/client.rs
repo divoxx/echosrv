@@ -49,10 +49,14 @@ impl Default for ClientConfig {
 /// [`echo`](EchoClient::echo) call.
 ///
 /// `echo` writes the payload and, concurrently, reads until the same number
-/// of bytes has come back (or the server closes the connection, in which case
-/// the bytes received so far are returned). An empty payload returns an empty
-/// response without touching the socket. Payloads larger than
-/// [`ClientConfig::max_response_size`] are rejected with [`EchoError::Config`].
+/// of bytes has come back. It never returns a partial echo: if the server
+/// closes the connection first, `echo` fails with an
+/// [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) I/O error (in the
+/// protocol's variant, e.g. [`EchoError::Tcp`]), and if a read stalls for
+/// [`ClientConfig::read_timeout`] it fails with [`EchoError::Timeout`]. An
+/// empty payload returns an empty response without touching the socket.
+/// Payloads larger than [`ClientConfig::max_response_size`] are rejected with
+/// [`EchoError::Config`].
 ///
 /// # Examples
 ///
@@ -168,7 +172,18 @@ where
                 // `expected` bytes have arrived.
                 while response.len() < expected {
                     let n = match timeout(read_timeout, reader.read(&mut buffer)).await {
-                        Ok(Ok(0)) => break, // Connection closed: return what we have.
+                        Ok(Ok(0)) => {
+                            // Closed before the whole echo arrived: never
+                            // return a partial echo as success.
+                            let eof = std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                format!(
+                                    "Connection closed after {} of {expected} bytes",
+                                    response.len()
+                                ),
+                            );
+                            return Err(P::map_io_error(eof).into());
+                        }
                         Ok(Ok(n)) => n,
                         Ok(Err(e)) => return Err(P::map_io_error(e).into()),
                         Err(_) => {
@@ -527,21 +542,74 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn early_eof_returns_partial_response() {
-        // The server replies with fewer bytes and closes: the client returns
-        // what it got rather than an error.
+    /// A one-connection server that reads one chunk, replies with `reply`
+    /// and closes the connection.
+    async fn closing_server(reply: &'static [u8]) -> (SocketAddr, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 16];
             let _ = stream.read(&mut buf).await.unwrap();
-            stream.write_all(b"ab").await.unwrap();
+            stream.write_all(reply).await.unwrap();
         });
+        (addr, server)
+    }
+
+    #[tokio::test]
+    async fn early_eof_is_unexpected_eof_not_a_partial_echo() {
+        // The server replies with fewer bytes and closes.
+        let (addr, server) = closing_server(b"ab").await;
         let mut client = TcpClient::connect(addr).await.unwrap();
-        assert_eq!(client.echo(b"abcde").await.unwrap(), b"ab");
+        let err = client.echo(b"abcde").await.unwrap_err();
+        assert!(matches!(err, EchoError::Tcp(_)), "{err:?}");
+        assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::UnexpectedEof));
+        assert!(err.to_string().contains("after 2 of 5 bytes"), "{err}");
         server.await.unwrap();
+
+        // Closed without replying at all.
+        let (addr, server) = closing_server(b"").await;
+        let mut client = TcpClient::connect(addr).await.unwrap();
+        let err = client.echo(b"abc").await.unwrap_err();
+        assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::UnexpectedEof));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unix_early_eof_is_a_unix_error() {
+        use crate::unix::UnixStreamProtocol;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eof.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 16];
+            let _ = stream.read(&mut buf).await.unwrap();
+            stream.write_all(b"a").await.unwrap();
+        });
+        let mut client = Client::<UnixStreamProtocol>::connect(path).await.unwrap();
+        let err = client.echo(b"abc").await.unwrap_err();
+        assert!(matches!(err, EchoError::Unix(_)), "{err:?}");
+        assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::UnexpectedEof));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unix_connect_to_missing_path_is_not_found() {
+        use crate::unix::UnixStreamProtocol;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = ClientConfigBuilder::new()
+            .connect_timeout(Duration::from_secs(5))
+            .build();
+        let err =
+            Client::<UnixStreamProtocol>::connect_with_config(dir.path().join("none.sock"), config)
+                .await
+                .err()
+                .expect("connected to a missing socket");
+        assert!(matches!(err, EchoError::Unix(_)), "{err:?}");
+        assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::NotFound));
     }
 
     #[tokio::test]

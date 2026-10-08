@@ -3,6 +3,7 @@
 use crate::Result;
 use crate::common::EchoClient;
 use crate::datagram::DatagramClientConfig;
+use crate::datagram::client::{finish_reply, reply_buffer};
 use crate::unix::datagram_protocol::{ManagedUnixDatagram, UnixDatagramExt, UnixDatagramProtocol};
 use crate::unix::stream_protocol::UnixStreamProtocol;
 use crate::{EchoError, stream::Client};
@@ -44,6 +45,12 @@ pub type UnixStreamEchoClient = Client<UnixStreamProtocol>;
 /// [`echo`](EchoClient::echo) sends one datagram and returns the next datagram
 /// received (default timeouts 5 s, 64 KiB receive buffer; see
 /// [`DatagramClientConfig`]).
+///
+/// Errors: a missing server socket is an [`EchoError::Unix`] with
+/// [`NotFound`](std::io::ErrorKind::NotFound) (a stale socket file with no
+/// server gives `ConnectionRefused`); no reply within `read_timeout` is an
+/// [`EchoError::Timeout`]; a reply larger than `buffer_size` is an
+/// [`EchoError::Config`] rather than a truncated echo.
 ///
 /// # Examples
 ///
@@ -112,7 +119,7 @@ impl EchoClient for UnixDatagramEchoClient {
         .map_err(|_| EchoError::Timeout("Datagram send timeout".to_string()))?
         .map_err(EchoError::Unix)?;
 
-        let mut buffer = vec![0u8; self.config.buffer_size];
+        let mut buffer = reply_buffer(self.config.buffer_size);
         let (len, _) = timeout(
             self.config.read_timeout,
             self.socket.get_ref().recv_from(&mut buffer),
@@ -121,7 +128,6 @@ impl EchoClient for UnixDatagramEchoClient {
         .map_err(|_| EchoError::Timeout("Datagram receive timeout".to_string()))?
         .map_err(EchoError::Unix)?;
 
-        buffer.truncate(len);
-        Ok(buffer)
+        finish_reply(buffer, len, self.config.buffer_size)
     }
 }

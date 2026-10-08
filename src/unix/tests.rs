@@ -577,7 +577,44 @@ async fn test_unix_datagram_client_send_to_missing_server_fails() {
     let mut client = UnixDatagramEchoClient::connect(dir.path().join("missing.sock"))
         .await
         .unwrap();
-    assert!(matches!(client.echo(b"x").await, Err(EchoError::Unix(_))));
+    let err = client.echo(b"x").await.unwrap_err();
+    assert!(matches!(err, EchoError::Unix(_)), "{err:?}");
+    assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::NotFound));
+}
+
+#[tokio::test]
+async fn test_unix_datagram_client_send_to_stale_socket_is_refused() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("stale.sock");
+    // A socket file left behind with nobody bound to it any more.
+    drop(std::os::unix::net::UnixDatagram::bind(&path).unwrap());
+    assert!(path.exists());
+    let mut client = UnixDatagramEchoClient::connect(path).await.unwrap();
+    let err = client.echo(b"x").await.unwrap_err();
+    assert_eq!(
+        err.io_error_kind(),
+        Some(std::io::ErrorKind::ConnectionRefused),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_unix_datagram_client_rejects_reply_larger_than_buffer() {
+    let server = DatagramServer::start().await;
+    let config = DatagramClientConfig {
+        buffer_size: 4,
+        ..Default::default()
+    };
+    let mut client = UnixDatagramEchoClient::connect_with_config(server.path.clone(), config)
+        .await
+        .unwrap();
+    match client.echo(b"12345").await {
+        Err(EchoError::Config(msg)) => assert!(msg.contains("buffer_size of 4"), "{msg}"),
+        other => panic!("expected Config error, got {other:?}"),
+    }
+    assert_eq!(client.echo(b"1234").await.unwrap(), b"1234");
+    drop(client);
+    server.stop().await;
 }
 
 #[tokio::test]

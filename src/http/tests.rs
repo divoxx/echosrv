@@ -2,10 +2,10 @@ use super::client::HttpEchoClient;
 use super::config::HttpConfig;
 use super::protocol::{
     HTTP_SETTINGS, HeadOutcome, HttpProtocol, HttpProtocolError, HttpSettings, MAX_HEADER_BYTES,
-    RequestHead, parse_content_length, parse_head, response_head,
+    Rejection, RequestHead, parse_content_length, parse_head, response_head,
 };
 use crate::common::EchoClient;
-use crate::stream::StreamProtocol;
+use crate::stream::{RejectReason, StreamProtocol};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,16 +165,42 @@ fn parse_content_length_values() {
 
 #[test]
 fn response_head_format() {
-    let head = response_head(200, "OK", Some("S/1"), Some("text/plain"), 5, false);
+    let head = response_head(200, "OK", Some("S/1"), Some("text/plain"), 5, &[]);
     assert_eq!(
         head,
         b"HTTP/1.1 200 OK\r\nServer: S/1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\n"
     );
-    let head = response_head(405, "Method Not Allowed", None, None, 0, true);
+    let head = response_head(
+        405,
+        "Method Not Allowed",
+        None,
+        None,
+        0,
+        &[("Allow", "POST".to_string())],
+    );
     assert_eq!(
         head,
         b"HTTP/1.1 405 Method Not Allowed\r\nAllow: POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
+}
+
+#[test]
+fn too_many_requests_rounds_retry_after_up_to_whole_seconds() {
+    for (retry_after, secs) in [
+        (Duration::ZERO, 1),
+        (Duration::from_nanos(1), 1),
+        (Duration::from_millis(999), 1),
+        (Duration::from_secs(1), 1),
+        (Duration::from_millis(1001), 2),
+        (Duration::from_millis(2500), 3),
+        (Duration::from_secs(60), 60),
+    ] {
+        let rejection = Rejection::too_many_requests(retry_after);
+        assert_eq!(rejection.status, 429);
+        assert_eq!(rejection.reason, "Too Many Requests");
+        assert_eq!(rejection.retry_after_secs, Some(secs), "{retry_after:?}");
+        assert!(!rejection.allow_post);
+    }
 }
 
 #[test]
@@ -403,6 +429,133 @@ async fn accept_outside_http_server_uses_default_settings() {
 }
 
 // ---------------------------------------------------------------------------
+// Rate-limit rejection
+// ---------------------------------------------------------------------------
+
+/// Accepts one connection, optionally runs `begin_request`, then rejects it
+/// with `reason`. Returns what `begin_request` returned (or `None`).
+async fn reject_one(
+    reason: RejectReason,
+    retry_after: Duration,
+) -> (SocketAddr, JoinHandle<Option<bool>>) {
+    let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(HTTP_SETTINGS.scope(Arc::new(test_settings()), async move {
+        let (mut stream, _) = HttpProtocol::accept(&mut listener).await.unwrap();
+        let begun = match reason {
+            RejectReason::RateLimited => {
+                Some(HttpProtocol::begin_request(&mut stream).await.unwrap())
+            }
+            RejectReason::ConnectionRateLimited => None,
+        };
+        HttpProtocol::reject(&mut stream, reason, retry_after)
+            .await
+            .unwrap();
+        begun
+    }));
+    (addr, handle)
+}
+
+fn assert_429(raw: &[u8], retry_after_secs: u64) {
+    let (head, body) = split_response(raw);
+    assert!(
+        head.starts_with("HTTP/1.1 429 Too Many Requests\r\n"),
+        "{head}"
+    );
+    assert!(
+        head.contains(&format!("Retry-After: {retry_after_secs}\r\n")),
+        "{head}"
+    );
+    assert!(head.contains("Connection: close\r\n"), "{head}");
+    assert!(head.contains("Server: UnitTest/1\r\n"), "{head}");
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "{head}"
+    );
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("Rate limit exceeded")
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_request_gets_429_instead_of_echo() {
+    let (addr, server) = reject_one(RejectReason::RateLimited, Duration::from_millis(1500)).await;
+    let raw = exchange(
+        addr,
+        &[b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"],
+    )
+    .await;
+    assert_429(&raw, 2);
+    assert_eq!(server.await.unwrap(), Some(true));
+}
+
+#[tokio::test]
+async fn connection_rejected_before_request_reads_head_then_429() {
+    let (addr, server) = reject_one(
+        RejectReason::ConnectionRateLimited,
+        Duration::from_millis(10),
+    )
+    .await;
+    // The request arrives in pieces after the server already decided to
+    // reject; the 429 must still be delivered intact (no RST).
+    let raw = exchange(
+        addr,
+        &[
+            b"POST / HTTP/1.1\r\nHost: a\r\n",
+            b"Content-Length: 4\r\n\r\n",
+            b"body",
+        ],
+    )
+    .await;
+    assert_429(&raw, 1);
+    assert_eq!(server.await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn invalid_request_counts_as_a_request_and_can_be_rate_limited() {
+    // begin_request admits an invalid head as a request; if it is then rate
+    // limited, the 429 replaces the 405.
+    let (addr, server) = reject_one(RejectReason::RateLimited, Duration::from_millis(1)).await;
+    let raw = exchange(addr, &[b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"]).await;
+    assert_429(&raw, 1);
+    assert_eq!(raw.windows(9).filter(|w| w == b"HTTP/1.1 ").count(), 1);
+    assert_eq!(server.await.unwrap(), Some(true));
+}
+
+#[tokio::test]
+async fn invalid_request_gets_its_error_response_after_begin_request() {
+    let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = HttpProtocol::accept(&mut listener).await.unwrap();
+        assert!(HttpProtocol::begin_request(&mut stream).await.unwrap());
+        let mut buf = [0u8; 16];
+        assert_eq!(HttpProtocol::read(&mut stream, &mut buf).await.unwrap(), 0);
+        // Rejecting a connection that was already answered sends nothing more.
+        HttpProtocol::reject(&mut stream, RejectReason::RateLimited, Duration::ZERO)
+            .await
+            .unwrap();
+    });
+    let raw = exchange(addr, &[b"GET / HTTP/1.1\r\n\r\n"]).await;
+    let (head, _) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 405 "), "{head}");
+    assert_eq!(raw.windows(9).filter(|w| w == b"HTTP/1.1 ").count(), 1);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn begin_request_is_false_when_peer_closes() {
+    let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = TcpStream::connect(addr).await.unwrap();
+    let (mut stream, _) = HttpProtocol::accept(&mut listener).await.unwrap();
+    drop(client);
+    assert!(!HttpProtocol::begin_request(&mut stream).await.unwrap());
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -437,10 +590,72 @@ async fn client_errors_on_non_2xx() {
         canned_server(b"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope").await;
     let mut client = HttpEchoClient::connect(addr).await.unwrap();
     let err = client.echo(b"x").await.unwrap_err();
-    assert!(matches!(err, crate::EchoError::Http(_)), "{err:?}");
-    let err = err.to_string();
-    assert!(err.contains("404") && err.contains("nope"), "{err}");
+    match &err {
+        crate::EchoError::HttpStatus {
+            status,
+            reason,
+            retry_after,
+            body,
+        } => {
+            assert_eq!(*status, 404);
+            assert_eq!(reason, "Not Found");
+            assert_eq!(*retry_after, None);
+            assert_eq!(body, "nope");
+        }
+        other => panic!("expected HttpStatus, got {other:?}"),
+    }
+    assert!(!err.is_rate_limited());
+    assert_eq!(err.to_string(), "HTTP error: HTTP 404 Not Found: nope");
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_reports_429_with_retry_after() {
+    let (addr, server) = canned_server(
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 4\r\n\r\nslow",
+    )
+    .await;
+    let mut client = HttpEchoClient::connect(addr).await.unwrap();
+    let err = client.echo(b"x").await.unwrap_err();
+    assert!(err.is_rate_limited(), "{err:?}");
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(7)));
+    assert!(matches!(err, crate::EchoError::HttpStatus { ref body, .. } if body == "slow"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_errors_on_close_before_response_head() {
+    for response in [&b""[..], b"HTTP/1.1 200 OK\r\nContent-Le"] {
+        let (addr, server) = canned_server(response).await;
+        let mut client = HttpEchoClient::connect(addr).await.unwrap();
+        let err = client.echo(b"x").await.unwrap_err();
+        assert!(matches!(err, crate::EchoError::Tcp(_)), "{err:?}");
+        assert_eq!(
+            err.io_error_kind(),
+            Some(std::io::ErrorKind::UnexpectedEof),
+            "{err:?}"
+        );
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn client_reads_in_buffer_size_chunks() {
+    let server = crate::HttpEchoServer::new(crate::HttpConfig::default());
+    let bound = server.bind().await.unwrap();
+    let addr = *bound.local_addr().as_network().unwrap();
+    let serving = tokio::spawn(bound.serve());
+
+    let config = crate::stream::ClientConfigBuilder::new()
+        .buffer_size(3)
+        .build();
+    let mut client = HttpEchoClient::connect_with_config(addr, config)
+        .await
+        .unwrap();
+    assert_eq!(client.config().buffer_size, 3);
+    let payload: Vec<u8> = (0..=255u8).cycle().take(10_000).collect();
+    assert_eq!(client.echo(&payload).await.unwrap(), payload);
+    serving.abort();
 }
 
 #[tokio::test]
@@ -448,7 +663,8 @@ async fn client_errors_on_truncated_body() {
     let (addr, server) = canned_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort").await;
     let mut client = HttpEchoClient::connect(addr).await.unwrap();
     let err = client.echo(b"x").await.unwrap_err();
-    assert!(matches!(err, crate::EchoError::Http(_)), "{err:?}");
+    assert!(matches!(err, crate::EchoError::Tcp(_)), "{err:?}");
+    assert_eq!(err.io_error_kind(), Some(std::io::ErrorKind::UnexpectedEof));
     let err = err.to_string();
     assert!(err.contains("truncated"), "{err}");
     server.await.unwrap();

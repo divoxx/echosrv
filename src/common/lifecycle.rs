@@ -1,6 +1,8 @@
 //! Server lifecycle helpers shared by all server implementations:
-//! shutdown signalling, connection accounting and accept-error backoff.
+//! shutdown signalling, connection accounting, rate limiting and accept-error
+//! backoff.
 
+use crate::rate_limit::{Gcra, RateLimitConfig, RateLimited};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,6 +12,44 @@ use tokio::sync::broadcast;
 /// Delay applied after a failed `accept()` (e.g. `EMFILE`) so the server does
 /// not spin in a hot loop while the condition persists.
 pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Upper bound on the time a server spends telling a peer it was rejected by
+/// a rate limit (see `StreamProtocol::reject`) before closing the connection.
+pub(crate) const REJECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The rate limiters of one server, shared by all its connections.
+///
+/// Each limiter is created once per server (in `new()`), so the limit is
+/// global to the server and survives repeated `bind()`/`serve()` calls.
+#[derive(Debug, Default)]
+pub(crate) struct RateLimiters {
+    /// Request limit (`rate_limit`): requests or datagrams.
+    requests: Option<Gcra>,
+    /// New-connection limit (`accept_rate_limit`), stream servers only.
+    connections: Option<Gcra>,
+}
+
+impl RateLimiters {
+    pub(crate) fn new(
+        requests: Option<RateLimitConfig>,
+        connections: Option<RateLimitConfig>,
+    ) -> Self {
+        Self {
+            requests: requests.map(Gcra::new),
+            connections: connections.map(Gcra::new),
+        }
+    }
+
+    /// Admits one request (or datagram) under the request limit.
+    pub(crate) fn check_request(&self) -> Result<(), RateLimited> {
+        self.requests.as_ref().map_or(Ok(()), Gcra::check)
+    }
+
+    /// Admits one new connection under the accept limit.
+    pub(crate) fn check_connection(&self) -> Result<(), RateLimited> {
+        self.connections.as_ref().map_or(Ok(()), Gcra::check)
+    }
+}
 
 /// Shutdown channel whose first receiver is created together with the sender.
 ///
@@ -180,6 +220,34 @@ mod tests {
         .await;
         assert!(joined.unwrap_err().is_panic());
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn rate_limiters_are_independent_and_optional() {
+        let unlimited = RateLimiters::default();
+        for _ in 0..1_000 {
+            assert!(unlimited.check_request().is_ok());
+            assert!(unlimited.check_connection().is_ok());
+        }
+
+        let limited = RateLimiters::new(
+            Some(RateLimitConfig::new(1, 2)),
+            Some(RateLimitConfig::new(1, 1)),
+        );
+        assert!(limited.check_request().is_ok());
+        assert!(limited.check_request().is_ok());
+        let denied = limited.check_request().unwrap_err();
+        assert!(denied.retry_after > Duration::ZERO);
+        // The connection limit has its own budget.
+        assert!(limited.check_connection().is_ok());
+        assert!(limited.check_connection().is_err());
+
+        let requests_only = RateLimiters::new(Some(RateLimitConfig::new(1, 1)), None);
+        assert!(requests_only.check_request().is_ok());
+        assert!(requests_only.check_request().is_err());
+        for _ in 0..10 {
+            assert!(requests_only.check_connection().is_ok());
+        }
     }
 
     #[tokio::test]

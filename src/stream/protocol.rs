@@ -5,6 +5,20 @@ use crate::network::fd_inheritance::FdInheritanceConfig;
 use crate::network::{Address, LocalAddress};
 use async_trait::async_trait;
 use std::net::SocketAddr;
+use std::time::Duration;
+
+/// Why a server is rejecting a connection or request (see
+/// [`StreamProtocol::reject`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RejectReason {
+    /// A request on an established connection exceeded the request rate
+    /// limit ([`StreamConfig::rate_limit`]).
+    RateLimited,
+    /// A newly accepted connection exceeded the new-connection rate limit
+    /// ([`StreamConfig::accept_rate_limit`]). Nothing has been read from the
+    /// stream yet.
+    ConnectionRateLimited,
+}
 
 /// A connection-oriented transport usable by [`StreamEchoServer`] and
 /// [`Client`].
@@ -94,4 +108,47 @@ pub trait StreamProtocol: Send + Sync + 'static {
 
     /// Maps a standard IO error to this protocol's error type
     fn map_io_error(err: std::io::Error) -> Self::Error;
+
+    /// Whether the protocol frames requests itself (server side).
+    ///
+    /// * `false` (the default): the stream is a plain byte stream. For the
+    ///   request rate limit ([`StreamConfig::rate_limit`]) the server counts
+    ///   every non-empty [`read`](Self::read) as one request.
+    /// * `true`: the server calls [`begin_request`](Self::begin_request) once
+    ///   at the start of each connection and counts that as the request. The
+    ///   connection then serves this one request (until `read` returns `0`).
+    const FRAMED_REQUESTS: bool = false;
+
+    /// Reads the start of the request on a new connection (server side,
+    /// only called when [`FRAMED_REQUESTS`](Self::FRAMED_REQUESTS) is `true`).
+    ///
+    /// Returns `Ok(true)` when a request is ready to be served, and
+    /// `Ok(false)` when there is nothing to serve, e.g. the peer closed the
+    /// connection or the protocol already answered with an error. The server
+    /// applies [`StreamConfig::read_timeout`] to the call.
+    ///
+    /// The default implementation returns `Ok(true)` without reading.
+    async fn begin_request(_stream: &mut Self::Stream) -> std::result::Result<bool, Self::Error> {
+        Ok(true)
+    }
+
+    /// Tells the peer it was rejected by a rate limit; the server closes the
+    /// stream right after this returns (server side).
+    ///
+    /// `retry_after` is the earliest time at which the request would have
+    /// been admitted. The server bounds the call with a timeout, counts the
+    /// rejection in [`ServerStats`](crate::ServerStats) and logs it at
+    /// `debug` level, so implementations need not do either.
+    ///
+    /// The default implementation does nothing, so the connection is simply
+    /// closed. [`TcpProtocol`](crate::tcp::TcpProtocol) resets the
+    /// connection, and [`HttpProtocol`](crate::http::HttpProtocol) answers
+    /// `429 Too Many Requests`.
+    async fn reject(
+        _stream: &mut Self::Stream,
+        _reason: RejectReason,
+        _retry_after: Duration,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
 }

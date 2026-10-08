@@ -2,6 +2,7 @@
 
 use crate::datagram::{DEFAULT_DATAGRAM_BUFFER_SIZE, DatagramConfig};
 use crate::network::BindStrategy;
+use crate::rate_limit::RateLimitConfig;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -40,6 +41,9 @@ pub struct UdpConfig {
     pub bind_strategy: Option<BindStrategy>,
     /// Service name for inherited-descriptor lookup (default `"udp"`).
     pub service_name: String,
+    /// Datagram rate limit (`None`, the default, means unlimited).
+    /// See [`DatagramConfig::rate_limit`].
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for UdpConfig {
@@ -51,6 +55,7 @@ impl Default for UdpConfig {
             write_timeout: Duration::from_secs(30),
             bind_strategy: None,
             service_name: "udp".to_string(),
+            rate_limit: None,
         }
     }
 }
@@ -76,6 +81,12 @@ impl UdpConfig {
         });
         self
     }
+
+    /// Limits the datagram rate (see [`DatagramConfig::rate_limit`]).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
 }
 
 impl From<UdpConfig> for DatagramConfig {
@@ -87,6 +98,7 @@ impl From<UdpConfig> for DatagramConfig {
             write_timeout: config.write_timeout,
             bind_strategy: config.bind_strategy,
             service_name: config.service_name,
+            rate_limit: config.rate_limit,
         }
     }
 }
@@ -107,6 +119,7 @@ mod tests {
                 "127.0.0.1:5301".parse().unwrap(),
             ))),
             service_name: "dns".into(),
+            rate_limit: Some(RateLimitConfig::new(5, 6)),
         };
         let dgram: DatagramConfig = config.into();
         assert_eq!(dgram.bind_addr, "[::]:5300".parse().unwrap());
@@ -114,6 +127,7 @@ mod tests {
         assert_eq!(dgram.read_timeout, Duration::from_millis(11));
         assert_eq!(dgram.write_timeout, Duration::from_millis(22));
         assert_eq!(dgram.service_name, "dns");
+        assert_eq!(dgram.rate_limit, Some(RateLimitConfig::new(5, 6)));
         match dgram.bind_strategy {
             Some(BindStrategy::Bind(BindTarget::Network(addr))) => {
                 assert_eq!(addr, "127.0.0.1:5301".parse().unwrap())

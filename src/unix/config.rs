@@ -1,7 +1,9 @@
 //! Unix domain stream and datagram server configuration.
 
 use crate::datagram::DatagramConfig;
+use crate::defaults::{DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH};
 use crate::network::fd_inheritance::{BindStrategy, BindTarget};
+use crate::rate_limit::RateLimitConfig;
 use crate::stream::StreamConfig;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -45,17 +47,27 @@ pub struct UnixStreamConfig {
     pub read_timeout: Duration,
     /// Timeout for echoing each chunk back; the connection is closed on expiry.
     pub write_timeout: Duration,
+    /// Request rate limit (`None`, the default, means unlimited). Every chunk
+    /// read counts as one request; an over-limit connection is closed.
+    /// See [`StreamConfig::rate_limit`].
+    pub rate_limit: Option<RateLimitConfig>,
+    /// New-connection rate limit (`None`, the default, means unlimited).
+    /// Over-limit connections are closed right after accept.
+    /// See [`StreamConfig::accept_rate_limit`].
+    pub accept_rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for UnixStreamConfig {
     fn default() -> Self {
         Self {
-            bind_strategy: BindStrategy::Bind(BindTarget::Unix("/tmp/echosrv_stream.sock".into())),
+            bind_strategy: BindStrategy::Bind(BindTarget::Unix(DEFAULT_UNIX_STREAM_PATH.into())),
             service_name: "unix-stream".to_string(),
             max_connections: 100,
             buffer_size: 1024,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
+            rate_limit: None,
+            accept_rate_limit: None,
         }
     }
 }
@@ -84,6 +96,19 @@ impl UnixStreamConfig {
         self.service_name = service_name;
         self
     }
+
+    /// Limits the request rate (see [`rate_limit`](Self::rate_limit)).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Limits the new-connection rate (see
+    /// [`accept_rate_limit`](Self::accept_rate_limit)).
+    pub fn with_accept_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.accept_rate_limit = Some(limit);
+        self
+    }
 }
 
 impl From<UnixStreamConfig> for StreamConfig {
@@ -99,6 +124,8 @@ impl From<UnixStreamConfig> for StreamConfig {
             write_timeout: config.write_timeout,
             bind_strategy: Some(config.bind_strategy),
             service_name: config.service_name,
+            rate_limit: config.rate_limit,
+            accept_rate_limit: config.accept_rate_limit,
         }
     }
 }
@@ -136,18 +163,20 @@ pub struct UnixDatagramConfig {
     pub read_timeout: Duration,
     /// Timeout for sending each reply.
     pub write_timeout: Duration,
+    /// Datagram rate limit (`None`, the default, means unlimited). Over-limit
+    /// datagrams are dropped. See [`DatagramConfig::rate_limit`].
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for UnixDatagramConfig {
     fn default() -> Self {
         Self {
-            bind_strategy: BindStrategy::Bind(BindTarget::Unix(
-                "/tmp/echosrv_datagram.sock".into(),
-            )),
+            bind_strategy: BindStrategy::Bind(BindTarget::Unix(DEFAULT_UNIX_DGRAM_PATH.into())),
             service_name: "unix-datagram".to_string(),
             buffer_size: crate::datagram::DEFAULT_DATAGRAM_BUFFER_SIZE,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
+            rate_limit: None,
         }
     }
 }
@@ -176,6 +205,12 @@ impl UnixDatagramConfig {
         self.service_name = service_name;
         self
     }
+
+    /// Limits the datagram rate (see [`rate_limit`](Self::rate_limit)).
+    pub fn with_rate_limit(mut self, limit: RateLimitConfig) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
 }
 
 impl From<UnixDatagramConfig> for DatagramConfig {
@@ -190,6 +225,7 @@ impl From<UnixDatagramConfig> for DatagramConfig {
             write_timeout: config.write_timeout,
             bind_strategy: Some(config.bind_strategy),
             service_name: config.service_name,
+            rate_limit: config.rate_limit,
         }
     }
 }
@@ -263,7 +299,10 @@ mod tests {
             buffer_size: 33,
             read_timeout: Duration::from_millis(5),
             write_timeout: Duration::from_millis(6),
-            ..UnixStreamConfig::default().with_fd_inheritance("custom".into(), "/run/e.sock".into())
+            ..UnixStreamConfig::default()
+                .with_fd_inheritance("custom".into(), "/run/e.sock".into())
+                .with_rate_limit(RateLimitConfig::new(5, 6))
+                .with_accept_rate_limit(RateLimitConfig::new(7, 8))
         };
         let stream: StreamConfig = config.into();
         assert_eq!(stream.max_connections, 2);
@@ -271,6 +310,8 @@ mod tests {
         assert_eq!(stream.read_timeout, Duration::from_millis(5));
         assert_eq!(stream.write_timeout, Duration::from_millis(6));
         assert_eq!(stream.service_name, "custom");
+        assert_eq!(stream.rate_limit, Some(RateLimitConfig::new(5, 6)));
+        assert_eq!(stream.accept_rate_limit, Some(RateLimitConfig::new(7, 8)));
         // The Unix strategy always overrides the (unused) network bind_addr.
         assert_inherit_or_bind_path(stream.bind_strategy.as_ref().unwrap(), "/run/e.sock");
         assert_inherit_or_bind_path(&stream.effective_bind_strategy(), "/run/e.sock");
@@ -283,13 +324,16 @@ mod tests {
             buffer_size: 44,
             read_timeout: Duration::from_millis(7),
             write_timeout: Duration::from_millis(8),
-            ..UnixDatagramConfig::default().with_socket_path("/run/f.sock".into())
+            ..UnixDatagramConfig::default()
+                .with_socket_path("/run/f.sock".into())
+                .with_rate_limit(RateLimitConfig::new(9, 10))
         };
         let dgram: DatagramConfig = config.into();
         assert_eq!(dgram.buffer_size, 44);
         assert_eq!(dgram.read_timeout, Duration::from_millis(7));
         assert_eq!(dgram.write_timeout, Duration::from_millis(8));
         assert_eq!(dgram.service_name, "unix-datagram");
+        assert_eq!(dgram.rate_limit, Some(RateLimitConfig::new(9, 10)));
         assert_bind_path(&dgram.effective_bind_strategy(), "/run/f.sock");
         dgram.validate().unwrap();
     }

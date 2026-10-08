@@ -35,6 +35,51 @@ async fn test_zero_buffer_rejected() {
 }
 
 #[tokio::test]
+async fn test_zero_rate_limit_rejected_at_bind() {
+    let config = TcpConfig::default().with_rate_limit(crate::RateLimitConfig::new(0, 1));
+    let server = TcpEchoServer::new(config.into());
+    match server.bind().await {
+        Err(EchoError::Config(msg)) => assert!(msg.contains("rate_limit"), "{msg}"),
+        Err(other) => panic!("expected Config error, got {other:?}"),
+        Ok(_) => panic!("a zero rate limit was accepted"),
+    }
+}
+
+#[tokio::test]
+async fn test_reject_resets_the_connection() {
+    use crate::stream::{RejectReason, StreamProtocol};
+    use crate::tcp::TcpProtocol;
+    use tokio::io::AsyncReadExt;
+
+    let mut listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (mut stream, _) = TcpProtocol::accept(&mut listener).await.unwrap();
+    TcpProtocol::reject(
+        &mut stream,
+        RejectReason::ConnectionRateLimited,
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    drop(stream);
+
+    let mut buf = [0u8; 8];
+    let err = tokio::time::timeout(Duration::from_secs(5), client.read(&mut buf))
+        .await
+        .expect("connection was not closed")
+        .expect_err("expected a reset, got a clean close");
+    assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+}
+
+#[tokio::test]
+async fn test_stats_handle_is_shared_with_bound_server() {
+    let server = TcpEchoServer::new(TcpConfig::default().into());
+    let bound = server.bind().await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&server.stats(), &bound.stats()));
+}
+
+#[tokio::test]
 async fn test_inherited_listener_is_served_and_owned_once() {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = std_listener.local_addr().unwrap();

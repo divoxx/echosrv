@@ -1,16 +1,18 @@
 //! The generic stream echo server, [`StreamEchoServer`].
 
-use super::{StreamConfig, StreamProtocol};
-use crate::common::EchoServerTrait;
+use super::{RejectReason, StreamConfig, StreamProtocol};
 use crate::common::lifecycle::{
-    ACCEPT_ERROR_BACKOFF, ConnectionGuard, ShutdownSignal, wait_for_shutdown,
+    ACCEPT_ERROR_BACKOFF, ConnectionGuard, REJECT_TIMEOUT, RateLimiters, ShutdownSignal,
+    wait_for_shutdown,
 };
+use crate::common::{EchoServerTrait, ServerStats};
 use crate::network::{Address, FdInheritanceConfig, LocalAddress};
 use crate::{EchoError, Result};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -25,6 +27,10 @@ use tracing::{Instrument, debug, error, info, trace, warn};
 /// Features:
 /// * bounded concurrency (`max_connections`; extra connections are closed),
 /// * per-read and per-write timeouts,
+/// * optional request and new-connection rate limits
+///   ([`StreamConfig::rate_limit`], [`StreamConfig::accept_rate_limit`]);
+///   over-limit traffic is rejected through [`StreamProtocol::reject`] and
+///   counted in [`stats`](Self::stats),
 /// * graceful shutdown via [`EchoServerTrait::shutdown_signal`] — in-flight
 ///   connections are cancelled and awaited before `run()` returns,
 /// * socket inheritance via [`StreamConfig::bind_strategy`].
@@ -81,6 +87,8 @@ pub struct StreamEchoServer<P: StreamProtocol> {
     config: StreamConfig,
     protocol: std::marker::PhantomData<P>,
     shutdown: ShutdownSignal,
+    limiters: Arc<RateLimiters>,
+    stats: Arc<ServerStats>,
 }
 
 impl<P: StreamProtocol> StreamEchoServer<P>
@@ -90,6 +98,11 @@ where
     /// Creates a new stream-based echo server with the given configuration
     pub fn new(config: StreamConfig) -> Self {
         Self {
+            limiters: Arc::new(RateLimiters::new(
+                config.rate_limit,
+                config.accept_rate_limit,
+            )),
+            stats: Arc::new(ServerStats::default()),
             config,
             protocol: std::marker::PhantomData,
             shutdown: ShutdownSignal::new(),
@@ -99,6 +112,14 @@ where
     /// The server configuration.
     pub fn config(&self) -> &StreamConfig {
         &self.config
+    }
+
+    /// The server's counters (rate-limit rejections).
+    ///
+    /// The handle is shared with every bound server created from this one,
+    /// so it can be read while the server runs.
+    pub fn stats(&self) -> Arc<ServerStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Validates the configuration and creates the listening socket.
@@ -121,6 +142,8 @@ where
             local_addr,
             config: self.config.clone(),
             shutdown_rx: self.shutdown.receiver(),
+            limiters: Arc::clone(&self.limiters),
+            stats: Arc::clone(&self.stats),
         })
     }
 }
@@ -133,6 +156,8 @@ pub struct BoundStreamServer<P: StreamProtocol> {
     local_addr: Address,
     config: StreamConfig,
     shutdown_rx: broadcast::Receiver<()>,
+    limiters: Arc<RateLimiters>,
+    stats: Arc<ServerStats>,
 }
 
 impl<P> BoundStreamServer<P>
@@ -146,6 +171,11 @@ where
         &self.local_addr
     }
 
+    /// The server's counters; the same handle as [`StreamEchoServer::stats`].
+    pub fn stats(&self) -> Arc<ServerStats> {
+        Arc::clone(&self.stats)
+    }
+
     /// Accepts and serves connections until shutdown is requested.
     ///
     /// On shutdown the listener is closed, in-flight connection tasks are
@@ -156,11 +186,14 @@ where
             local_addr,
             config,
             mut shutdown_rx,
+            limiters,
+            stats,
         } = self;
 
         info!(address = %local_addr, max_connections = config.max_connections, "Stream echo server listening");
 
         let config = Arc::new(config);
+        let limits = Limits { limiters, stats };
         let active = Arc::new(AtomicUsize::new(0));
         let cancel = CancellationToken::new();
         let mut tasks = JoinSet::new();
@@ -187,16 +220,38 @@ where
                                 drop(stream);
                                 continue;
                             };
+                            let cancel = cancel.clone();
+                            let span = tracing::debug_span!("connection", %addr);
+
+                            if let Err(limited) = limits.limiters.check_connection() {
+                                let total = limits.stats.inc_rejected_connections();
+                                debug!(%addr, retry_after = ?limited.retry_after, total, "Connection rejected: accept rate limited");
+                                // Rejecting may involve I/O (e.g. HTTP reads the
+                                // request and answers 429), so do it off the accept
+                                // loop. The guard bounds how many run at once.
+                                tasks.spawn(
+                                    async move {
+                                        let _guard = guard;
+                                        let mut stream = stream;
+                                        tokio::select! {
+                                            () = send_rejection::<P>(&mut stream, RejectReason::ConnectionRateLimited, limited.retry_after) => {}
+                                            _ = cancel.cancelled() => {}
+                                        }
+                                    }
+                                    .instrument(span),
+                                );
+                                continue;
+                            }
+
                             debug!(%addr, active = guard.active(), "Accepted connection");
 
                             let config = Arc::clone(&config);
-                            let cancel = cancel.clone();
-                            let span = tracing::debug_span!("connection", %addr);
+                            let limits = limits.clone();
                             tasks.spawn(
                                 async move {
                                     let _guard = guard;
                                     tokio::select! {
-                                        result = handle_connection::<P>(stream, addr, &config) => {
+                                        result = handle_connection::<P>(stream, addr, &config, &limits) => {
                                             if let Err(e) = result {
                                                 warn!(error = %e, "Error handling connection");
                                             }
@@ -230,16 +285,73 @@ where
     }
 }
 
-/// Echoes everything read from `stream` back to it until EOF, error or timeout.
+/// Rate limiters and counters shared by the connection tasks of one server.
+#[derive(Clone)]
+struct Limits {
+    limiters: Arc<RateLimiters>,
+    stats: Arc<ServerStats>,
+}
+
+impl Limits {
+    /// Admits one request, or rejects it: counts and logs the rejection and
+    /// lets the protocol tell the peer. Returns `false` if rejected, in which
+    /// case the caller must close the connection.
+    async fn admit_request<P>(&self, stream: &mut P::Stream, addr: SocketAddr) -> bool
+    where
+        P: StreamProtocol,
+        P::Error: Into<EchoError> + std::fmt::Display,
+    {
+        let Err(limited) = self.limiters.check_request() else {
+            return true;
+        };
+        let total = self.stats.inc_rejected_requests();
+        debug!(%addr, retry_after = ?limited.retry_after, total, "Request rejected: rate limited");
+        send_rejection::<P>(stream, RejectReason::RateLimited, limited.retry_after).await;
+        false
+    }
+}
+
+/// Runs [`StreamProtocol::reject`] bounded by [`REJECT_TIMEOUT`]. Failures are
+/// only logged (at debug level): the connection is closed either way.
+async fn send_rejection<P>(stream: &mut P::Stream, reason: RejectReason, retry_after: Duration)
+where
+    P: StreamProtocol,
+    P::Error: Into<EchoError> + std::fmt::Display,
+{
+    match timeout(REJECT_TIMEOUT, P::reject(stream, reason, retry_after)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => debug!(error = %e, ?reason, "Failed to signal rejection"),
+        Err(_) => debug!(?reason, "Timed out signalling rejection"),
+    }
+}
+
+/// Echoes everything read from `stream` back to it until EOF, error, timeout
+/// or a rate-limit rejection.
 async fn handle_connection<P>(
     mut stream: P::Stream,
     addr: SocketAddr,
     config: &StreamConfig,
+    limits: &Limits,
 ) -> Result<()>
 where
     P: StreamProtocol,
     P::Error: Into<EchoError> + std::fmt::Display,
 {
+    if P::FRAMED_REQUESTS {
+        match timeout(config.read_timeout, P::begin_request(&mut stream)).await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Ok(()),
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                debug!(%addr, "Read timeout, closing idle connection");
+                return Ok(());
+            }
+        }
+        if !limits.admit_request::<P>(&mut stream, addr).await {
+            return Ok(());
+        }
+    }
+
     let mut buffer = vec![0; config.buffer_size];
 
     loop {
@@ -254,6 +366,10 @@ where
 
         if n == 0 {
             debug!(%addr, "Client closed connection");
+            break;
+        }
+
+        if !P::FRAMED_REQUESTS && !limits.admit_request::<P>(&mut stream, addr).await {
             break;
         }
 

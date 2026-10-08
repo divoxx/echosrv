@@ -43,6 +43,11 @@
 //!   ```
 //!   An empty body still gets a response, with `Content-Length: 0`. The body
 //!   is streamed back while it is read, so it is never fully buffered.
+//! * **Rate limits.** With [`HttpConfig::rate_limit`], a request over the
+//!   limit gets `429 Too Many Requests` instead of the echo. With
+//!   [`HttpConfig::accept_rate_limit`], a connection over the limit has its
+//!   request head read and then gets the same `429`. The response carries
+//!   `Retry-After: <seconds>` (rounded up, at least 1).
 //! * **Error responses** use `Content-Type: text/plain; charset=utf-8` and a
 //!   short explanation as the body. They also carry `Server` and
 //!   `Connection: close`.
@@ -52,7 +57,13 @@
 //! # Client
 //!
 //! [`HttpEchoClient`] sends `POST / HTTP/1.1` with `Content-Length`. It
-//! returns the response body and fails on any non-2xx status.
+//! returns the response body and fails on any non-2xx status with
+//! [`EchoError::HttpStatus`](crate::EchoError::HttpStatus), which carries the
+//! status, body and `Retry-After` delay (see
+//! [`EchoError::is_rate_limited`](crate::EchoError::is_rate_limited)). A
+//! response cut short by the server closing the connection is an
+//! [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) error, never a
+//! partial body.
 //!
 //! # Example
 //!
