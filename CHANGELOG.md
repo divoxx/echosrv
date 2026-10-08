@@ -101,6 +101,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EchoError::Tcp` ("TCP error: FD inheritance error: ..."). The new
   `HttpProtocolError::Bind` variant carries the original `EchoError` and
   converts back into it unchanged.
+- The datagram servers (UDP, Unix datagram) no longer spin in a busy loop
+  when `recv_from` keeps failing. They wait 100 ms after each failed receive
+  (shutdown still interrupts the wait) and log the first failure and then
+  every 100th at `error`, the others at `debug`.
 
 ## [0.4.0] - Unreleased
 
