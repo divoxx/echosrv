@@ -150,6 +150,50 @@ falls back to binding instead. The binary calls `from_systemd_env()` and then
 clears the `LISTEN_*` variables before the Tokio runtime starts. At that point
 the process has one thread, so changing the environment is safe.
 
+### Load-testing client
+
+`echosrv-client` (`src/bin/echosrv-client/`) is a separate binary built only
+on the public library API, so it also exercises that API the way users see
+it. It shares `src/cli_help.rs` with the server through a `#[path]` module
+(the library does not depend on clap) and takes its default targets from
+`src/defaults.rs`, so both binaries agree on them.
+
+```text
+cli.rs      Cli (clap) ── resolve() ──> RunConfig + warnings, RunHeader (config line)
+runner.rs   C workers ─┬─ shaper: TokenBucket (--rate/--burst), shared
+                       ├─ conn limiter: TokenBucket (--conn-rate), before every new client
+                       ├─ make_client() -> Box<dyn EchoClient>, echo, byte-for-byte compare
+                       └─ backoff after errors (--reconnect-delay doubling to --max-backoff)
+                │ Sample { at, latency, outcome }   (bounded mpsc channel)
+                v
+stats.rs    Aggregator ── interval Window (hdrhistogram) ──> LiveEvent::Interval every -i
+                       ── OutageTracker ──────────────────> LiveEvent::Outage (start/end)
+                       └─ on channel close ───────────────> Summary
+report.rs   text or JSON lines for each event; Verdict from the Summary
+main.rs     Ctrl-C/--duration cancel the run (CancellationToken); verdict -> exit code
+```
+
+- **Workers** take sequence numbers from a shared counter (so `-n` is exact
+  across workers), build the `echosrv:<worker>:<seq>:` payload and compare the
+  echo. Every error drops the client; persistent mode reconnects through the
+  connection limiter, per-request mode always does.
+- **Classification** (`stats::classify`) maps `EchoError` to an `ErrorKind`
+  through `is_rate_limited()`, `Timeout` and `io_error_kind()`.
+  `ErrorKind::is_outage()` excludes `rate_limited` and `ports_exhausted`. A
+  `ports_exhausted` error cancels the whole run and sets the
+  `ports_exhausted` stop reason.
+- **Outages** are tracked by the single aggregator, so they are global across
+  workers. A success closes an outage only if the attempt started after the
+  outage did; samples arrive slightly out of order and in-flight requests can
+  still finish after the server has gone.
+- **Output** is one line per event on stdout (text or JSON), written through
+  `emit()`, which exits with 141 when stdout is closed. Diagnostics are tagged
+  `[info]`/`[warn]`/`[fail]` lines on stderr. Color is decided per stream in
+  `output.rs`.
+- **Load safety.** The `--conn-rate` default (100/s) and the error backoff
+  exist because a load test can otherwise exhaust the machine's ephemeral
+  ports through TIME_WAIT. Keep both defaults conservative.
+
 ## Adding a protocol
 
 1. Create `src/<proto>/` with a protocol type implementing `StreamProtocol`
@@ -170,7 +214,9 @@ the process has one thread, so changing the environment is safe.
    `tests/<proto>.rs` with a `start_<proto>` helper in `tests/common/mod.rs`.
 6. If the binary should serve it, add a variant to the clap `Protocol` enum in
    `src/main.rs` (its doc comment is the help text) and a branch in `start()`,
-   then update the README and `tests/cli.rs`. Options with a literal default
+   then update the README and `tests/cli.rs`. If `echosrv-client` should
+   speak it too, add a `Protocol` variant in its `cli.rs` and a `Transport`
+   branch in `runner::make_client`. Options with a literal default
    use clap's `default_value`; optional or computed defaults are written at
    the end of the doc comment as ` [default: …]`, which `src/cli_help.rs`
    moves onto its own line in `--help`. Shared default endpoints live in
@@ -191,7 +237,8 @@ the process has one thread, so changing the environment is safe.
   `start_http`, `start_unix_stream`, `start_unix_datagram`, `socket_dir`,
   `payload` and `tagged_payload`. `TestServer::stats` is the server's
   `ServerStats`.
-- **CLI tests are serialized** (`serial()` in `tests/cli.rs`). On macOS, std
+- **CLI tests are serialized** (`serial()` in `tests/cli.rs` and
+  `tests/client_cli.rs`). On macOS, std
   sets `FD_CLOEXEC` on a new socket in a separate syscall. A child process
   spawned at the same moment by another test can inherit that socket and keep
   a port or path alive. Tests in this file that spawn processes or create
@@ -199,12 +246,18 @@ the process has one thread, so changing the environment is safe.
 - **Doc tests.** README code blocks are compiled and run through
   `ReadmeDoctests` in `src/lib.rs`. Mark blocks that bind fixed ports as
   `rust,no_run`, and mark shell or config snippets `bash`/`text`/`ini`.
+- **Client tests stay light.** `tests/client_cli.rs` runs the client
+  against in-process servers with small `-n` or short `-d` and the default
+  `--conn-rate`. Do not add unthrottled runs (`--conn-rate unlimited`, high
+  per-request rates) and do not loop the suites: TIME_WAIT sockets from a few
+  hundred new connections/s can exhaust the machine's ephemeral ports.
 - Unit tests go in `src/<module>/tests.rs` or inline `#[cfg(test)]` modules.
   Property tests (`tests/property_tests.rs`) reuse one server per test binary.
 
 ```bash
 cargo test                           # everything, including README doctests
-cargo test --test tcp                # tcp | udp | unix | http | rate_limit | fd_inheritance | cli | property_tests
+cargo test --test tcp                # tcp | udp | unix | http | rate_limit | fd_inheritance | cli | client_cli | property_tests
+cargo test --bin echosrv-client      # client unit tests
 cargo test --lib http::              # HTTP unit tests
 cargo test --doc                     # doctests only
 ```

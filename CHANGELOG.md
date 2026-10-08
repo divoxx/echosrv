@@ -47,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`EchoError::HttpStatus { status, reason, retry_after, body }`**, returned
   by `HttpEchoClient` for a non-2xx response; `retry_after` is the parsed
   `Retry-After` header (delay-seconds form).
+- **`echosrv-client`**, a load-testing binary for the echo servers. It runs
+  `-n` requests or continuously (`-d`, Ctrl-C) over `-c` workers, with
+  persistent or per-request connections, checks every echo byte for byte, and
+  reports live intervals, outage start/end events and a summary (latency
+  percentiles, errors by kind, outages) as text or JSON lines (`--json`). It
+  can shape traffic (`--rate`/`--burst`), honor HTTP `Retry-After`, and caps
+  new connections at 100/s by default (`--conn-rate`) with exponential
+  backoff after errors, so by default it does not exhaust the machine's
+  ephemeral ports. Its exit status reflects the run (`--max-error-rate`).
+  See the README.
 
 ### Changed
 
