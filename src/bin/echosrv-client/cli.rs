@@ -277,30 +277,38 @@ impl Cli {
         }
     }
 
-    /// Validates the flags and resolves the target into a [`RunConfig`].
-    pub async fn resolve(&self) -> Result<Validated, String> {
-        let (conn_mode, target) = self.check()?;
-        let mut warnings = Vec::new();
-
-        let transport = match self.protocol {
-            Protocol::Tcp => Transport::Tcp(resolve_addr(&target).await?),
-            Protocol::Udp => Transport::Udp(resolve_addr(&target).await?),
-            Protocol::Http => Transport::Http(resolve_addr(&target).await?),
+    /// Resolves `target` into a [`Transport`]; host names are looked up in
+    /// DNS.
+    async fn resolve_transport(&self, target: &Target) -> Result<Transport, String> {
+        Ok(match self.protocol {
+            Protocol::Tcp => Transport::Tcp(resolve_addr(target).await?),
+            Protocol::Udp => Transport::Udp(resolve_addr(target).await?),
+            Protocol::Http => Transport::Http(resolve_addr(target).await?),
             // A Unix target is its socket path.
             Protocol::UnixStream => Transport::UnixStream(target.to_string().into()),
             Protocol::UnixDatagram => Transport::UnixDgram(target.to_string().into()),
-        };
+        })
+    }
 
-        let filler = self.filler();
-        // Without -s, a --payload TEXT is sent as header + TEXT.
-        let payload_size = match (self.payload_size, &filler) {
+    /// The payload size: `--payload-size`, else [`DEFAULT_PAYLOAD_SIZE`].
+    /// Without `-s`, a `--payload TEXT` is sent as header + TEXT (`None`).
+    fn payload_size(&self) -> Option<usize> {
+        match (self.payload_size, &self.payload) {
             (Some(size), _) => Some(size),
-            (None, Filler::Text(_)) => None,
-            (None, _) => Some(DEFAULT_PAYLOAD_SIZE),
-        };
+            (None, Some(_)) => None,
+            (None, None) => Some(DEFAULT_PAYLOAD_SIZE),
+        }
+    }
 
+    /// Warnings about flag values that work but probably don't do what was
+    /// meant, or that put the machine at risk. Needs no DNS lookup.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
         let is_http = self.protocol == Protocol::Http;
-        if let Some(size) = payload_size.filter(|&size| is_http && size > DEFAULT_MAX_BODY_SIZE) {
+        if let Some(size) = self
+            .payload_size()
+            .filter(|&size| is_http && size > DEFAULT_MAX_BODY_SIZE)
+        {
             warnings.push(format!(
                 "http payload of {size} bytes is over the echosrv server's {DEFAULT_MAX_BODY_SIZE}-byte body limit; it answers 413 to larger bodies"
             ));
@@ -331,29 +339,41 @@ impl Cli {
         if self.honor_retry_after && self.protocol != Protocol::Http {
             warnings.push("--honor-retry-after only has an effect for http".into());
         }
+        warnings
+    }
 
+    /// The [`RunConfig`] for these (checked) flags.
+    fn run_config(&self, transport: Transport, conn_mode: ConnMode) -> RunConfig {
+        let burst = self.burst.unwrap_or(DEFAULT_BURST);
+        RunConfig {
+            transport,
+            requests: self.requests,
+            duration: self.duration,
+            concurrency: self.concurrency,
+            rate: self.rate.map(|rate| RateLimitConfig::new(rate, burst)),
+            payload_size: self.payload_size(),
+            filler: self.filler(),
+            timeout: self.timeout,
+            conn_mode,
+            // Bursts let every worker open its first connection at once.
+            conn_rate: self.conn_rate.0.map(|rate| {
+                let workers = u32::try_from(self.concurrency).unwrap_or(u32::MAX);
+                RateLimitConfig::new(rate, workers.clamp(1, rate))
+            }),
+            reconnect_delay: self.reconnect_delay,
+            max_backoff: self.max_backoff,
+            honor_retry_after: self.honor_retry_after,
+            interval: (!self.interval.is_zero()).then_some(self.interval),
+        }
+    }
+
+    /// Validates the flags and resolves the target into a [`RunConfig`].
+    pub async fn resolve(&self) -> Result<Validated, String> {
+        let (conn_mode, target) = self.check()?;
+        let transport = self.resolve_transport(&target).await?;
         Ok(Validated {
-            config: RunConfig {
-                transport,
-                requests: self.requests,
-                duration: self.duration,
-                concurrency: self.concurrency,
-                rate: self.rate.map(|rate| RateLimitConfig::new(rate, burst)),
-                payload_size,
-                filler,
-                timeout: self.timeout,
-                conn_mode,
-                // Bursts let every worker open its first connection at once.
-                conn_rate: self.conn_rate.0.map(|rate| {
-                    let workers = u32::try_from(self.concurrency).unwrap_or(u32::MAX);
-                    RateLimitConfig::new(rate, workers.clamp(1, rate))
-                }),
-                reconnect_delay: self.reconnect_delay,
-                max_backoff: self.max_backoff,
-                honor_retry_after: self.honor_retry_after,
-                interval: (!self.interval.is_zero()).then_some(self.interval),
-            },
-            warnings,
+            config: self.run_config(transport, conn_mode),
+            warnings: self.warnings(),
         })
     }
 }
@@ -722,5 +742,69 @@ mod tests {
             .expect("resolving an over-long host name timed out");
         let err = resolved.expect_err("over-long host name resolved");
         assert!(err.contains("cannot resolve"), "{err}");
+    }
+
+    /// Every warning, checked without resolving the target.
+    #[test]
+    fn warnings_need_no_dns() {
+        let warnings = |args: &[&str]| parse(args).unwrap().warnings();
+        // Host names are never looked up.
+        assert!(warnings(&["tcp", "no-such-host.invalid:80"]).is_empty());
+
+        let w = warnings(&["http", "no-such-host.invalid:80", "-s", "1048577"]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("413"), "{w:?}");
+        assert!(warnings(&["http", "-s", "1048576"]).is_empty());
+        // Only http has a body limit.
+        assert!(warnings(&["tcp", "-s", "1048577"]).is_empty());
+
+        let w = warnings(&["tcp", "-r", "5000"]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("--rate 5000 with --burst 1"), "{w:?}");
+        assert!(w[0].contains("--burst 50"), "{w:?}");
+        assert!(warnings(&["tcp", "-r", "5000", "-b", "50"]).is_empty());
+        assert!(warnings(&["tcp", "-r", "500"]).is_empty());
+
+        let w = warnings(&["http", "--conn-rate", "unlimited"]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("--conn-rate unlimited:"), "{w:?}");
+        let w = warnings(&["tcp", "--conn-rate", "401"]);
+        assert!(w[0].starts_with("--conn-rate 401:"), "{w:?}");
+        assert!(warnings(&["tcp", "--conn-rate", "400"]).is_empty());
+        assert!(warnings(&["unix-stream", "--conn-rate", "unlimited"]).is_empty());
+
+        let w = warnings(&["tcp", "--reconnect-delay", "1s", "--max-backoff", "500ms"]);
+        assert_eq!(
+            w,
+            ["--reconnect-delay is above --max-backoff; pauses are capped at 500ms"]
+        );
+
+        let w = warnings(&["udp", "--honor-retry-after"]);
+        assert_eq!(w, ["--honor-retry-after only has an effect for http"]);
+        assert!(warnings(&["http", "--honor-retry-after"]).is_empty());
+
+        // Several at once, in a fixed order.
+        let w = warnings(&[
+            "tcp",
+            "-r",
+            "5000",
+            "--conn-rate",
+            "unlimited",
+            "--honor-retry-after",
+        ]);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(w[0].starts_with("--rate"));
+        assert!(w[1].starts_with("--conn-rate"));
+        assert!(w[2].starts_with("--honor-retry-after"));
+    }
+
+    #[test]
+    fn payload_size_defaults() {
+        let size = |args: &[&str]| parse(args).unwrap().payload_size();
+        assert_eq!(size(&[]), Some(DEFAULT_PAYLOAD_SIZE));
+        assert_eq!(size(&["--random"]), Some(DEFAULT_PAYLOAD_SIZE));
+        assert_eq!(size(&["-s", "10"]), Some(10));
+        assert_eq!(size(&["--payload", "hi"]), None);
+        assert_eq!(size(&["--payload", "hi", "-s", "10"]), Some(10));
     }
 }

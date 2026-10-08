@@ -211,105 +211,111 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
-/// Multi-line human-readable configuration header; values that came from
-/// defaults are followed by a dimmed `(default)`.
-pub fn header_text(h: &RunHeader, p: Palette) -> String {
-    let mark = |field: HeaderField, value: String| {
-        if h.is_default(field) {
-            format!("{value} {}", p.dim("(default)"))
-        } else {
-            value
-        }
-    };
-    let mut out = String::new();
-    let _ = writeln!(out, "{}", p.dim("--- echosrv-client ---"));
-    let _ = writeln!(
-        out,
-        "{}{} {}",
-        label(p, "target"),
-        h.info.protocol,
-        mark(HeaderField::Target, p.bold(&h.info.target))
-    );
-    let _ = writeln!(
-        out,
-        "{}{}, {}",
-        label(p, "workers"),
-        mark(HeaderField::Concurrency, h.info.concurrency.to_string()),
-        mark(
-            HeaderField::ConnMode,
-            format!("{} connections", h.info.conn_mode)
-        )
-    );
-    let requests = match (h.info.requests, h.duration_s) {
-        (None, None) => mark(HeaderField::Requests, "unlimited, until Ctrl-C".into()),
+/// `value`, followed by a dimmed `(default)` if `field` came from a default.
+fn mark(h: &RunHeader, p: Palette, field: HeaderField, value: String) -> String {
+    if h.is_default(field) {
+        format!("{value} {}", p.dim("(default)"))
+    } else {
+        value
+    }
+}
+
+/// The `requests` header value: the count and/or the duration limit.
+fn requests_value(h: &RunHeader, p: Palette) -> String {
+    match (h.info.requests, h.duration_s) {
+        (None, None) => mark(
+            h,
+            p,
+            HeaderField::Requests,
+            "unlimited, until Ctrl-C".into(),
+        ),
         (Some(n), None) => n.to_string(),
         (None, Some(d)) => format!("unlimited, for {}", fmt_dur(d)),
         (Some(n), Some(d)) => format!("{n} or {}, whichever comes first", fmt_dur(d)),
-    };
-    let _ = writeln!(out, "{}{requests}", label(p, "requests"));
+    }
+}
+
+/// The `rate` header value: request shaping and the new-connection cap.
+fn rate_value(h: &RunHeader, p: Palette) -> String {
     let rate = match (h.rate, h.burst) {
         (Some(rate), burst) => format!(
             "{rate} req/s, {}",
             mark(
+                h,
+                p,
                 HeaderField::Burst,
                 format!("burst {}", burst.unwrap_or(DEFAULT_BURST))
             )
         ),
-        (None, _) => mark(HeaderField::Rate, "unshaped".into()),
+        (None, _) => mark(h, p, HeaderField::Rate, "unshaped".into()),
     };
-    let conns = mark(
-        HeaderField::ConnRate,
-        h.conn_rate.map_or_else(
-            || "unlimited new connections".into(),
-            |n| format!("at most {n} new connections/s"),
-        ),
+    let conns = h.conn_rate.map_or_else(
+        || "unlimited new connections".into(),
+        |n| format!("at most {n} new connections/s"),
     );
-    let _ = writeln!(out, "{}{rate}, {conns}", label(p, "rate"));
-    let size = h
-        .payload_size
-        .map_or_else(|| "header + text".into(), |n| format!("{n} bytes"));
-    let _ = writeln!(
-        out,
-        "{}{}, {}",
-        label(p, "payload"),
-        mark(HeaderField::PayloadSize, size),
-        mark(HeaderField::Filler, format!("{} filler", h.filler))
-    );
-    let _ = writeln!(
-        out,
-        "{}{}, {} {}{}",
-        label(p, "timeout"),
-        mark(HeaderField::Timeout, fmt_dur(h.timeout_s)),
-        mark(
-            HeaderField::ReconnectDelay,
-            format!("backoff {}", fmt_dur(h.reconnect_delay_s))
-        ),
-        mark(
-            HeaderField::MaxBackoff,
-            format!("up to {}", fmt_dur(h.max_backoff_s))
-        ),
+    format!("{rate}, {}", mark(h, p, HeaderField::ConnRate, conns))
+}
+
+/// The `timeout` header value: the timeout and the error backoff.
+fn timeout_value(h: &RunHeader, p: Palette) -> String {
+    let delay = format!("backoff {}", fmt_dur(h.reconnect_delay_s));
+    let max = format!("up to {}", fmt_dur(h.max_backoff_s));
+    format!(
+        "{}, {} {}{}",
+        mark(h, p, HeaderField::Timeout, fmt_dur(h.timeout_s)),
+        mark(h, p, HeaderField::ReconnectDelay, delay),
+        mark(h, p, HeaderField::MaxBackoff, max),
         if h.honor_retry_after {
             ", honors Retry-After"
         } else {
             ""
         }
+    )
+}
+
+/// The header's `(label, value)` rows, in display order.
+fn header_rows(h: &RunHeader, p: Palette) -> [(&'static str, String); 8] {
+    let m = |field, value| mark(h, p, field, value);
+    let target = m(HeaderField::Target, p.bold(&h.info.target));
+    let workers = m(HeaderField::Concurrency, h.info.concurrency.to_string());
+    let conn_mode = m(
+        HeaderField::ConnMode,
+        format!("{} connections", h.info.conn_mode),
     );
+    let size = h
+        .payload_size
+        .map_or_else(|| "header + text".into(), |n| format!("{n} bytes"));
+    let filler = m(HeaderField::Filler, format!("{} filler", h.filler));
     let interval = h.interval_s.map_or_else(|| "off".into(), fmt_dur);
-    let _ = writeln!(
-        out,
-        "{}{}",
-        label(p, "interval"),
-        mark(HeaderField::Interval, interval)
-    );
-    let _ = writeln!(
-        out,
-        "{}{}",
-        label(p, "max errors"),
-        mark(
-            HeaderField::MaxErrorRate,
-            format!("{}%", h.max_error_rate_pct)
-        )
-    );
+    [
+        ("target", format!("{} {target}", h.info.protocol)),
+        ("workers", format!("{workers}, {conn_mode}")),
+        ("requests", requests_value(h, p)),
+        ("rate", rate_value(h, p)),
+        (
+            "payload",
+            format!("{}, {filler}", m(HeaderField::PayloadSize, size)),
+        ),
+        ("timeout", timeout_value(h, p)),
+        ("interval", m(HeaderField::Interval, interval)),
+        (
+            "max errors",
+            m(
+                HeaderField::MaxErrorRate,
+                format!("{}%", h.max_error_rate_pct),
+            ),
+        ),
+    ]
+}
+
+/// Multi-line human-readable configuration header; values that came from
+/// defaults are followed by a dimmed `(default)`.
+pub fn header_text(h: &RunHeader, p: Palette) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{}", p.dim("--- echosrv-client ---"));
+    for (name, value) in header_rows(h, p) {
+        let _ = writeln!(out, "{}{value}", label(p, name));
+    }
     out
 }
 
@@ -418,6 +424,80 @@ fn label(p: Palette, name: &str) -> String {
     p.cyan(&format!("{name:<12}"))
 }
 
+/// `errors      reset=3 timeout=1`, or `None` without errors.
+fn errors_line(s: &Summary, p: Palette) -> Option<String> {
+    (s.stats.errors > 0).then(|| {
+        format!(
+            "{}{}",
+            label(p, "errors"),
+            p.red(&fmt_error_counts(&s.stats.errors_by_kind))
+        )
+    })
+}
+
+/// `latency     min=... p50=... max=... mean=...`.
+fn latency_line(s: &Summary, p: Palette) -> String {
+    let Some(l) = &s.stats.latency else {
+        return format!(
+            "{}{}",
+            label(p, "latency"),
+            p.dim("- (no successful requests)")
+        );
+    };
+    format!(
+        "{}min={} p50={} p90={} p99={} p99.9={} max={} mean={}",
+        label(p, "latency"),
+        fmt_ms(l.min_ms),
+        p.bold(&fmt_ms(l.p50_ms)),
+        fmt_ms(l.p90_ms),
+        p.bold(&fmt_ms(l.p99_ms)),
+        fmt_ms(l.p999_ms),
+        fmt_ms(l.max_ms),
+        fmt_ms(l.mean_ms)
+    )
+}
+
+/// The `outages` line plus one line per outage window (at most
+/// [`MAX_HUMAN_OUTAGES`]), each ending in a newline.
+fn outages_block(s: &Summary, p: Palette) -> String {
+    let o = &s.stats.outages;
+    let mut out = String::new();
+    if o.count == 0 {
+        let _ = writeln!(out, "{}{}", label(p, "outages"), p.green("none"));
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "{}{}",
+        label(p, "outages"),
+        p.red(&format!(
+            "{} (total {}, longest {}){}",
+            o.count,
+            fmt_ms(o.total_ms),
+            fmt_ms(o.longest_ms),
+            if o.ongoing { ", last one ongoing" } else { "" }
+        ))
+    );
+    for w in o.windows.iter().take(MAX_HUMAN_OUTAGES) {
+        let _ = writeln!(
+            out,
+            "            at {:>7.2}s for {} ({} errors{})",
+            w.start_s,
+            fmt_ms(w.duration_ms),
+            w.errors,
+            if w.ongoing { ", ongoing" } else { "" }
+        );
+    }
+    if o.count > MAX_HUMAN_OUTAGES as u64 {
+        let _ = writeln!(
+            out,
+            "            ... and {} more",
+            o.count - MAX_HUMAN_OUTAGES as u64
+        );
+    }
+    out
+}
+
 /// Multi-line human-readable summary, ending with the verdict line.
 pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
     let mut out = String::new();
@@ -465,72 +545,11 @@ pub fn summary_text(s: &Summary, verdict: &Verdict, p: Palette) -> String {
         p.bold(&format!("{:.1} req/s", s.stats.req_per_sec)),
         s.stats.ok_per_sec
     );
-    if s.stats.errors > 0 {
-        let _ = writeln!(
-            out,
-            "{}{}",
-            label(p, "errors"),
-            p.red(&fmt_error_counts(&s.stats.errors_by_kind))
-        );
+    if let Some(line) = errors_line(s, p) {
+        let _ = writeln!(out, "{line}");
     }
-    match &s.stats.latency {
-        Some(l) => {
-            let _ = writeln!(
-                out,
-                "{}min={} p50={} p90={} p99={} p99.9={} max={} mean={}",
-                label(p, "latency"),
-                fmt_ms(l.min_ms),
-                p.bold(&fmt_ms(l.p50_ms)),
-                fmt_ms(l.p90_ms),
-                p.bold(&fmt_ms(l.p99_ms)),
-                fmt_ms(l.p999_ms),
-                fmt_ms(l.max_ms),
-                fmt_ms(l.mean_ms)
-            );
-        }
-        None => {
-            let _ = writeln!(
-                out,
-                "{}{}",
-                label(p, "latency"),
-                p.dim("- (no successful requests)")
-            );
-        }
-    }
-    let o = &s.stats.outages;
-    if o.count == 0 {
-        let _ = writeln!(out, "{}{}", label(p, "outages"), p.green("none"));
-    } else {
-        let _ = writeln!(
-            out,
-            "{}{}",
-            label(p, "outages"),
-            p.red(&format!(
-                "{} (total {}, longest {}){}",
-                o.count,
-                fmt_ms(o.total_ms),
-                fmt_ms(o.longest_ms),
-                if o.ongoing { ", last one ongoing" } else { "" }
-            ))
-        );
-        for w in o.windows.iter().take(MAX_HUMAN_OUTAGES) {
-            let _ = writeln!(
-                out,
-                "            at {:>7.2}s for {} ({} errors{})",
-                w.start_s,
-                fmt_ms(w.duration_ms),
-                w.errors,
-                if w.ongoing { ", ongoing" } else { "" }
-            );
-        }
-        if o.count > MAX_HUMAN_OUTAGES as u64 {
-            let _ = writeln!(
-                out,
-                "            ... and {} more",
-                o.count - MAX_HUMAN_OUTAGES as u64
-            );
-        }
-    }
+    let _ = writeln!(out, "{}", latency_line(s, p));
+    out.push_str(&outages_block(s, p));
     let _ = writeln!(out, "{}", verdict.line(p));
     out
 }
