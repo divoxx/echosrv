@@ -16,7 +16,7 @@ README.md is user-facing, and DEVELOPMENT.md has the architecture details.
 ```bash
 cargo build
 cargo test                               # unit + integration + doctests (README blocks are doctests)
-cargo test --test tcp                    # one suite: tcp | udp | unix | http | rate_limit | fd_inheritance | cli | client_cli | property_tests
+cargo test --test tcp                    # one suite: tcp | udp | unix | http | rate_limit | fd_inheritance | cli | client_cli | client_signals | property_tests
 cargo test --lib http::                  # unit tests of one module
 cargo test --doc                         # doctests only
 cargo fmt
@@ -30,6 +30,7 @@ cargo run -- unix-stream /tmp/echo.sock  # also: unix-dgram /tmp/echo_dgram.sock
 cargo run --bin echosrv-client -- --help # load-testing client (plain `cargo run` is the server)
 cargo test --bin echosrv-client          # client unit tests (cli, runner, stats, report, output)
 cargo test --test client_cli             # client black-box tests (spawns the binary)
+cargo test --test client_signals         # client SIGINT/SIGTERM tests (spawns the binary)
 ```
 
 ## Module Layout
@@ -44,6 +45,7 @@ src/
 ├── bin/echosrv-client/   load-testing client binary
 │   ├── cli.rs     clap flags, validation and warnings, target resolution, config header
 │   ├── runner.rs  workers, payload build/compare, shaper (--rate), conn limiter (--conn-rate), backoff
+│   ├── runner/tests.rs  runner unit tests (in-process servers)
 │   ├── stats.rs   error kinds + classify, Window histograms, OutageTracker, Aggregator, Summary
 │   ├── report.rs  text and JSON rendering (config, interval, outage, summary), Verdict
 │   ├── output.rs  --color/NO_COLOR/CLICOLOR_FORCE, Palette, [ok]/[fail] tagged lines
@@ -57,7 +59,7 @@ src/
 ├── http/        HttpProtocol/HttpStream (HTTP/1.1 framing), HttpEchoServer, HttpEchoClient, HttpConfig
 └── network/     Address, BindStrategy/InheritedFd/FdInheritanceConfig, SocketBuilder, LocalAddress
 tests/           tcp.rs udp.rs unix.rs http.rs rate_limit.rs fd_inheritance.rs cli.rs client_cli.rs
-                 property_tests.rs common/mod.rs
+                 client_signals.rs property_tests.rs common/mod.rs client_common/mod.rs
 benches/         echo_performance.rs
 ```
 
@@ -92,9 +94,9 @@ benches/         echo_performance.rs
 - Use no fixed ports and no `sleep`s for readiness. Bound waits with
   `tokio::time::timeout(WAIT, ...)`.
 - Assert graceful shutdown (`TestServer::stop()`).
-- Tests in `tests/cli.rs` and `tests/client_cli.rs` hold a global `serial()`
-  lock. On macOS, a child process spawned concurrently can inherit another
-  test's sockets.
+- Tests in `tests/cli.rs`, `tests/client_cli.rs` and `tests/client_signals.rs`
+  each hold a per-file `serial()` lock. On macOS, a child process spawned
+  concurrently can inherit another test's sockets.
 - Load safety (client): never run unthrottled load, `--conn-rate unlimited`,
   or the suites in a loop. Every closed TCP connection holds a local port in
   TIME_WAIT for 30-60s; a few hundred new connections/s sustained exhausts
