@@ -94,6 +94,9 @@ benches/         echo_performance.rs
 - Use no fixed ports and no `sleep`s for readiness. Bound waits with
   `tokio::time::timeout(WAIT, ...)`.
 - Assert graceful shutdown (`TestServer::stop()`).
+- Keep each test well under a couple of hundred new connections (TIME_WAIT
+  piles up across suites). Reuse clients across cases or iterations, as
+  `tests/property_tests.rs` does with its pooled TCP clients.
 - Tests in `tests/cli.rs`, `tests/client_cli.rs` and `tests/client_signals.rs`
   each hold a per-file `serial()` lock. On macOS, a child process spawned
   concurrently can inherit another test's sockets.

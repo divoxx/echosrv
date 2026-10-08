@@ -275,8 +275,15 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
   `--conn-rate`. Do not add unthrottled runs (`--conn-rate unlimited`, high
   per-request rates) and do not loop the suites: TIME_WAIT sockets from a few
   hundred new connections/s can exhaust the machine's ephemeral ports.
+- **Keep the connection count low.** Every closed TCP connection leaves a
+  TIME_WAIT socket behind for 30-60s, and the suites run in the same window.
+  A test should open well under a couple of hundred new connections: reuse a
+  client across checks where the order does not matter instead of connecting
+  per iteration or per generated case.
 - Unit tests go in `src/<module>/tests.rs` or inline `#[cfg(test)]` modules.
-  Property tests (`tests/property_tests.rs`) reuse one server per test binary.
+  Property tests (`tests/property_tests.rs`) reuse one server per test binary
+  and pool their TCP clients, so a property opens a handful of connections
+  rather than one per case.
 
 ```bash
 cargo test                           # everything, including README doctests
