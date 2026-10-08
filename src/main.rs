@@ -227,13 +227,10 @@ fn main() -> ExitCode {
     let cli = match parse_cli(std::env::args_os()) {
         Ok(cli) => cli,
         Err(e) => {
-            // Help and version are reported through clap's error type too.
+            // Help and version are reported through clap's error type too:
+            // they exit 0, usage errors exit 2 (like `echosrv-client`).
             let _ = e.print();
-            return if e.use_stderr() {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            };
+            return ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(2));
         }
     };
 
@@ -452,6 +449,22 @@ mod tests {
         assert!(parse_args(&args(&["--host", "nope", "tcp"])).is_err());
         assert!(parse_args(&args(&["--bogus"])).is_err());
         assert!(parse_args(&args(&["--host", "::1", "unix-stream"])).is_err());
+    }
+
+    #[test]
+    fn usage_errors_exit_2_and_help_exits_0() {
+        let exit_code = |list: &[&str]| {
+            parse_cli(std::iter::once("echosrv").chain(list.iter().copied()))
+                .unwrap_err()
+                .exit_code()
+        };
+        // Errors from clap itself and from `Cli::resolve`.
+        for bad in [&["--bogus"][..], &["gopher"], &["tcp", "70000"]] {
+            assert_eq!(exit_code(bad), 2, "{bad:?}");
+        }
+        for ok in [&["--help"][..], &["-h"], &["--version"]] {
+            assert_eq!(exit_code(ok), 0, "{ok:?}");
+        }
     }
 
     #[test]

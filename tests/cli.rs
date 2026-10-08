@@ -65,7 +65,7 @@ fn unknown_protocol_fails() {
     Command::new(BIN)
         .arg("gopher")
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains("unknown protocol 'gopher'"));
 }
 
@@ -76,7 +76,7 @@ fn invalid_port_fails() {
         Command::new(BIN)
             .args(["tcp", port])
             .assert()
-            .code(1)
+            .code(2)
             .stderr(predicate::str::contains("error:"));
     }
 }
@@ -87,17 +87,17 @@ fn unknown_option_and_bad_host_fail() {
     Command::new(BIN)
         .arg("--bogus")
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains("unexpected argument '--bogus'"));
     Command::new(BIN)
         .args(["--host", "not-an-ip", "tcp"])
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains("invalid host"));
     Command::new(BIN)
         .args(["--host", "127.0.0.1", "unix-stream"])
         .assert()
-        .code(1);
+        .code(2);
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn invalid_rate_limit_flags_fail() {
         Command::new(BIN)
             .args(args)
             .assert()
-            .code(1)
+            .code(2)
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("error:"))
             .stderr(predicate::str::contains(message));
