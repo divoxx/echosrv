@@ -590,6 +590,47 @@ fn unix_stream_recovers_stale_socket_file() {
 }
 
 #[test]
+fn unix_stream_max_connections_flag_applies() {
+    let _serial = serial();
+    let dir = socket_dir();
+    let path = dir.path().join("max.sock");
+    let mut server = Server::spawn(&[
+        "unix-stream",
+        path.to_str().unwrap(),
+        "--max-connections",
+        "1",
+    ]);
+    let mut first = server.wait_until("Unix stream listener", || {
+        let mut stream = UnixStream::connect(&path).ok()?;
+        stream.set_read_timeout(Some(IO_TIMEOUT)).ok()?;
+        stream.write_all(b"x").ok()?;
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).ok()?;
+        Some(stream)
+    });
+
+    // With the only slot taken, another connection is closed right away.
+    let mut second = UnixStream::connect(&path).unwrap();
+    second.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    let mut buf = [0u8; 1];
+    assert!(
+        matches!(second.read(&mut buf), Ok(0) | Err(_)),
+        "second connection was served despite --max-connections 1"
+    );
+    first.write_all(b"y").unwrap();
+    first.read_exact(&mut buf).unwrap();
+    assert_eq!(&buf, b"y");
+    drop(first);
+    assert!(
+        server.log().contains("max_connections=1"),
+        "{}",
+        server.log()
+    );
+
+    server.stop_with(libc::SIGTERM);
+}
+
+#[test]
 fn unix_dgram_echoes_and_removes_socket_on_sigterm() {
     let _serial = serial();
     let dir = socket_dir();

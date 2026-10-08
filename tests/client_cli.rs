@@ -428,6 +428,182 @@ async fn http_rate_limit_is_counted_not_an_outage() {
     server.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_and_duration_stop_at_whichever_comes_first() {
+    let _serial = serial().await;
+    let server = start_tcp(TcpConfig::default()).await;
+    let target = server.addr.to_string();
+
+    // -n finishes long before -d.
+    let started = std::time::Instant::now();
+    let out = run_client(&["tcp", &target, "-n", "5", "-d", "30s", "--json"]).await;
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let summary = json_lines(&out).pop().unwrap();
+    assert_eq!(summary["stop_reason"], "completed", "{summary}");
+    assert_eq!(summary["ok"], 5, "{summary}");
+    assert_eq!(summary["interrupted"], false, "{summary}");
+
+    // -d ends a run that -n would keep going for minutes (shaped to 20/s).
+    let out = run_client(&[
+        "tcp", &target, "-n", "100000", "-d", "300ms", "--rate", "20", "--json",
+    ])
+    .await;
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let summary = json_lines(&out).pop().unwrap();
+    assert_eq!(summary["stop_reason"], "duration", "{summary}");
+    assert_eq!(summary["interrupted"], true, "{summary}");
+    let ok = summary["ok"].as_u64().unwrap();
+    assert!((1..100).contains(&ok), "{summary}");
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conn_rate_paces_new_connections() {
+    let _serial = serial().await;
+    let server = start_tcp(TcpConfig::default()).await;
+    let target = server.addr.to_string();
+    // 10 connections at 20/s with a burst of 1: the last one opens >= 450ms
+    // after the first.
+    let out = run_client(&[
+        "tcp",
+        &target,
+        "-n",
+        "10",
+        "--conn-mode",
+        "per-request",
+        "--conn-rate",
+        "20",
+        "-i",
+        "0",
+        "--json",
+    ])
+    .await;
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let lines = json_lines(&out);
+    assert_eq!(lines[0]["conn_rate"], 20, "{}", lines[0]);
+    let summary = lines.last().unwrap();
+    assert_eq!(summary["ok"], 10, "{summary}");
+    let elapsed = summary["elapsed_s"].as_f64().unwrap();
+    assert!(elapsed >= 0.4, "10 connections at 20/s took {elapsed}s");
+    server.stop().await;
+}
+
+/// Reads `lines` until one contains `needle` (bounded by [`common::WAIT`]),
+/// keeping every line read.
+async fn wait_for_line(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    seen: &mut Vec<String>,
+    what: &str,
+    pred: impl Fn(&str) -> bool,
+) {
+    tokio::time::timeout(common::WAIT, async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            let hit = pred(&line);
+            seen.push(line);
+            if hit {
+                return;
+            }
+        }
+        panic!("stdout closed before {what}:\n{}", seen.join("\n"));
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}:\n{}", seen.join("\n")));
+}
+
+/// Stopping and restarting the server under a continuous run prints one
+/// outage start line and one outage end line. Unix stream sockets keep the
+/// run off the TCP port range.
+#[tokio::test(flavor = "multi_thread")]
+async fn live_outage_lines() {
+    use tokio::io::AsyncBufReadExt;
+    let _serial = serial().await;
+    let dir = socket_dir();
+    let path = dir.path().join("outage.sock");
+    let server = start_unix_stream_at(&path).await;
+    let mut child = client_command(&[
+        "unix-stream",
+        path.to_str().unwrap(),
+        "--rate",
+        "100",
+        "-i",
+        "100ms",
+        "--reconnect-delay",
+        "10ms",
+        "--max-error-rate",
+        "100",
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut seen = Vec::new();
+
+    wait_for_line(&mut lines, &mut seen, "traffic", |l| {
+        l.contains(" ok=") && !l.contains(" ok=0 ")
+    })
+    .await;
+    server.stop().await; // also removes the socket file
+    wait_for_line(&mut lines, &mut seen, "outage start", |l| {
+        l.contains("[fail] outage started (")
+    })
+    .await;
+    // Stay down for a few intervals, so at least one is marked OUTAGE.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = start_unix_stream_at(&path).await;
+    wait_for_line(&mut lines, &mut seen, "outage end", |l| {
+        l.contains("[ok] outage ended after ")
+    })
+    .await;
+
+    send_signal(&child, libc::SIGTERM);
+    tokio::time::timeout(RUN_TIMEOUT, async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            seen.push(line);
+        }
+    })
+    .await
+    .expect("client did not stop");
+    let status = tokio::time::timeout(common::WAIT, child.wait())
+        .await
+        .expect("client did not exit")
+        .unwrap();
+    let stdout = seen.join("\n");
+    assert_eq!(status.code(), Some(0), "{stdout}");
+    assert!(
+        seen.iter().any(|l| l.ends_with(" OUTAGE")),
+        "no interval marked OUTAGE:\n{stdout}"
+    );
+    assert!(stdout.contains("outages     1 "), "{stdout}");
+    server.stop().await;
+}
+
+/// Running out of local ports (`EADDRNOTAVAIL`) stops the run with its own
+/// verdict and a hint on stderr. On macOS, connecting to port 0 fails with
+/// `EADDRNOTAVAIL` without opening a connection.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn ports_exhausted_stops_with_its_verdict() {
+    let _serial = serial().await;
+    let out = run_client(&["tcp", "127.0.0.1:0", "-n", "5"]).await;
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ports_exhausted="), "{stdout}");
+    assert!(
+        stdout
+            .trim_end()
+            .ends_with("[fail] stopped: the client machine ran out of local ports"),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[fail] stopped: this machine ran out of local ports (EADDRNOTAVAIL)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("lower --conn-rate or --rate"), "{stderr}");
+}
+
 // ---------------------------------------------------------------------------
 // Human output and colors
 // ---------------------------------------------------------------------------
@@ -569,8 +745,9 @@ fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
     assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
 }
 
-#[tokio::test]
-async fn sigterm_lets_requests_in_flight_finish() {
+/// The first `signal` stops gracefully with `reason`: the request in flight
+/// is answered and counted.
+async fn first_signal_lets_requests_in_flight_finish(signal: libc::c_int, reason: &str) {
     let _serial = serial().await;
     let delay = Duration::from_millis(300);
     let (addr, mut requests, server) = slow_echo_server(delay).await;
@@ -585,7 +762,7 @@ async fn sigterm_lets_requests_in_flight_finish() {
         .expect("no request reached the server");
 
     let signalled = std::time::Instant::now();
-    send_signal(&child, libc::SIGTERM);
+    send_signal(&child, signal);
     let out = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
         .await
         .expect("client did not stop")
@@ -593,7 +770,7 @@ async fn sigterm_lets_requests_in_flight_finish() {
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     let summary = json_lines(&out).pop().unwrap();
     assert_eq!(summary["type"], "summary");
-    assert_eq!(summary["stop_reason"], "terminated");
+    assert_eq!(summary["stop_reason"], reason);
     // The request in flight was answered and counted, not dropped.
     assert_eq!(summary["errors"], 0, "{}", describe(&out));
     assert!(summary["ok"].as_u64().unwrap() >= 1, "{}", describe(&out));
@@ -606,7 +783,17 @@ async fn sigterm_lets_requests_in_flight_finish() {
 }
 
 #[tokio::test]
-async fn second_sigterm_aborts() {
+async fn sigterm_lets_requests_in_flight_finish() {
+    first_signal_lets_requests_in_flight_finish(libc::SIGTERM, "terminated").await;
+}
+
+#[tokio::test]
+async fn sigint_lets_requests_in_flight_finish() {
+    first_signal_lets_requests_in_flight_finish(libc::SIGINT, "interrupt").await;
+}
+
+/// A second `signal` while a request waits for its reply aborts with `code`.
+async fn second_signal_aborts(signal: libc::c_int, code: i32) {
     use tokio::io::AsyncBufReadExt;
     let _serial = serial().await;
     let (addr, mut requests, server) = slow_echo_server(Duration::from_secs(60)).await;
@@ -620,7 +807,7 @@ async fn second_sigterm_aborts() {
         .await
         .expect("no request reached the server");
 
-    send_signal(&child, libc::SIGTERM);
+    send_signal(&child, signal);
     let mut stderr = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
     tokio::time::timeout(common::WAIT, async {
         while let Some(line) = stderr.next_line().await.unwrap() {
@@ -631,15 +818,15 @@ async fn second_sigterm_aborts() {
         panic!("stderr closed before the stop notice");
     })
     .await
-    .expect("first SIGTERM was not acknowledged");
+    .expect("first signal was not acknowledged");
 
     // The request is still waiting for its reply; a second signal aborts.
-    send_signal(&child, libc::SIGTERM);
+    send_signal(&child, signal);
     let status = tokio::time::timeout(common::WAIT, child.wait())
         .await
-        .expect("second SIGTERM did not abort")
+        .expect("second signal did not abort")
         .unwrap();
-    assert_eq!(status.code(), Some(143));
+    assert_eq!(status.code(), Some(code));
     server.abort();
 }
 
@@ -683,4 +870,14 @@ async fn sigterm_right_after_header_still_reports() {
     assert_eq!(summary["type"], "summary");
     assert_eq!(summary["stop_reason"], "terminated");
     server.abort();
+}
+
+#[tokio::test]
+async fn second_sigterm_aborts() {
+    second_signal_aborts(libc::SIGTERM, 143).await;
+}
+
+#[tokio::test]
+async fn second_sigint_aborts() {
+    second_signal_aborts(libc::SIGINT, 130).await;
 }

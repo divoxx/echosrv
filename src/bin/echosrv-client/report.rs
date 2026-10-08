@@ -887,6 +887,16 @@ mod tests {
             Verdict::Mismatches(2).line(Palette::PLAIN),
             "[fail] 2 echo mismatches"
         );
+
+        // Running out of local ports fails the run whatever the error rate.
+        s.stop_reason = crate::runner::STOP_PORTS_EXHAUSTED;
+        let v = Verdict::of(&s, 100.0);
+        assert_eq!(v, Verdict::PortsExhausted);
+        assert!(!v.passed());
+        assert_eq!(
+            v.line(Palette::PLAIN),
+            "[fail] stopped: the client machine ran out of local ports"
+        );
     }
 
     #[test]
