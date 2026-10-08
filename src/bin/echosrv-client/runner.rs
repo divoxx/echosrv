@@ -5,6 +5,7 @@
 
 use crate::stats::{Aggregator, ErrorKind, LiveEvent, Outcome, Phase, Sample, Summary, classify};
 use clap::ValueEnum;
+use echosrv::cli::Protocol;
 use echosrv::datagram::DatagramClientConfig;
 use echosrv::stream::ClientConfig;
 use echosrv::{
@@ -53,13 +54,13 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn protocol(&self) -> &'static str {
+    pub fn protocol(&self) -> Protocol {
         match self {
-            Transport::Tcp(_) => "tcp",
-            Transport::Udp(_) => "udp",
-            Transport::Http(_) => "http",
-            Transport::UnixStream(_) => "unix-stream",
-            Transport::UnixDgram(_) => "unix-dgram",
+            Transport::Tcp(_) => Protocol::Tcp,
+            Transport::Udp(_) => Protocol::Udp,
+            Transport::Http(_) => Protocol::Http,
+            Transport::UnixStream(_) => Protocol::UnixStream,
+            Transport::UnixDgram(_) => Protocol::UnixDatagram,
         }
     }
 }
@@ -100,6 +101,16 @@ pub enum Filler {
     Text(Vec<u8>),
     /// Pseudo-random bytes.
     Random,
+}
+
+impl Filler {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Filler::Pattern => "pattern",
+            Filler::Text(_) => "text",
+            Filler::Random => "random",
+        }
+    }
 }
 
 /// Everything a run needs, already validated.
@@ -529,7 +540,7 @@ pub async fn run(
         }
     }
 
-    summary.protocol = config.transport.protocol().to_string();
+    summary.protocol = config.transport.protocol().as_str().to_string();
     summary.target = config.transport.to_string();
     summary.concurrency = config.concurrency;
     summary.conn_mode = config.conn_mode.as_str().to_string();

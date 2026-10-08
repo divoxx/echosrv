@@ -3,16 +3,15 @@
 use crate::report::RunHeader;
 use crate::runner::{ConnMode, DEFAULT_CONN_RATE, Filler, RunConfig, Transport};
 use clap::parser::ValueSource;
-use clap::{ArgMatches, Parser, ValueEnum};
+use clap::{ArgMatches, Parser};
 use echosrv::RateLimitConfig;
 use echosrv::cli::color::ColorChoice;
-use echosrv::defaults::{
-    DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
-};
+use echosrv::cli::{Protocol, Target};
+use echosrv::defaults::DEFAULT_PROTOCOL;
 use echosrv::http::DEFAULT_MAX_BODY_SIZE;
+use std::ffi::OsStr;
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::time::Duration;
 /// Above this rate a tiny bucket can't keep up: each wait is close to the
 /// ~1ms timer resolution and wake-up overshoot is lost to the capacity cap.
@@ -44,48 +43,6 @@ fn parse_limit(s: &str) -> Result<Limit, String> {
         _ => Err(format!(
             "expected a positive number or `unlimited`, got {s:?}"
         )),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Protocol {
-    /// TCP echo server
-    Tcp,
-    /// UDP echo server
-    Udp,
-    /// HTTP echo server (POSTs the payload)
-    Http,
-    /// Unix domain stream socket server
-    UnixStream,
-    /// Unix domain datagram socket server (alias: unix-datagram)
-    #[value(name = "unix-dgram", alias = "unix-datagram")]
-    UnixDgram,
-}
-
-impl Protocol {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Protocol::Tcp => "tcp",
-            Protocol::Udp => "udp",
-            Protocol::Http => "http",
-            Protocol::UnixStream => "unix-stream",
-            Protocol::UnixDgram => "unix-dgram",
-        }
-    }
-
-    fn is_unix(self) -> bool {
-        matches!(self, Protocol::UnixStream | Protocol::UnixDgram)
-    }
-
-    /// The target the `echosrv` server listens on by default for this protocol.
-    pub fn default_target(self) -> String {
-        match self {
-            Protocol::Tcp | Protocol::Udp | Protocol::Http => {
-                SocketAddr::new(DEFAULT_HOST, DEFAULT_PORT).to_string()
-            }
-            Protocol::UnixStream => DEFAULT_UNIX_STREAM_PATH.to_string(),
-            Protocol::UnixDgram => DEFAULT_UNIX_DGRAM_PATH.to_string(),
-        }
     }
 }
 
@@ -158,7 +115,7 @@ fn parse_pct(s: &str) -> Result<f64, String> {
 )]
 pub struct Cli {
     /// Protocol to speak.
-    #[arg(value_enum, value_name = "PROTOCOL", ignore_case = true, default_value = DEFAULT_PROTOCOL)]
+    #[arg(value_name = "PROTOCOL", default_value = DEFAULT_PROTOCOL, value_parser = Protocol::parser())]
     pub protocol: Protocol,
 
     /// HOST:PORT or a bare PORT (host 127.0.0.1) for tcp/udp/http, or a socket
@@ -295,27 +252,12 @@ impl Cli {
     }
 
     /// The effective target: the per-protocol default when omitted, and a
-    /// bare port expanded to `127.0.0.1:PORT` for tcp/udp/http.
-    pub fn target(&self) -> Result<String, String> {
-        let Some(target) = self.target.as_deref() else {
-            return Ok(self.protocol.default_target());
-        };
-        if self.protocol.is_unix() {
-            if target.is_empty() {
-                return Err("socket path must not be empty".into());
-            }
-            return Ok(target.to_string());
+    /// bare port meaning `127.0.0.1:PORT` for tcp/udp/http.
+    pub fn target(&self) -> Result<Target, String> {
+        match self.target.as_deref() {
+            Some(value) => Target::parse_connect(self.protocol, OsStr::new(value)),
+            None => Ok(Target::default_for(self.protocol)),
         }
-        if let Ok(port) = target.parse::<u16>() {
-            return Ok(SocketAddr::new(DEFAULT_HOST, port).to_string());
-        }
-        if target.starts_with('/') || !target.contains(':') {
-            return Err(format!(
-                "{} target must be HOST:PORT or PORT, got {target:?}",
-                self.protocol.as_str(),
-            ));
-        }
-        Ok(target.to_string())
     }
 
     fn filler(&self) -> Filler {
@@ -333,20 +275,12 @@ impl Cli {
         let mut warnings = Vec::new();
 
         let transport = match self.protocol {
-            Protocol::UnixStream => Transport::UnixStream(PathBuf::from(&target)),
-            Protocol::UnixDgram => Transport::UnixDgram(PathBuf::from(&target)),
-            Protocol::Tcp | Protocol::Udp | Protocol::Http => {
-                let addr = tokio::net::lookup_host(target.as_str())
-                    .await
-                    .map_err(|e| format!("cannot resolve {target:?}: {e}"))?
-                    .next()
-                    .ok_or_else(|| format!("{target:?} resolved to no addresses"))?;
-                match self.protocol {
-                    Protocol::Tcp => Transport::Tcp(addr),
-                    Protocol::Udp => Transport::Udp(addr),
-                    _ => Transport::Http(addr),
-                }
-            }
+            Protocol::Tcp => Transport::Tcp(resolve_addr(&target).await?),
+            Protocol::Udp => Transport::Udp(resolve_addr(&target).await?),
+            Protocol::Http => Transport::Http(resolve_addr(&target).await?),
+            // A Unix target is its socket path.
+            Protocol::UnixStream => Transport::UnixStream(target.to_string().into()),
+            Protocol::UnixDatagram => Transport::UnixDgram(target.to_string().into()),
         };
 
         let filler = self.filler();
@@ -423,6 +357,16 @@ impl Cli {
     }
 }
 
+/// Resolves a `HOST:PORT` target to its first address.
+async fn resolve_addr(target: &Target) -> Result<SocketAddr, String> {
+    let target = target.to_string();
+    tokio::net::lookup_host(target.as_str())
+        .await
+        .map_err(|e| format!("cannot resolve {target:?}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{target:?} resolved to no addresses"))
+}
+
 /// Whether the argument `id` was left at its default (not given on the
 /// command line).
 fn is_default(matches: &ArgMatches, id: &str) -> bool {
@@ -464,7 +408,7 @@ impl Cli {
         }
         RunHeader {
             kind: "config",
-            protocol: config.transport.protocol(),
+            protocol: config.transport.protocol().as_str(),
             target: config.transport.to_string(),
             concurrency: config.concurrency,
             conn_mode: config.conn_mode.as_str(),
@@ -474,11 +418,7 @@ impl Cli {
             burst: config.rate.map(|r| r.burst),
             conn_rate: config.conn_rate.map(|r| r.rate_per_sec),
             payload_size: config.payload_size,
-            filler: match config.filler {
-                Filler::Pattern => "pattern",
-                Filler::Text(_) => "text",
-                Filler::Random => "random",
-            },
+            filler: config.filler.as_str(),
             timeout_s: config.timeout,
             reconnect_delay_s: config.reconnect_delay,
             max_backoff_s: config.max_backoff,
@@ -493,6 +433,9 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echosrv::defaults::{
+        DEFAULT_HOST, DEFAULT_PORT, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
+    };
 
     fn parse_with_matches(args: &[&str]) -> Result<(Cli, ArgMatches), clap::Error> {
         echosrv::cli::help::try_parse_from::<Cli, _, _>(
@@ -523,7 +466,7 @@ mod tests {
 
     fn target(args: &[&str]) -> (Protocol, String) {
         let cli = parse(args).unwrap();
-        (cli.protocol, cli.target().unwrap())
+        (cli.protocol, cli.target().unwrap().to_string())
     }
 
     #[test]
@@ -540,12 +483,12 @@ mod tests {
         );
         assert_eq!(
             target(&["unix-dgram"]),
-            (Protocol::UnixDgram, "/tmp/echosrv_datagram.sock".into())
+            (Protocol::UnixDatagram, "/tmp/echosrv_datagram.sock".into())
         );
         // The server's alias and case-insensitive names work too.
         assert_eq!(
             target(&["unix-datagram"]),
-            (Protocol::UnixDgram, DEFAULT_UNIX_DGRAM_PATH.into())
+            (Protocol::UnixDatagram, DEFAULT_UNIX_DGRAM_PATH.into())
         );
         assert_eq!(target(&["UDP"]).0, Protocol::Udp);
         assert_eq!(
@@ -649,8 +592,12 @@ mod tests {
 
     #[test]
     fn usage_errors() {
-        // Bad protocol, bad --color.
-        assert!(parse(&["quic", "127.0.0.1:1"]).is_err());
+        // Bad protocol (named like the server does), bad --color.
+        let err = parse(&["quic", "127.0.0.1:1"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        let err = err.to_string();
+        assert!(err.contains("unknown protocol 'quic'"), "{err}");
+        assert!(err.contains("unix-dgram"), "{err}");
         assert!(parse(&["--color", "sometimes"]).is_err());
         // Concurrency must be >= 1, -n >= 1.
         assert!(parse(&["tcp", "127.0.0.1:1", "-c", "0"]).is_err());
@@ -686,6 +633,8 @@ mod tests {
         assert!(cli.check().is_err());
         let cli = parse(&["udp", "70000"]).unwrap();
         assert!(cli.check().is_err());
+        let cli = parse(&["tcp", "localhost:http"]).unwrap();
+        assert!(cli.check().unwrap_err().contains("HOST:PORT"));
         let cli = parse(&["udp", "8080"]).unwrap();
         assert!(cli.check().is_ok());
         let cli = parse(&["unix-stream", ""]).unwrap();

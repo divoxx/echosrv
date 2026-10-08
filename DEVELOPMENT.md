@@ -171,9 +171,10 @@ the process has one thread, so changing the environment is safe.
 
 `echosrv-client` (`src/bin/echosrv-client/`) is a separate binary built only
 on the public library API, so it also exercises that API the way users see
-it. It shares the help layout and color resolution with the server through
+it. It shares the `Protocol` enum (names, aliases, parsing), target parsing,
+logging setup, the help layout and color resolution with the server through
 the library's `cli` module (`src/cli/`, `#[doc(hidden)]`, built only with the
-`cli` feature) and takes its default targets from `src/defaults.rs`, so both
+`cli` feature), and takes its default targets from `src/defaults.rs`, so both
 binaries agree on them.
 
 ```text
@@ -232,11 +233,13 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
    `HttpEchoServer`). Re-export them from `lib.rs`.
 5. Add unit tests in `src/<proto>/tests.rs` and an integration suite
    `tests/<proto>.rs` with a `start_<proto>` helper in `tests/common/mod.rs`.
-6. If the binary should serve it, add a variant to the clap `Protocol` enum in
-   `src/main.rs` (its doc comment is the help text) and a branch in `start()`,
-   then update the README and `tests/cli.rs`. If `echosrv-client` should
-   speak it too, add a `Protocol` variant in its `cli.rs` and a `Transport`
-   branch in `runner::make_client`. Options with a literal default
+6. Add a variant to the shared `Protocol` enum in `src/cli/protocol.rs` (its
+   doc comment is the help text of both binaries; `as_str` and
+   `service_name` give its names) and to `Target::default_for` in
+   `src/cli/target.rs`. The compiler then points at the exhaustive matches
+   to extend: `start()` in `src/main.rs`, and `Cli::resolve` and `Transport`
+   in the client, with a branch in `runner::make_client`. Update the README,
+   `tests/cli.rs` and `tests/client_cli.rs`. Options with a literal default
    use clap's `default_value`; optional or computed defaults are written at
    the end of the doc comment as ` [default: …]`, which `src/cli/help.rs`
    moves onto its own line in `--help`. Shared default endpoints live in

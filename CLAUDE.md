@@ -38,7 +38,7 @@ cargo test --test client_cli             # client black-box tests (spawns the bi
 src/
 ├── lib.rs       EchoError / Result, re-exports, README doctest harness
 ├── main.rs      CLI: args, RUST_LOG, SIGINT/SIGTERM, LISTEN_FDS socket activation
-├── cli/         `cli` feature only, `#[doc(hidden)]`: help.rs (clap help layout, parse helpers), color.rs (--color, NO_COLOR, CLICOLOR_FORCE) shared by both binaries
+├── cli/         `cli` feature only, `#[doc(hidden)]`, shared by both binaries: protocol.rs (Protocol names/parsing), target.rs (PORT, HOST:PORT, socket path, --host), logging.rs (init_logging), help.rs (clap help layout, parse helpers), color.rs (--color, NO_COLOR, CLICOLOR_FORCE)
 ├── defaults.rs  default protocol, host, port, Unix socket paths (server and client)
 ├── rate_limit.rs Gcra (server policing), TokenBucket (client shaping), RateLimitConfig
 ├── bin/echosrv-client/   load-testing client binary

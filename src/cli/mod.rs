@@ -6,3 +6,10 @@
 
 pub mod color;
 pub mod help;
+pub mod logging;
+pub mod protocol;
+pub mod target;
+
+pub use logging::init_logging;
+pub use protocol::Protocol;
+pub use target::Target;

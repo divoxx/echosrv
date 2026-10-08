@@ -1,15 +1,13 @@
 //! The `echosrv` command-line echo server. Run `echosrv --help` for usage.
 
-use clap::builder::{PossibleValue, TypedValueParser};
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Parser, ValueEnum};
 use color_eyre::eyre::{Result, WrapErr};
 use echosrv::cli::color::{ColorChoice, ColorEnv, resolve_color};
-use echosrv::cli::help;
-use echosrv::defaults::{
-    DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL, DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH,
-};
+use echosrv::cli::target::parse_host;
+use echosrv::cli::{Protocol, Target, help, init_logging};
+use echosrv::defaults::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROTOCOL};
 use echosrv::http::{DEFAULT_MAX_BODY_SIZE, HttpConfig, HttpEchoServer};
 use echosrv::network::FdInheritanceConfig;
 use echosrv::tcp::TcpConfig;
@@ -19,7 +17,7 @@ use echosrv::{
     EchoServerTrait, RateLimitConfig, TcpEchoServer, UdpEchoServer, UnixDatagramEchoServer,
     UnixStreamEchoServer,
 };
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
@@ -27,95 +25,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 /// Connection limit of the tcp and http servers started by the CLI. The Unix
 /// stream server keeps the library default
 /// ([`UnixStreamConfig::default`]: 100).
 const DEFAULT_MAX_CONNECTIONS: usize = 1000;
-
-/// Supported protocols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Protocol {
-    /// TCP echo server
-    Tcp,
-    /// UDP echo server
-    Udp,
-    /// HTTP echo server (echoes POST bodies)
-    Http,
-    /// Unix domain stream socket server
-    UnixStream,
-    /// Unix domain datagram socket server (alias: unix-datagram)
-    #[value(name = "unix-dgram", alias = "unix-datagram")]
-    UnixDatagram,
-}
-
-impl Protocol {
-    /// The name used on the command line.
-    fn name(self) -> String {
-        self.to_possible_value()
-            .map(|v| v.get_name().to_owned())
-            .unwrap_or_default()
-    }
-
-    /// Name used to look up an inherited socket (systemd `FileDescriptorName=`).
-    fn service_name(self) -> &'static str {
-        match self {
-            Self::Tcp => "tcp",
-            Self::Udp => "udp",
-            Self::Http => "http",
-            Self::UnixStream => "unix-stream",
-            Self::UnixDatagram => "unix-datagram",
-        }
-    }
-
-    fn is_unix(self) -> bool {
-        matches!(self, Self::UnixStream | Self::UnixDatagram)
-    }
-
-    fn is_datagram(self) -> bool {
-        matches!(self, Self::Udp | Self::UnixDatagram)
-    }
-}
-
-/// Parses a [`Protocol`] case-insensitively (aliases included), reporting
-/// `unknown protocol '<name>'` on failure.
-#[derive(Debug, Clone, Copy)]
-struct ProtocolParser;
-
-impl TypedValueParser for ProtocolParser {
-    type Value = Protocol;
-
-    fn parse_ref(
-        &self,
-        cmd: &clap::Command,
-        _arg: Option<&clap::Arg>,
-        value: &OsStr,
-    ) -> std::result::Result<Protocol, clap::Error> {
-        let name = value.to_string_lossy();
-        Protocol::from_str(&name, true).map_err(|_| {
-            let names: Vec<_> = Protocol::value_variants()
-                .iter()
-                .map(|p| p.name())
-                .collect();
-            cmd.clone().error(
-                ErrorKind::InvalidValue,
-                format!(
-                    "unknown protocol '{name}' (possible values: {})",
-                    names.join(", ")
-                ),
-            )
-        })
-    }
-
-    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
-        Some(Box::new(
-            Protocol::value_variants()
-                .iter()
-                .filter_map(ValueEnum::to_possible_value),
-        ))
-    }
-}
 
 /// Log levels for `--log-level`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -180,7 +94,7 @@ Examples:
 )]
 struct Args {
     /// Protocol to serve
-    #[arg(value_name = "PROTOCOL", default_value = DEFAULT_PROTOCOL, value_parser = ProtocolParser)]
+    #[arg(value_name = "PROTOCOL", default_value = DEFAULT_PROTOCOL, value_parser = Protocol::parser())]
     protocol: Protocol,
 
     /// Port for tcp/udp/http, or socket path for unix-stream/unix-dgram
@@ -221,23 +135,14 @@ struct Args {
     log_level: LogLevel,
 }
 
-/// Parses `--host`; IPv6 addresses may be written in brackets (`[::1]`).
-fn parse_host(value: &str) -> std::result::Result<IpAddr, String> {
-    let trimmed = value
-        .strip_prefix('[')
-        .and_then(|v| v.strip_suffix(']'))
-        .unwrap_or(value);
-    trimmed
-        .parse()
-        .map_err(|_| format!("invalid host address '{value}'"))
-}
-
 /// The validated command line.
 #[derive(Debug)]
 struct Cli {
     protocol: Protocol,
     host: IpAddr,
     port: u16,
+    /// The socket path for unix-stream/unix-dgram (the default one when
+    /// omitted); `None` for tcp/udp/http.
     socket_path: Option<PathBuf>,
     max_connections: Option<usize>,
     rate_limit: Option<RateLimitConfig>,
@@ -266,28 +171,21 @@ impl Cli {
                 if explicit(id) {
                     return Err((
                         ErrorKind::ArgumentConflict,
-                        format!(
-                            "{flag} cannot be used with {} (it has no connections)",
-                            protocol.name()
-                        ),
+                        format!("{flag} cannot be used with {protocol} (it has no connections)"),
                     ));
                 }
             }
         }
 
-        let mut port = DEFAULT_PORT;
-        let mut socket_path = None;
-        if protocol.is_unix() {
-            socket_path = args.target.map(PathBuf::from);
-        } else if let Some(target) = &args.target {
-            let target = target.to_string_lossy();
-            port = target.parse().map_err(|_| {
-                (
-                    ErrorKind::InvalidValue,
-                    format!("invalid port '{target}' (expected 0-65535)"),
-                )
-            })?;
-        }
+        let target = match &args.target {
+            Some(value) => Target::parse_listen(protocol, value)
+                .map_err(|msg| (ErrorKind::InvalidValue, msg))?,
+            None => Target::default_for(protocol),
+        };
+        let (port, socket_path) = match target {
+            Target::Net { port, .. } => (port, None),
+            Target::Unix(path) => (DEFAULT_PORT, Some(path)),
+        };
 
         Ok(Self {
             protocol,
@@ -352,19 +250,12 @@ fn stderr_wants_color() -> bool {
     )
 }
 
-fn init_logging(level: LogLevel) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("echosrv={}", level.as_str())));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(stderr_wants_color())
-        .init();
-}
-
 fn run(cli: Cli) -> Result<()> {
     color_eyre::install()?;
-    init_logging(cli.log_level);
+    init_logging(
+        &format!("echosrv={}", cli.log_level.as_str()),
+        stderr_wants_color(),
+    );
 
     // Take ownership of socket-activation descriptors (if any) and clear the
     // variables while the process is still single-threaded, so they are not
@@ -442,9 +333,7 @@ async fn start(cli: Cli) -> Result<()> {
                 .wrap_err("Failed to run HTTP echo server")
         }
         Protocol::UnixStream => {
-            let path = cli
-                .socket_path
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_UNIX_STREAM_PATH));
+            let path = cli.socket_path.unwrap_or_default();
             let defaults = UnixStreamConfig::default();
             let config = UnixStreamConfig {
                 max_connections: cli.max_connections.unwrap_or(defaults.max_connections),
@@ -459,9 +348,7 @@ async fn start(cli: Cli) -> Result<()> {
                 .wrap_err("Failed to run Unix domain stream echo server")
         }
         Protocol::UnixDatagram => {
-            let path = cli
-                .socket_path
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_UNIX_DGRAM_PATH));
+            let path = cli.socket_path.unwrap_or_default();
             let config = UnixDatagramConfig {
                 rate_limit,
                 ..Default::default()
@@ -497,6 +384,7 @@ async fn serve<S: EchoServerTrait>(server: S) -> echosrv::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echosrv::defaults::{DEFAULT_UNIX_DGRAM_PATH, DEFAULT_UNIX_STREAM_PATH};
 
     /// Outcome of parsing, as the tests below expect it.
     #[derive(Debug)]
@@ -596,7 +484,12 @@ mod tests {
     #[test]
     fn unix_targets_are_paths() {
         let cli = run_cli(&["unix-stream"]);
-        assert_eq!(cli.socket_path, None);
+        assert_eq!(
+            cli.socket_path,
+            Some(PathBuf::from(DEFAULT_UNIX_STREAM_PATH))
+        );
+        assert_eq!(run_cli(&["tcp"]).socket_path, None);
+        assert!(parse_args(&args(&["unix-dgram", ""])).is_err());
         let cli = run_cli(&["unix-dgram", "/tmp/x.sock"]);
         assert_eq!(cli.socket_path, Some(PathBuf::from("/tmp/x.sock")));
     }
