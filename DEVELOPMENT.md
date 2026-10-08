@@ -112,7 +112,9 @@ loops:
    takes a `ConnectionGuard`, an RAII slot that is released even if the task
    panics. Connections over `max_connections` are closed immediately. Tasks
    live in a `JoinSet`. A failed `accept` (for example `EMFILE`) is followed
-   by a 100 ms backoff.
+   by a 100 ms backoff. The datagram loop backs off the same way after a
+   failed `recv_from`, selecting on shutdown during the wait, and logs the
+   first and every 100th consecutive failure at `error`.
    **Rate limits.** Each server builds its `Gcra` limiters (`RateLimiters`)
    once in `new()`, so a limit is global to the server. A connection over
    `accept_rate_limit` keeps its `ConnectionGuard` while a spawned task runs
