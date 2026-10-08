@@ -83,11 +83,11 @@ impl BuildSocket<ManagedUnixListener> for UnixStreamSocketBuilder {
     fn bind_to(target: &BindTarget) -> Result<ManagedUnixListener> {
         match target {
             BindTarget::Unix(path) => {
-                let std_listener = bind_with_stale_recovery(path, SocketKind::Stream, |p| {
-                    std::os::unix::net::UnixListener::bind(p)
-                })
-                .map_err(EchoError::Unix)?;
-                let file = SocketFile::record(path).map_err(EchoError::Unix)?;
+                let (std_listener, file) =
+                    bind_with_stale_recovery(path, SocketKind::Stream, |p| {
+                        std::os::unix::net::UnixListener::bind(p)
+                    })
+                    .map_err(EchoError::Unix)?;
                 std_listener
                     .set_nonblocking(true)
                     .map_err(EchoError::Unix)?;

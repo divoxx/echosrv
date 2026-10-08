@@ -48,10 +48,9 @@ impl ManagedUnixDatagram {
     /// Binds `path` (recovering a stale socket file) and takes ownership of
     /// the created socket file.
     pub fn bind(path: &Path) -> std::io::Result<Self> {
-        let std_socket = bind_with_stale_recovery(path, SocketKind::Datagram, |p| {
+        let (std_socket, file) = bind_with_stale_recovery(path, SocketKind::Datagram, |p| {
             std::os::unix::net::UnixDatagram::bind(p)
         })?;
-        let file = SocketFile::record(path)?;
         std_socket.set_nonblocking(true)?;
         Ok(Self {
             socket: UnixDatagram::from_std(std_socket)?,
