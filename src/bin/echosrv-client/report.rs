@@ -3,6 +3,7 @@
 //! Human renderers take a [`Palette`]; with [`Palette::PLAIN`] they produce
 //! the same text as with color, minus the ANSI codes. JSON is never colored.
 
+use crate::cli::DEFAULT_BURST;
 use crate::output::{Palette, Tag, tagged};
 use crate::stats::{ErrorKind, IntervalReport, OutageEvent, Summary};
 use serde::Serialize;
@@ -298,7 +299,7 @@ pub fn header_text(h: &RunHeader, p: Palette) -> String {
     let rate = match (h.rate, h.burst) {
         (Some(rate), burst) => format!(
             "{rate} req/s, {}",
-            mark("burst", format!("burst {}", burst.unwrap_or(1)))
+            mark("burst", format!("burst {}", burst.unwrap_or(DEFAULT_BURST)))
         ),
         (None, _) => mark("rate", "unshaped".into()),
     };
@@ -896,7 +897,7 @@ mod tests {
     fn summary_formats() {
         let start = Instant::now();
         let mut agg_summary = Aggregator::new(start).finish(start + Duration::from_secs(2));
-        agg_summary.protocol = "tcp".into();
+        agg_summary.protocol = "tcp";
         let verdict = Verdict::of(&agg_summary, 0.0);
         assert_eq!(verdict, Verdict::NoAttempts);
         let text = summary_text(&agg_summary, &verdict, Palette::PLAIN);
