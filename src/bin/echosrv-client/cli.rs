@@ -466,6 +466,19 @@ mod tests {
         assert!(parse_duration("-1s").is_err());
     }
 
+    #[test]
+    fn parse_pct_accepts_optional_percent_sign() {
+        assert_eq!(parse_pct("5"), Ok(5.0));
+        assert_eq!(parse_pct("5%"), Ok(5.0));
+        assert_eq!(parse_pct("0.5%"), Ok(0.5));
+        assert_eq!(parse_pct("0"), Ok(0.0));
+        assert_eq!(parse_pct("100%"), Ok(100.0));
+        assert!(parse_pct("101%").is_err());
+        assert!(parse_pct("-1").is_err());
+        assert!(parse_pct("%").is_err());
+        assert!(parse_pct("five").is_err());
+    }
+
     fn target(args: &[&str]) -> (Protocol, String) {
         let cli = parse(args).unwrap();
         (cli.protocol, cli.target().unwrap().to_string())
