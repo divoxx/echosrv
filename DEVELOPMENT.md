@@ -197,7 +197,8 @@ main.rs     SIGINT/SIGTERM/--duration stop the run (CancellationToken: no new at
   connection limiter, per-request mode always does.
 - **Classification** (`stats::classify`) maps `EchoError` to an `ErrorKind`
   through `is_rate_limited()`, `Timeout` and `io_error_kind()`.
-  `ErrorKind::is_outage()` excludes `rate_limited` and `ports_exhausted`. A
+  `ErrorKind::is_outage()` is true only for `connect_refused`,
+  `connect_failed`, `reset` and `timeout`. A
   `ports_exhausted` error cancels the whole run and sets the
   `ports_exhausted` stop reason.
 - **Outages** are tracked by the single aggregator, so they are global across

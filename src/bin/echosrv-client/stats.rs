@@ -86,11 +86,19 @@ impl ErrorKind {
         }
     }
 
-    /// Whether this error means the server is unavailable. Rate limiting is
-    /// an answer from a live server, and port exhaustion is a problem of the
-    /// client machine, so neither counts towards an outage.
+    /// Whether this error means the server is unavailable: it could not be
+    /// reached, or it dropped the connection or did not answer in time.
+    /// Rate limiting, mismatches and other errors are answers from a live
+    /// server, and port exhaustion is a problem of the client machine, so
+    /// none of them counts towards an outage.
     pub fn is_outage(self) -> bool {
-        !matches!(self, ErrorKind::RateLimited | ErrorKind::PortsExhausted)
+        matches!(
+            self,
+            ErrorKind::ConnectRefused
+                | ErrorKind::ConnectFailed
+                | ErrorKind::Reset
+                | ErrorKind::Timeout
+        )
     }
 }
 
@@ -253,8 +261,8 @@ pub enum OutageEvent {
     Ended { at_s: f64, window: OutageWindow },
 }
 
-/// Detects outages: consecutive (non rate-limited) errors across all
-/// workers open an outage and the next success closes it. The outage spans
+/// Detects outages: consecutive outage errors ([`ErrorKind::is_outage`])
+/// across all workers open an outage and the next success closes it. The outage spans
 /// from the completion of the first failed attempt to the completion of the
 /// first successful one.
 ///
@@ -780,28 +788,49 @@ mod tests {
     }
 
     #[test]
-    fn rate_limited_is_not_an_outage() {
-        let t0 = Instant::now();
-        let mut t = OutageTracker::new(t0);
-        for i in 0..10 {
-            assert_eq!(
-                t.observe(t0 + ms(i), t0 + ms(i), Outcome::Err(ErrorKind::RateLimited)),
-                None
-            );
-        }
-        assert!(!t.in_outage());
-        // Nor does it extend an outage that is already open.
-        t.observe(t0 + ms(20), t0 + ms(20), Outcome::Err(ErrorKind::Reset));
-        t.observe(
-            t0 + ms(30),
-            t0 + ms(30),
-            Outcome::Err(ErrorKind::RateLimited),
+    fn outage_kinds() {
+        let outages: Vec<_> = ErrorKind::ALL
+            .into_iter()
+            .filter(|k| k.is_outage())
+            .collect();
+        assert_eq!(
+            outages,
+            [
+                ErrorKind::ConnectRefused,
+                ErrorKind::ConnectFailed,
+                ErrorKind::Reset,
+                ErrorKind::Timeout,
+            ]
         );
-        t.observe(t0 + ms(40), t0 + ms(40), Outcome::Ok);
-        let s = t.finish(t0 + ms(100));
-        assert_eq!(s.count, 1);
-        assert_eq!(s.windows[0].errors, 1);
-        assert!(!s.ongoing);
+    }
+
+    #[test]
+    fn non_outage_errors_neither_open_nor_extend_an_outage() {
+        for kind in [
+            ErrorKind::RateLimited,
+            ErrorKind::Mismatch,
+            ErrorKind::PortsExhausted,
+            ErrorKind::Other,
+        ] {
+            let t0 = Instant::now();
+            let mut t = OutageTracker::new(t0);
+            for i in 0..10 {
+                assert_eq!(
+                    t.observe(t0 + ms(i), t0 + ms(i), Outcome::Err(kind)),
+                    None,
+                    "{kind:?}"
+                );
+            }
+            assert!(!t.in_outage(), "{kind:?}");
+            // Nor does it extend an outage that is already open.
+            t.observe(t0 + ms(20), t0 + ms(20), Outcome::Err(ErrorKind::Reset));
+            t.observe(t0 + ms(30), t0 + ms(30), Outcome::Err(kind));
+            t.observe(t0 + ms(40), t0 + ms(40), Outcome::Ok);
+            let s = t.finish(t0 + ms(100));
+            assert_eq!(s.count, 1, "{kind:?}");
+            assert_eq!(s.windows[0].errors, 1, "{kind:?}");
+            assert!(!s.ongoing, "{kind:?}");
+        }
     }
 
     #[test]
@@ -895,7 +924,7 @@ mod tests {
         assert_eq!(summary.mismatches(), 1);
         assert!((summary.error_rate_pct - 20.0).abs() < 1e-9);
         assert_eq!(summary.errors_by_kind.len(), ErrorKind::COUNT);
-        assert_eq!(summary.outages.count, 1); // the mismatch
+        assert_eq!(summary.outages.count, 0); // neither kind is an outage
         assert!(summary.latency.is_some());
         // No interval elapsed, and the first tick is not immediate.
         assert!(events.iter().all(|e| !matches!(e, LiveEvent::Interval(_))));

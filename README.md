@@ -275,7 +275,9 @@ latency of the successful requests in that interval (`-` if none succeeded).
 `OUTAGE` at the end means an outage was still open when the interval ended.
 
 **Outages.** An outage starts with the first error that means the server is
-unavailable and ends with the next success, counted across all workers. The
+unavailable (it could not be reached, or it dropped the connection or did not
+answer in time; see [Error kinds](#error-kinds)) and ends with the next
+success, counted across all workers. The
 client prints a line when one starts (with the kind of the first error) and
 when it ends (with its length and error count). A success only ends an outage
 if the request *started* after the outage did: requests already in flight on
@@ -343,13 +345,15 @@ experience during the restart.
 | `reset`           | Connection reset, aborted or closed before the whole echo arrived                  | yes    |
 | `timeout`         | Connect, read or write took longer than `--timeout` (also a lost datagram)         | yes    |
 | `rate_limited`    | The server rejected the request with HTTP `429 Too Many Requests`                  | no     |
-| `mismatch`        | The echo differs from the payload sent (always fails the run)                      | yes    |
+| `mismatch`        | The echo differs from the payload sent (always fails the run)                      | no     |
 | `ports_exhausted` | This machine ran out of local ports (`EADDRNOTAVAIL`); the run stops               | no     |
-| `other`           | Anything else                                                                      | yes    |
+| `other`           | Anything else, for example an HTTP status other than `429`                         | no     |
 
-`rate_limited` is an answer from a live server and `ports_exhausted` is a
-problem of the client machine, so neither opens an outage. Both still count
-as errors for `--max-error-rate`. Only HTTP can say "rate limited": the TCP
+Only `connect_refused`, `connect_failed`, `reset` and `timeout` open or
+extend an outage. `rate_limited`, `mismatch` and `other` are answers from a
+live server and `ports_exhausted` is a problem of the client machine, so none
+of them does. They all still count as errors for `--max-error-rate`, and any
+`mismatch` fails the run. Only HTTP can say "rate limited": the TCP
 server resets over-limit connections and the Unix stream server closes them,
 which shows up as `reset`, and datagram servers drop the datagram, which
 shows up as `timeout`. See [Rate limiting](#rate-limiting).

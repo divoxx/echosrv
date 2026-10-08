@@ -900,6 +900,8 @@ mod tests {
         let s = run_n(config).await;
         assert_eq!(s.errors_by_kind["mismatch"], 5, "{s:#?}");
         assert_eq!(s.mismatches(), 5);
+        // A live server echoing wrong bytes is not an outage.
+        assert_eq!(s.outages.count, 0, "{s:#?}");
         server.abort();
     }
 
